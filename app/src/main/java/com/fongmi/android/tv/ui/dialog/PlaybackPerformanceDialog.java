@@ -630,9 +630,7 @@ public final class PlaybackPerformanceDialog extends DialogFragment {
                 if (PlayerSetting.getPlayer() == PlayerSetting.MPV) {
                     int mode = PlaybackPerformanceSetting.getMpvDv7HandlingMode();
                     PlaybackPerformanceSetting.putMpvDv7HandlingMode(
-                            mode == PlaybackPerformanceSetting.DV7_HANDLING_P81
-                                    ? PlaybackPerformanceSetting.DV7_HANDLING_HDR10
-                                    : PlaybackPerformanceSetting.DV7_HANDLING_P81);
+                            PlaybackPerformanceSetting.nextMpvDv7HandlingMode(mode));
                     refresh();
                     return;
                 }

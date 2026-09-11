@@ -244,6 +244,16 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 本阶段使用 NDK r29 对 `arm64-v8a` 与 `armeabi-v7a` 完整重建并安装 native assets；一次 `scripts/verify_mpv_native_assets.sh --require-elf` 通过，APK `app-mobile-arm64_v8a-debug.apk` 内十个 arm64 MPV 资产与工作区完全一致，两个 `libplayer.so` 保持字节不变。用户在 USB 连接的 vivo V2453A 上确认安装后的 DV7 及邻接播放验证通过。实现提交为 `ba47756d7e463abeb9377088b819a2520e150935`，恢复 tag 为 `recovery/P2-2-MPV-DV7-METADATA-CODECPAR/20260829065811-ba47756d7e46`。完整来源、哈希、验证和回滚记录见 [P2-2-mpv-dv7-metadata-codecpar.md](../docs/P2-2-mpv-dv7-metadata-codecpar.md)。
 
+## P2-4 Android FEL 双层重建（2026-09-12）
+
+独立补丁 `mpv-android-fel.patch` 在现有补丁序列末尾应用，不升级任何锁定依赖。`android-dovi-fel` 默认关闭；只有 App 手动选择「FEL 双层重建」、识别源 Profile 7 并使用 `gpu-next` 时才开启软件 EL 配对。原 `VO_CAP_GPU_DOVI_EL` Android gate 保留，新增的软件 EL 能力不能启动第二路 MediaCodec。
+
+补丁只适配 `FongMi/mpv@06ec6e1746e5cbdcd271e613fdb1f7f7ecd36042` 的 EL force_swdec 必要接线，不吸收其 Surface/HDR/OSD 重写。保留原 PTS 有界配对与 libplacebo NLQ；显式软件 EL 不受 BL 的 `hwdec-software-fallback=no` 拦截，硬解失败重试也遵守 forced EOF，避免不兼容输出下无限循环。现有 FFmpeg、libplacebo、JNI 与原盘/音频补丁保持原样。
+
+本阶段使用同锁温缓存，只重编两 ABI 的 `mpv`：`buildall.sh -n --arch arm64 mpv` 与 `--arch armv7l mpv`，随后 `scripts/build_mpv_native.sh --abi all --stage-only --install`。不得跳过实际编译而仅复制旧 prefix。`scripts/verify_mpv_fel_contract.py --mpv-source <已应用补丁的源码>` 校验 opt-in/软解/默认隔离契约；资产校验同时要求 FEL option、EL 软件解码和 GPU NLQ 输入标记。标记检查不代表真机重建/性能验收通过。
+
+当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 为准。只会替换两 ABI 的 `libmpv.so`，其他 18 个 MPV 资产（含两个 `libplayer.so`）必须与基线逐字节相同。
+
 ## 提交前验证
 
 至少构建一个快速 Release：

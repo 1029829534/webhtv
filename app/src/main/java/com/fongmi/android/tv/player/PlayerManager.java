@@ -418,6 +418,7 @@ public class PlayerManager implements ParseCallback {
         completeIjkBufferManagedReload(
                 false, "timeout", SystemClock.elapsedRealtime(), true);
         if (retryLutWarmupByRefresh("timeout")) return;
+        if (retryMpvDv7FelOutput()) return;
         if (retryMpvDv7P81FirstFrameTimeout()) return;
         if (retryMpvVulkanBackendTimeout()) return;
         if (retryMpvAutoVulkanToOpenGl("auto-vulkan-first-frame-timeout")) return;
@@ -4615,6 +4616,7 @@ public class PlayerManager implements ParseCallback {
         mpv.setVulkanRenderOverride(null);
         mpv.resetDv7HandlingForNewItem();
         mpv.resetDv8HandlingForNewItem();
+        prepareMpvFelOutput(mpv);
         rebuildAndRestartMpv(null, "performance-settings-changed");
     }
 
@@ -4739,8 +4741,7 @@ public class PlayerManager implements ParseCallback {
 
     private void scheduleMpvAutoOutputEvaluation() {
         if (!isMpv()
-                || MpvPerformanceSetting.getOutputMode()
-                != MpvPerformanceSetting.OUTPUT_AUTO) return;
+                || !shouldEvaluateMpvOutput()) return;
         if (mpvAutoOutputEvaluated || mpvAutoOutputEvaluationScheduled) return;
         mpvAutoOutputEvaluationScheduled = true;
         int seq = ++mpvOutputEvaluationSeq;
@@ -4765,9 +4766,22 @@ public class PlayerManager implements ParseCallback {
         if (!isMpv() || mpvAutoOutputEvaluated
                 || !(engine instanceof MpvPlayerEngine mpv)) return true;
         if (mpvHlsManagedReload) return false;
+        // Only the manual FEL mode inspects the original DV profile here.
+        // This runs before size/first-frame gating, so a direct decoder that
+        // cannot initialize DV7 can still move to the hybrid GPU path.
+        if (prepareMpvFelOutput(mpv)) {
+            return rebuildAndRestartMpv(mpv.isDv7FelOutputEnabled() ? false : null,
+                    "manual-dv7-fel-output");
+        }
         Tracks tracks = engine.getCurrentTracks();
         boolean tracksReady = tracks != null && !tracks.isEmpty();
         if (!tracksReady) return false;
+        // Explicit output modes retain their original behavior on all other
+        // content; the extra evaluation is solely for FEL activation.
+        if (MpvPerformanceSetting.getOutputMode() != MpvPerformanceSetting.OUTPUT_AUTO) {
+            mpvAutoOutputEvaluated = true;
+            return true;
+        }
         Format format = tracksReady ? engine.getVideoFormat() : null;
         PlayerEngine.VideoPlaybackDetails videoDetails = engine.getVideoPlaybackDetails();
         boolean dolbyVision = videoDetails != null
@@ -4821,6 +4835,8 @@ public class PlayerManager implements ParseCallback {
                 dv7Hdr10FallbackEnabled,
                 hevcHdr10Support);
         decision = MpvAutoOutputPolicy.afterSurfaceFailure(decision, mpvSurfaceFallbackTried);
+        decision = MpvAutoOutputPolicy.forFelReconstruction(decision,
+                mpv.isDv7FelOutputEnabled());
         int dolbyVisionProfile = dolbyVision
                 ? videoDetails.dolbyVisionProfile() : C.INDEX_UNSET;
         boolean currentlyVulkan = mpv.isVulkanRenderer();
@@ -4830,7 +4846,8 @@ public class PlayerManager implements ParseCallback {
                 engine.isHard(), dolbyVisionProfile, dolbyVisionSupport,
                 MPVLib.isBundledVulkanEnabled(App.get()),
                 MPVLib.isDeviceVulkan13Capable(App.get()),
-                currentlyVulkan, mpvAutoVulkanDisabledForItem);
+                currentlyVulkan, mpvAutoVulkanDisabledForItem,
+                mpv.isDv7FelOutputEnabled());
         boolean enableAutoVulkan = renderDecision.action()
                 == MpvAutoRenderPolicy.Action.ENABLE_VULKAN;
         if (enableAutoVulkan) {
@@ -4922,13 +4939,50 @@ public class PlayerManager implements ParseCallback {
     private void onMpvVideoSizeProbed(Integer width, Integer height) {
         if (width == null || height == null || width <= 0 || height <= 0) return;
         if (!isMpv()
-                || MpvPerformanceSetting.getOutputMode()
-                != MpvPerformanceSetting.OUTPUT_AUTO
+                || !shouldEvaluateMpvOutput()
                 || mpvAutoOutputEvaluated) return;
         if (SpiderDebug.isEnabled()) SpiderDebug.log("mpv-output", "auto size probe size=%dx%d attempts=%d", width, height, mpvAutoOutputProbeAttempts);
         mpvAutoOutputEvaluationScheduled = false;
         mpvOutputEvaluationSeq++;
         if (!evaluateMpvAutoOutput()) scheduleMpvAutoOutputEvaluation();
+    }
+
+    private boolean shouldEvaluateMpvOutput() {
+        return MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO
+                || engine instanceof MpvPlayerEngine mpv && mpv.isDv7FelRequested();
+    }
+
+    private boolean prepareMpvFelOutput(MpvPlayerEngine mpv) {
+        if (!mpv.updateDv7FelOutputForCurrentItem()) return false;
+        if (!mpv.isDv7FelOutputEnabled()) {
+            if (mpvAutoVulkanPinnedForItem) {
+                mpvAutoVulkanPinnedForItem = false;
+                mpv.setVulkanRenderOverride(null);
+            }
+            return true;
+        }
+        MpvAutoRenderPolicy.Decision decision = MpvAutoRenderPolicy.evaluate(
+                PlaybackPerformanceSetting.isAuto(
+                        PlayerSetting.MPV, PlaybackPerformanceCatalog.MPV_RENDER),
+                engine.isHard(), 7, MpvAutoOutputPolicy.DolbyVisionSupport.UNKNOWN,
+                MPVLib.isBundledVulkanEnabled(App.get()),
+                MPVLib.isDeviceVulkan13Capable(App.get()),
+                mpv.isVulkanRenderer(), mpvAutoVulkanDisabledForItem, true);
+        if (decision.action() == MpvAutoRenderPolicy.Action.ENABLE_VULKAN) {
+            mpvAutoVulkanPinnedForItem = true;
+            mpv.setVulkanRenderOverride(true);
+        }
+        PlaybackTrace.log("mpv-dv", playbackTrace.current(),
+                "manual FEL reconstruction: original DV7, software EL, gpu-next; render=%s",
+                decision.reason());
+        return true;
+    }
+
+    private boolean retryMpvDv7FelOutput() {
+        if (!isMpv() || !(engine instanceof MpvPlayerEngine mpv)
+                || !mpv.isDv7FelRequested() || mpv.isDv7FelOutputEnabled()
+                || !prepareMpvFelOutput(mpv) || !mpv.isDv7FelOutputEnabled()) return false;
+        return rebuildAndRestartMpv(false, "manual-dv7-fel-startup");
     }
 
     private boolean retryMpvDv7P81Failure(PlaybackException error) {
@@ -5033,7 +5087,7 @@ public class PlayerManager implements ParseCallback {
         mpv.setVulkanRenderOverride(false);
         mpv.setVulkanBackendOverride(null);
         PlaybackTrace.log("mpv-vulkan", playbackTrace.current(),
-                "automatic DV5 Vulkan failed; fallback OpenGL once reason=%s",
+                "automatic DV GPU Vulkan failed; fallback OpenGL once reason=%s",
                 reason);
         return rebuildAndRestartMpv(false, reason);
     }
@@ -7552,6 +7606,7 @@ public class PlayerManager implements ParseCallback {
             publishPlaybackTelemetry(
                     PlaybackAutoContext.PlaybackPhase.ERROR, false);
             if (recoverMpvHlsVariantError()) return;
+            if (retryMpvDv7FelOutput()) return;
             if (retryMpvDv7P81Failure(e)) return;
             if (retryMpvSurfaceDirectFailure(e)) return;
             if (retryMpvVulkanBackendFailure(e)) return;

@@ -1,0 +1,278 @@
+From: WebHTV
+Subject: [P2-4] Opt-in Android FEL with a software-only enhancement decoder
+
+Adapted narrowly from FongMi/mpv
+06ec6e1746e5cbdcd271e613fdb1f7f7ecd36042. Keep the Android single-Surface
+gate by default. gpu-next can consume a software EL only when the App
+explicitly requests android-dovi-fel for a Profile 7 source. The BL keeps
+its existing decoder; no second MediaCodec producer is allowed for EL.
+
+diff --git a/options/options.h b/options/options.h
+--- a/options/options.h
++++ b/options/options.h
+@@ -102,6 +102,7 @@ struct mp_vo_opts {
+     struct m_geometry android_surface_size;
+     int android_dolby_vision_output;
++    bool android_dovi_fel;
+     int android_vulkan_aimagereader_backend;
+     int64_t android_osd_wid;
+     struct m_geometry android_osd_surface_size;
+diff --git a/options/options.c b/options/options.c
+--- a/options/options.c
++++ b/options/options.c
+@@ -253,6 +253,8 @@ static const m_option_t mp_vo_opt_list[] = {
+ #endif
+ #if HAVE_ANDROID
++    {"android-dovi-fel", OPT_BOOL(android_dovi_fel),
++        .flags = UPDATE_VO},
+     {"android-dolby-vision-output", OPT_CHOICE(android_dolby_vision_output,
+         {"configured", ANDROID_DOLBY_VISION_OUTPUT_CONFIGURED},
+         {"direct", ANDROID_DOLBY_VISION_OUTPUT_DIRECT}), .flags = UPDATE_VO},
+diff --git a/video/out/vo.h b/video/out/vo.h
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -220,6 +220,9 @@ enum {
+     // layer in addition to the base layer.
+     VO_CAP_GPU_DOVI_EL  = 1 << 10,
++    // VO can upload a software EL without another hardware output Surface.
++    // Android still requires an explicit per-playback opt-in.
++    VO_CAP_GPU_DOVI_EL_SW = 1 << 11,
+ };
+ 
+ enum {
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -116,6 +116,7 @@ struct priv {
+     struct mp_pass_perf hwdec_perf;
+     struct ra_hwdec_mapper *el_hwdec_mapper;
+     struct timer_pool *el_hwdec_timer;
++    bool fel_input_logged;
+     struct timer_pool *sw_upload_timer;
+     struct mp_pass_perf sw_upload_perf;
+ 
+@@ -1084,6 +1085,14 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex,
+         if (el_ok) {
+             pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
+             frame->enhancement_layer = &fp->el_frame;
++            if (vo->opts->android_dovi_fel && !p->fel_input_logged &&
++                frame->repr.sys == PL_COLOR_SYSTEM_DOLBYVISION &&
++                frame->repr.dovi && frame->repr.dovi->nlq_active) {
++                MP_INFO(vo, "WebHTV FEL GPU input: matched EL uploaded "
++                            "with active NLQ.\n");
++                p->fel_input_logged = true;
++            }
+         } else {
+             MP_WARN(vo, "Failed setting up enhancement layer; "
+                     "rendering base layer only.\n");
+@@ -3178,6 +3187,7 @@ const struct vo_driver video_out_gpu_next = {
+             VO_CAP_VFLIP |
+             VO_CAP_GPU_DOVI |
++            VO_CAP_GPU_DOVI_EL_SW |
+ #if !HAVE_ANDROID
+             VO_CAP_GPU_DOVI_EL |
+ #endif
+diff --git a/player/loadfile.c b/player/loadfile.c
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1680,6 +1680,19 @@ void update_vo_chain_el_state(struct MPContext *mpctx)
+     bool gpu_dovi_el = mpctx->video_out &&
+         (mpctx->video_out->driver->caps & VO_CAP_GPU_DOVI_EL);
++    bool force_swdec = false;
++#if HAVE_ANDROID
++    // Keep the old gate closed unless the user requests reconstruction.
++    // EL must never acquire the BL's single MediaCodec producer Surface.
++    force_swdec = mpctx->opts->vo->android_dovi_fel && el &&
++        track->stream->codec &&
++        (track->stream->codec->dv_profile == 7 ||
++         track->stream->codec->source_dv_profile == 7) &&
++        mpctx->video_out &&
++        (mpctx->video_out->driver->caps & VO_CAP_GPU_DOVI_EL_SW);
++    gpu_dovi_el |= force_swdec;
++#endif
+     bool use_el = el && !direct_dovi && gpu_dovi_el;
+ 
+     if (el && !direct_dovi && !gpu_dovi_el) {
+@@ -1698,6 +1711,6 @@ void update_vo_chain_el_state(struct MPContext *mpctx)
+     }
+ 
+     mp_output_chain_set_el_stream(mpctx->vo_chain->filter,
+-                                  use_el ? el : NULL);
++                                  use_el ? el : NULL, force_swdec);
+ }
+ 
+diff --git a/filters/f_output_chain.h b/filters/f_output_chain.h
+--- a/filters/f_output_chain.h
++++ b/filters/f_output_chain.h
+@@ -92,6 +92,8 @@ bool mp_output_chain_deinterlace_active(struct mp_output_chain *p);
+ // Add an enhancement-layer pairing filter at the tail of the chain.
+-// Pass el_sh=NULL to remove. No-op if the same el_sh is already installed.
++// Pass el_sh=NULL to remove. No-op if the stream and decoder mode are
++// already installed.
+ struct sh_stream;
+ void mp_output_chain_set_el_stream(struct mp_output_chain *p,
+-                                   struct sh_stream *el_sh);
++                                   struct sh_stream *el_sh,
++                                   bool force_swdec);
+diff --git a/filters/f_output_chain.c b/filters/f_output_chain.c
+--- a/filters/f_output_chain.c
++++ b/filters/f_output_chain.c
+@@ -48,6 +48,7 @@ struct chain {
+     // no EL is paired.
+     struct mp_user_filter *el_pair;
+     struct sh_stream *el_sh;
++    bool el_force_swdec;
+ 
+     struct vo *vo;
+     struct ao *ao;
+@@ -402,11 +403,13 @@ void mp_output_chain_set_el_stream(struct mp_output_chain *c,
+-                                   struct sh_stream *el_sh)
++                                   struct sh_stream *el_sh,
++                                   bool force_swdec)
+ {
+     struct chain *p = c->f->priv;
+ 
+     mp_assert(p->type == MP_OUTPUT_CHAIN_VIDEO);
+ 
+-    if (p->el_sh == el_sh && (!el_sh || p->el_pair))
++    if (p->el_sh == el_sh && p->el_force_swdec == force_swdec &&
++        (!el_sh || p->el_pair))
+         return;
+@@ -424,7 +427,7 @@ void mp_output_chain_set_el_stream(struct mp_output_chain *c,
+     if (el_sh) {
+         struct mp_user_filter *u = create_wrapper_filter(p);
+         u->name = "el_pair";
+-        u->f = mp_enhancement_pair_create(u->wrapper, el_sh);
++        u->f = mp_enhancement_pair_create(u->wrapper, el_sh, force_swdec);
+         if (!u->f) {
+             MP_WARN(p, "Failed to set up enhancement-layer pairing.\n");
+@@ -435,6 +438,7 @@ void mp_output_chain_set_el_stream(struct mp_output_chain *c,
+         }
+     }
++    p->el_force_swdec = force_swdec;
+ 
+     relink_filter_list(p);
+ }
+diff --git a/filters/f_enhancement_pair.h b/filters/f_enhancement_pair.h
+--- a/filters/f_enhancement_pair.h
++++ b/filters/f_enhancement_pair.h
+@@ -37,4 +37,5 @@ struct sh_stream;
+ // on init failure. The caller should fall back to BL-only rendering.
+ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+-                                             struct sh_stream *el_sh);
++                                             struct sh_stream *el_sh,
++                                             bool force_swdec);
+diff --git a/filters/f_enhancement_pair.c b/filters/f_enhancement_pair.c
+--- a/filters/f_enhancement_pair.c
++++ b/filters/f_enhancement_pair.c
+@@ -44,6 +44,8 @@ struct priv {
+ 
+     bool bl_eof;
+     bool el_eof;
++    bool force_swdec;
++    bool log_first_pair;
+ };
+ 
+ static int pts_cmp(double a, double b)
+@@ -146,8 +148,20 @@ static void pair_process(struct mp_filter *f)
+             struct mp_image *el = take_head(&p->el_pending, &p->num_el_pending);
+             take_head(&p->bl_pending, &p->num_bl_pending);
+             inherit_dovi_from_el(bl, el);
+-            if (bl->params.no_enhancement_layer) {
++            if (p->log_first_pair && bl->params.repr.dovi) {
++                MP_INFO(f, "WebHTV FEL pair: BL=%.6f EL=%.6f NLQ=%d "
++                           "software-EL=%d.\n", bl->pts, el->pts,
++                           bl->params.repr.dovi->nlq_active, p->force_swdec);
++                p->log_first_pair = false;
++            }
++            // MEL carries metadata but no residual pixels. Only optimize
++            // this in the new software-EL path; existing paths stay intact.
++            if (bl->params.no_enhancement_layer ||
++                (p->force_swdec && bl->params.repr.dovi &&
++                 !bl->params.repr.dovi->nlq_active)) {
+                 talloc_free(el);
+             } else {
+                 bl->enhancement_layer = el;
+@@ -202,7 +216,8 @@ static const struct mp_filter_info pair_filter = {
+ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+-                                             struct sh_stream *el_sh)
++                                             struct sh_stream *el_sh,
++                                             bool force_swdec)
+ {
+     if (!el_sh)
+         return NULL;
+@@ -214,6 +229,20 @@ struct mp_filter *mp_enhancement_pair_create(struct mp_filter *parent,
+ 
+     struct priv *p = f->priv;
++    p->force_swdec = force_swdec;
++    p->log_first_pair = force_swdec;
++    if (force_swdec) {
++        struct mp_stream_info *parent_info = mp_filter_find_stream_info(f);
++        struct mp_stream_info *info = talloc_zero(f, struct mp_stream_info);
++        if (parent_info)
++            *info = *parent_info;
++        info->force_swdec = true;
++        f->stream_info = info;
++        MP_INFO(f, "WebHTV Android FEL: software enhancement-layer decoder "
++                   "enabled; MediaCodec Surface reserved for BL.\n");
++    }
+     p->el_dec = mp_decoder_wrapper_create(f, el_sh);
+     if (!p->el_dec || !mp_decoder_wrapper_reinit(p->el_dec)) {
+         MP_WARN(f, "Failed to set up enhancement-layer decoder; "
+diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
+--- a/filters/f_decoder_wrapper.c
++++ b/filters/f_decoder_wrapper.c
+@@ -1450,6 +1450,7 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
+             p->stream_info = (struct mp_stream_info){
+                 .dr_vo = sinfo->dr_vo,
+                 .hwdec_devs = sinfo->hwdec_devs,
++                .force_swdec = sinfo->force_swdec,
+             };
+         }
+ 
+diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -748,7 +748,10 @@ static void select_and_set_hwdec(struct mp_filter *vd)
+                          "output.\n");
+             ctx->force_eof = true;
+-        } else if (ctx->hwdec_opts->software_fallback == INT_MAX) {
++        // An explicitly software-only EL is not a failed BL hardware
++        // decoder. Keep WebHTV's disabled BL fallback policy intact.
++        } else if (!ctx->force_swdec &&
++                   ctx->hwdec_opts->software_fallback == INT_MAX) {
+             MP_WARN(ctx, "Software decoding fallback is disabled.\n");
+             ctx->force_eof = true;
+         } else {
+@@ -1489,7 +1489,7 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+         do {
+             force_fallback(vd);
+-        } while (!ctx->avctx);
++        } while (!ctx->avctx && !ctx->force_eof);
+ 
+         ctx->requeue_packets = pkts;
+         ctx->num_requeue_packets = num_pkts;
+@@ -1619,6 +1619,18 @@ static struct mp_decoder *create(struct mp_filter *parent,
+                                  const char *decoder)
+ {
++    struct mp_stream_info *info = mp_filter_find_stream_info(parent);
++    // Wrapper decoders such as hevc_mediacodec bypass hwaccel selection.
++    // Do not even look them up on the unchanged, non-forced path.
++    if (info && info->force_swdec) {
++        const AVCodec *lavc_codec = avcodec_find_decoder_by_name(decoder);
++        if (lavc_codec && (lavc_codec->capabilities &
++                          (AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_HYBRID)))
++            return NULL;
++    }
++
+     struct mp_filter *vd = mp_filter_create(parent, &vd_lavc_filter);
+     if (!vd)
+         return NULL;
+@@ -1647,7 +1659,6 @@ static struct mp_decoder *create(struct mp_filter *parent,
+     mp_mutex_init(&ctx->dr_lock);
+ 
+     // hwdec/DR
+-    struct mp_stream_info *info = mp_filter_find_stream_info(vd);
+     if (info) {
+         ctx->hwdec_devs = info->hwdec_devs;
+         ctx->vo = info->dr_vo;

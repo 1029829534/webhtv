@@ -10,6 +10,7 @@ MPV_DISC_INPUT_PATCH="$ROOT/third_party/mpv-player-jni/patches/mpv-discnav-input
 MPV_DISC_POLL_PATCH="$ROOT/third_party/mpv-player-jni/patches/mpv-discnav-poll.patch"
 LIBBLURAY_HDMV_INPUT_PATCH="$ROOT/third_party/mpv-player-jni/patches/libbluray-hdmv-input.patch"
 MPV_DOVI_SURFACE_PATCH="$ROOT/third_party/patches/mpv-android-dovi-el-surface.patch"
+MPV_ANDROID_FEL_PATCH="$ROOT/third_party/patches/mpv-android-fel.patch"
 MPV_DOVI_HDR10_BL_PATCH="$ROOT/third_party/patches/mpv-dovi-profile7-hdr10-base-layer.patch"
 MPV_DOVI_P81_PATCH="$ROOT/third_party/patches/mpv-dovi-profile7-p81.patch"
 MPV_DOVI_P8_HDR10_PATCH="$ROOT/third_party/patches/mpv-dovi-profile8-hdr10-base-layer.patch"
@@ -647,6 +648,10 @@ prepare_sources() {
   [ -f "$MPV_P1_HLS_EDITION_PATCH" ] || die "missing MPV HLS edition patch: $MPV_P1_HLS_EDITION_PATCH"
   git -C "$deps/mpv" apply --check "$MPV_P1_HLS_EDITION_PATCH"
   git -C "$deps/mpv" apply "$MPV_P1_HLS_EDITION_PATCH"
+  [ -f "$MPV_ANDROID_FEL_PATCH" ] || die "missing MPV Android FEL patch: $MPV_ANDROID_FEL_PATCH"
+  git -C "$deps/mpv" apply --check --recount "$MPV_ANDROID_FEL_PATCH"
+  git -C "$deps/mpv" apply --recount "$MPV_ANDROID_FEL_PATCH"
+  python3 "$ROOT/scripts/verify_mpv_fel_contract.py" --mpv-source "$deps/mpv"
 }
 
 patch_dynamic_names() {
@@ -719,6 +724,9 @@ verify_directory() {
   grep -Fq "v$LIBPLACEBO_VERSION" <<<"$version_strings" || die "unexpected libplacebo version in $directory/libmpv.so"
   grep -Fq "WebHTV stream_cb controls enabled" <<<"$version_strings" || die "MPV stream_cb disc controls patch missing from $directory/libmpv.so"
   grep -Fq "disc-menu-active" <<<"$version_strings" || die "MPV HDMV disc navigation patch missing from $directory/libmpv.so"
+  grep -Fq "android-dovi-fel" <<<"$version_strings" || die "MPV opt-in FEL option missing from $directory/libmpv.so"
+  grep -Fq "WebHTV Android FEL: software enhancement-layer decoder" <<<"$version_strings" || die "MPV software EL decoder patch missing from $directory/libmpv.so"
+  grep -Fq "WebHTV FEL GPU input: matched EL uploaded with active NLQ." <<<"$version_strings" || die "MPV FEL GPU input diagnostics missing from $directory/libmpv.so"
   grep -Fq "discnav" <<<"$version_strings" || die "MPV discnav command missing from $directory/libmpv.so"
   grep -Fq "Vulkan AImageReader backend:" <<<"$version_strings" || die "MPV Vulkan AImageReader backend missing from $directory/libmpv.so"
   grep -Fq "Using Vulkan YCbCr AHardwareBuffer sampling" <<<"$version_strings" || die "MPV direct Vulkan AHardwareBuffer sampling missing from $directory/libmpv.so"
