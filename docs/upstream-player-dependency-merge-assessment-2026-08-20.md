@@ -2,7 +2,9 @@
 
 ## Recovery anchor
 
-- 最新状态（2026-09-12）：用户明确要求先提交当前pure-BL候选并打恢复tag；日志39严重卡顿、日志40仍解码失败，可靠性/性能验收未通过。旧 `checkpoint/dv7-fel-pure-bl-20260912` 不含候选修改；以本次guard生成的新提交及recovery tag为候选恢复点，不推送。下一步对照日志39/40，详见P2-4任务文档顶部最新记录；下方“待实播/未提交”是此前状态。
+- 最新状态（2026-09-13）：上轮失败候选已完整提交为`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`，tag为`recovery/P2-4-fel-reliability/20260912214750-cbb02fa4c40a`，未推送；日志39/40否决其可靠性/性能验收。active guard `P2-4-fel-buffer-progress`已按P2-4第9.11节实现BL生产者发布前暂存/源归还及BL/EL耗时日志；保留FFmpeg/既有超时保护、EL/RPU/10bit与默认路径。定向host测试、两ABI构建/ELF/公开导出通过，仅两libmpv变化/18依赖不变，两个debug APK各10库及v2签名通过；本轮未提交/tag，未安装到目标电视。唯一下一步：安装SHA256=`26a03ee980a26f900dbd79d6fc0b6c0cc03759f2b91829e52d24df014cae9ef8`的32位候选，同一GIJoe样片重复启动3次、完整57秒和seek/退出，按新交接/耗时日志判断根因。不能称已解决卡死/掉帧。
+
+### 此前恢复记录（历史；当前状态以上方与P2-4第9.11节为准）
 
 - 当前分支：`feature/mpv-dv7-fel`。
 - 当前实施基线：`792c1f880bc151eb1cb6675034ec144aadc14766`（2026-09-12，用户要求保存的已知问题快照）。
@@ -17,7 +19,7 @@
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
-| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志38后pure-BL/RPU分离候选的host/两ABI/两APK已通过；目标电视待实播，未提交可靠性单元 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
+| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志39/40否决pure-BL候选；第9.11节生产者交接修正的host/两ABI/两APK通过，新候选待目标电视验收，本单元未提交 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |
 
 ## Checkpoint 55：2026-09-06 P9 HDMV 菜单实施启动

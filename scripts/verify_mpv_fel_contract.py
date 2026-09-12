@@ -51,6 +51,12 @@ def main():
         pair = (source / "filters/f_enhancement_pair.c").read_text()
         decoder = (source / "video/decode/vd_lavc.c").read_text()
         renderer = (source / "video/out/vo_gpu_next.c").read_text()
+        wrapper = (source / "filters/f_decoder_wrapper.c").read_text()
+        output = wrapper[wrapper.index("output_frame:\n", wrapper.index("static void read_frame(")):]
+        require(output.index("stage_fel_before_publish(p, frame)") < output.index("mp_pin_in_write(pin, frame)"),
+                "FEL BL must return its source before publishing to the decoder queue")
+        require("mp_android_fel_staging_ready(image->android_fel_staging->data)" in wrapper,
+                "a render request or texture handle alone is not completed GPU staging")
         require("#define PTS_MATCH_TOLERANCE 1e-6" in pair and "#define QUEUE_MAX 16" in pair,
                 "keep the upstream bounded PTS matching contract")
         require("p->el_eof" in pair and "static void pair_reset" in pair,

@@ -266,7 +266,9 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 日志36后曾用`dovi_split=bl_rpu`隔离EL；日志38证明全部6帧暂存归还后仍停止，不能把该版本称已修复。当前FEL候选只为Profile 7 FEL的MediaCodec BL使用已有`dovi_split=bl`，硬件输入不含RPU/EL，私有decoder context和packet移除DOVI/HEVC EL配置；共享demux/codec及独立软件EL/RPU不变。现有PTS配对函数从EL继承原始DV映射，GPU仍执行FEL重建。独立packet ref承接BSF所有权，支持EAGAIN重试/seek清理，错误失败关闭，旧模式不扫描码流；不增加公开符号、依赖或JNI变更，仅两ABI mpv增量重建。host测试涵盖真实BSF格式/所有权/输入载荷、软件EL逐帧RPU/PTS/NLQ和实际继承函数（第二参数传GIJoe Profile 7样片路径；需本机FFmpeg开发库和pkg-config）。`WebHTV FEL BL input isolation: pure-bl`、`RPU-source=EL`、配对RPU来源/缺失统计和fatal同行`BL-input={...}`供无ADB电视取证。此候选仍需电视实播，不能据host/编译通过宣称已稳定。
 
-当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 为准。本次可靠性续修只替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16个MPV资产必须与本单元基线逐字节相同。
+日志39/40否决pure-BL候选的可靠性与实时性能。生产者交接续修在独立BL worker发布硬件帧前，通过已有非阻塞VO暂存接口等待GPU完成且AImage归还；共享AVBuffer原子标记保证源归还先于发布及下一次decode，2ms轮询、750ms总界限，不新增App/core同步等待。缓存命中继续推进fence，FEL mapper保持raw-YUV存储以兼容稍后从EL继承RPU，不增加第二次像素拷贝或降位深。`WebHTV FEL producer handoff`和`WebHTV FEL decoder cost`记录交接及BL/EL耗时；非FEL不进入新增计时路径。`fel_producer_handoff_test.c`直接编译生产函数体验证有限输出进展与所有权顺序，仍不能替代电视验收。
+
+当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.11节为准。早先NODE可靠性单元相对其基线替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16库不变；当前生产者交接单元以`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）逐字节不变**。双ABI、ELF/导出、两debug APK逐库及v2签名已验证；默认路由未改，新FEL候选的目标电视画质、可靠性、性能与生命周期仍待实播，不标记任务完成。
 
 ## 提交前验证
 

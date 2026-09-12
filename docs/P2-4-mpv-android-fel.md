@@ -2,9 +2,15 @@
 
 ## Recovery anchor
 
-- 最新用户决定（2026-09-12 21:47，Asia/Shanghai）：明确要求将当前已测试的最新工作区代码提交并打tag作为恢复点。日志39反馈严重卡顿，日志40反馈仍会解码失败；本次是用户指定的失败候选快照，不代表播放/性能验收通过。此前 `checkpoint/dv7-fel-pure-bl-20260912` 仅指向旧HEAD，不包含本候选，保留但不能用它恢复当前测试包对应源码。
-- 当前动作：结束现有 `P2-4-fel-reliability` guard，原子提交任务拥有的源码、补丁、资产、测试与文档，并立即创建新的 annotated recovery tag；不推送。已有host、双ABI/ELF及APK验证见9.10节，不能替代电视验收。
-- 快照后的唯一下一步：对照用户提供的日志39与40，定位pure-BL候选的持续解码失败和卡顿；后续修复另开guard，保留原 `app/.cxx/` 受保护内容。
+- 当前基线：用户明确指定的失败候选快照已经提交为 `cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`，恢复tag为 `recovery/P2-4-fel-reliability/20260912214750-cbb02fa4c40a`。包含第9.10节最新源码、补丁与native资产；未推送。此前 `checkpoint/dv7-fel-pure-bl-20260912` 只指向旧HEAD，不能恢复该测试候选，不移动它。
+- 本轮（2026-09-12 21:52起，Asia/Shanghai）：用户授权继续分析修复；新guard为 `P2-4-fel-buffer-progress` / `upstream`，保护原 `app/.cxx/` 35个文件。只允许FEL补丁、定向测试/校验脚本、两份libmpv和原任务/构建文档；不改JNI、FFmpeg、libplacebo、Exo、音频或光盘功能。
+- 新证据：日志39一轮6帧后失败，另一轮持续配对1030帧但约13fps、A/V偏差达数秒；日志40两轮分别13/6帧后4003。均pure-bl生效，已配对RPU全部来自EL且无缺失，所有已提交GPU拷贝在最终统计中完成；这否决了“纯BL输入已经解决停滞”。根因不能仅由最终统计反推第一次端口超时前的持有顺序。
+- 实施状态：第9.11节候选已写入FEL补丁/构建缓存；`f_decoder_wrapper.c::stage_fel_before_publish`在独立BL worker调用现有非阻塞VO暂存，并有界等待共享租约的source-returned原子标记；`finish_output`在GPU fence完成且AImage归还后置位，缓存命中也轮询完成；`hwdec_reconfig`维持raw-YUV存储、显示时恢复实际帧表示。新增生产者/BL/EL耗时日志，旧模式不调用计时器。未改变FFmpeg/JNI/依赖锁或默认路由。
+- 已验证：2026-09-12 22:41定向host测试通过，新测试编译实际生产者交接、GPU完成/缓存命中函数，在单可用输出模型下连续120帧、source-returned顺序、750ms超时和准入隔离通过；受影响core/VO/lookahead/seek/reset/lease/crop/RPU缓存测试及静态接线通过。随后双ABI增量构建、ELF/公开导出通过，仅两份libmpv变化，其余18库（含JNI）字节一致。2026-09-13两个debug包构建通过（Gradle 1m29s），各10个MPV资产逐一匹配且v2签名通过。证据`/private/tmp/webhtv-fel-handoff.hU4yvh/`；不能据此宣称电视问题修复。
+- 当前候选：电视32位APK SHA256=`26a03ee980a26f900dbd79d6fc0b6c0cc03759f2b91829e52d24df014cae9ef8`，手机64位=`6ca4cec6f2c5a5c8b73bd2dc311c1be5fb6266078b49887a6b581f2a3e5dad99`。完整路径、native/补丁身份和验证见9.11节。本轮修改未提交/tag，guard仍active；此前用户明确要求的失败快照tag保持不变。电视无ADB，未安装或验证新候选。
+- 唯一下一步：电视安装本节32位APK，保持「FEL双层重建」并使用同一GIJoe样片，至少重复起播3次、完整播放57秒并seek/退出；用App调试日志的`WebHTV FEL producer handoff`、`WebHTV FEL decoder cost`及GPU/配对统计确认是否仍停滞和是否达到实时。如果仍失败且源已在发布前归还，不再重复调队列/超时，须按新证据更换根因路线。
+
+### 此前恢复记录（历史，9.10及以前；不代表当前候选）
 
 - 目标：在 MPV「播放性能 → DV7处理」增加 **FEL 双层重建**，仅手动选择时允许 BL 硬解 + EL 软解 + libplacebo GPU 重建；默认值与现有模式不变。
 - 授权：2026-09-12 用户批准新分支实施、去掉名称中的“（实验）”，要求保护既有功能和性能、后续无需逐步确认；08:56 用户进一步批准第 8 节最佳实践方案实施。未授权推送。
@@ -604,3 +610,58 @@ Gradle 使用 `JAVA_HOME=/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/
 | 手机 `app-mobile-arm64_v8a-debug.apk` | 151588356 | `463543f9a1e044c250d23236f49d12ae98756bb71adc13bd2b2d52846256bf06` |
 
 最终输入：FEL patch=`563608db9d4e1c08aedab1ebe967bff0ecc5a564ddb2521e4692d53fa4dacff8`；host脚本=`776b1aad53c7e926ccc0a899f02cb4b8845d84749412d386caa4f1daa831d9f0`；native验证脚本=`a3bb7cb1f50c28633acf80694b27ed5281eb48e26bb14f37c50bbd6fd77e65e3`；native lock仍为`a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159`。未提交/tag/push；只有电视新候选的持续播放、画质/吞吐/seek/退出通过，才能关闭可靠性单元。
+
+### 9.11 日志39/40：生产者与消费者交接窗口
+
+- 日志39：`p-wwfrl3-1`从56.139秒开始，BL输入12包/输出6帧后4003；`p-wwgd7y-2`从8.800秒开始，21:33:45.379配对55帧，到21:34:58.380配对1019帧，73.001秒推进964帧（约13.2fps，片源23.976fps），21:34:59.196 GPU完成1030/1030，累计CPU等待GPU拷贝23741517微秒，最大84306微秒。`mpv-frame-timing out`为VO丢帧计数而非已呈现帧数，末尾615；A/V偏差曾9047毫秒，不能称正常掉帧。
+- 日志40：`p-wwlxdc-7`从34.576秒开始，输入19包/输出13帧、core暂存13/13，core out=0后4003；`p-wwmg05-8`从7.299秒开始，输入12包/输出6帧、暂存6/6，core out=1后4003。两轮GPU均完成且无fence timeout；解码器都是`c2.mtk.hevc.decoder`，GPU是Mali-G57。没有证据证明电视不支持基础层硬解。
+
+#### 决策依据（2026-09-12，只读来源修订不变）
+
+| 来源 | 等级、已读事实 | 本轮影响与限制 |
+| --- | --- | --- |
+| Android MediaCodec DataProcessing官方文档，见9.10节URL及保存的`research38-android-mediacodec.html`第33813–33817行 | A；设备可能在任何一个输入/输出未归还时停止产生新输出 | 要约束的是调用下一次解码时的真实所有权，不能只看销毁时统计；不证明这台MTK的唯一内部根因 |
+| mpv固定`cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`加当前补丁：`f_decoder_wrapper.c::read_frame/decf_process`、`player/video.c::video_output_image`、`vo.c::vo_prepare_fel_frame` | A；worker输出BL后可继续decode，而暂存发生在下游配对/core；异步队列limit=1并不等于上一帧已归还 | 确认有未覆盖的生产者/消费者时序窗口；现有host测试只覆盖core/VO侧，尚未测试这个交接契约 |
+| FFmpeg固定`177f090e0503b7e013922ca903bde14b1c375f18`加既有端口保护：`mediacodec_receive_frame`、`av_mediacodec_release_buffer_status` | A；双端口不可用在一次调用内等待并750ms返回错误；render时降低hw_buffer_count，但GPU copy后的AImage归还是另一阶段 | 保留保护，不用增大超时或无限重试掩盖；本轮不修改FFmpeg |
+| GStreamer `46db8717ba577a8f83f31ae984da5c7e689f9728`，`gst_v4l2_buffer_pool_process` capture分支（保存源码2035–2117行） | A/B；有限捕获池不足时，在交出下游前深拷贝并归还原buffer | 借鉴“在生产者输出边界脱离硬件池”的原则，不复制Linux/CPU-copy实现；继续复用既有GPU raw-YUV copy |
+| VLC `d543b35ad1d3483cc365630ad5fc7876342f0fab`输出线程、Nova未合并PR#7 `cbd1feb7d4ef2eb178896c7dc20606d961b27c6c`输入/拷贝队列 | B/C；独立硬件输出归还与后续显示解耦 | 作为既有跨项目旁证，不照搬整体播放器/CPU readback，不把未合并项目称成熟FEL实现 |
+| Media3 #3347、Android/Bigflake回压技术资料，沿用9.10与8节记录 | B/C；同设备硬解迟到可受应用调度影响；改drop阈值不等于修复吞吐 | 本轮不改drop阈值。论文不适合作为这个API所有权缺口的判定依据；不引入新的算法或泛搜论文 |
+
+比较：不改已重复失败；原样upstream异步队列仍不能约束设备持有；整体移植VLC/Nova或重写FFmpeg超出最小修复；采用WebHTV窄适配，在FEL硬件BL的worker输出边界完成GPU暂存/源归还后才发布帧。EL继续独立软件解码，GPU仍在现有VO线程运行，配对/RPU/显示时序不变。复用原有GPU缓存，不增加第二次像素拷贝。同步仅发生在独立BL worker，不将新的同步等待放到App主线程或mpv core；最坏GPU/驱动挂死仍依赖已有独立恢复机制，不承诺消除系统级挂死。
+
+实现要点：使用现有共享AVBuffer租约的一字节原子完成标记，初始为0，仅在GPU fence完成且AImage归还后发布1；VO缓存命中也推进未完成fence，重试有界。暂存发生在EL RPU继承前，因此mapper的FEL raw-YUV存储契约须与逐帧RPU无关，不能先做HDR10转RGB，也不能因后续继承RPU而销毁暂存像素；渲染时恢复实际帧的表示/显示参数。旧模式、EL软件路径和不支持该暂存的mapper维持原路由。
+
+验收：生产者不会在未归还上一已输出硬件帧时进入下一decode；真实GPU像素未完成不能提前标记；共享引用/超时/取消/缓存命中/无FEL/软件EL/非MC隔离由定向测试覆盖；实际mapper函数确认RPU继承前后复用缓存且保留10bit、range、裁剪/旋转、HDR/RPU。仅新测试与受影响已有测试重跑，然后双ABI/libmpv导出/ELF及目标APK逐库验证。电视至少重复起播3次、完整播放57秒及seek/退出通过，才可宣称可靠性修复；性能先记录生产者暂存耗时，不能用host模拟宣称电视达到实时。
+
+回滚到本轮基线`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`对应FEL补丁和两份libmpv；不回滚此前已保存的保护功能。授权沿用用户持续实施FEL可靠性的明确要求，未增加新产品模式、依赖、JNI/API或其他播放器行为。21:52的总目标22:45–22:55；定位阶段超出原20分钟，原因是最终日志不足以证明首次超时的时序，停止可选研究，只走上述可验证的所有权交接路线。
+
+#### 本机候选交付记录（2026-09-13，尚未电视验收）
+
+- `f_decoder_wrapper.c::stage_fel_before_publish()`在独立BL worker的`output_frame:`发布边界调用已有非阻塞`vo_prepare_fel_frame()`，2ms重试、总界限750ms；不在App/core主线程增加同步dispatch等待，超时沿用失败结束流程。`VO_NOTIMPL`保留原路径。`fel_stage_failed`随reset清除。
+- `filters/f_android_fel.h`以共享AVBuffer的一字节原子ready标记表达源归还。`finish_output()`仅在fence成功且AImage归还后置位，`stable_reuse()`缓存命中以零超时推进fence，不能提前释放硬件buffer。`hwdec_reconfig()`将FEL暂存的存储表示固定为raw YUV，显示前恢复实际表示，避免EL RPU继承前后重新建图或误做HDR10到RGB转换；不伪造RPU、不降位深、不增加第二次像素拷贝。
+- 新`WebHTV FEL producer handoff:`日志记录staged/retries/平均与最大耗时/PTS和`source-returned=1 before-publish=1`；`WebHTV FEL decoder cost:`按BL/EL区分send/receive调用数、解出帧数、累计与最大耗时。首帧/每3秒采样；未选FEL不调用新增计时器。复用App现有调试日志通道，电视不依赖ADB。
+- 2026-09-12 22:55已确认串行双ABI构建、stage和native ELF检查成功。恢复后的旧工具cell不可读取，但持久化校验日志完整，未重编。2026-09-13 02:17恢复时Git/guard一致；Gradle首次受缓存锁文件权限阻止，按授权访问现有缓存后构建成功，未清理缓存或改变受保护CXX目录。旧两个生成APK移至证据目录的`before-handoff-{tv,mobile}.apk`保留，避免增量ZIP空洞；没有删除用户文件。
+
+| 最小验证 | 结果与证据 |
+| --- | --- |
+| 实际生产者、GPU完成及缓存命中函数host ASan/UBSan | `producer-test.log`；单可用输出120帧、fence完成→源归还→发布、750ms超时及准入隔离通过 |
+| 受影响core/VO/lookahead/lease测试 | `core-test.log`；2/6/10帧前视、有限输出进展、异步retry/timeout/reset、preroll EOF、裁剪和RPU前后缓存复用通过 |
+| FEL静态契约/补丁可逆应用及脚本语法 | 通过；`patch-generation.log`及本轮工具记录。Java/JNI未改，保留原JUnit/NODE证据，不重复全量测试 |
+| 双ABI构建、stage、ELF | `arm64-build.log`、`armv7-build.log`、`stage.log`、`native-assets.log`通过；沿用第2节固定lock、NDK r29/API24 |
+| native边界/公开接口 | `native-boundary.log`；相对`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`仅两份libmpv变更，18个依赖及两份JNI不变，公开mpv导出集合一致 |
+| Leanback armv7 + Mobile arm64 debug | `apk-build-authorized.log`；一次调用，1m29s通过。首次沙箱缓存权限失败记录在`apk-build.log`，不属于代码失败 |
+| 两APK各10份MPV资产/v2签名 | `apk-artifacts.log`及`apk-*-signature.log`通过；ZIP结构/签名开销电视802065字节、手机756710字节，无显著增量空洞 |
+| 目标电视重复启动、FEL画质、吞吐、seek/退出 | **未验证**。host模型不模拟真实MTK/GPU调度或像素；此候选不得称可靠性/性能已修复 |
+
+产物与输入身份：
+
+| 文件 | 大小（字节） | SHA256 |
+| --- | ---: | --- |
+| `app/src/arm64_v8a/assets/mpv-libs/arm64-v8a/libmpv.so` | 17781048 | `3c32fc5e436c61f782232c77259fb7662a5f84b7edd4d5cc3a62327829798fa0` |
+| `app/src/armeabi_v7a/assets/mpv-libs/armeabi-v7a/libmpv.so` | 14587580 | `812438797193b6c596b989645d01b166410bc75c7a94412a00ea8bc210a2bb60` |
+| `app/build/outputs/apk/leanbackArmeabi_v7a/debug/app-leanback-armeabi_v7a-debug.apk` | 130456903 | `26a03ee980a26f900dbd79d6fc0b6c0cc03759f2b91829e52d24df014cae9ef8` |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 151588356 | `6ca4cec6f2c5a5c8b73bd2dc311c1be5fb6266078b49887a6b581f2a3e5dad99` |
+| `third_party/patches/mpv-android-fel.patch` | — | `27bba3db80c58e7b9ddc221171d61a9ed76bad070203ff042aa1f9622e527dec` |
+| `third_party/mpv-native-lock.json`（未改） | — | `a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159` |
+
+当前交付仅是用户已批准可靠性修复的测试候选；不finish或创建“验证通过”的commit/tag，不推送。唯一下一步与顶部恢复锚点一致：在目标电视用相同样片验证源归还与下一次decode的顺序、重复启动和持续吞吐。如发布前归还已经生效仍复现，现假设被否决，必须换路线而非继续扩大队列、错误预算或超时。

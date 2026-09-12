@@ -2,6 +2,7 @@
 // cache selection bodies. Only the codec/GPU/platform are deterministic fakes.
 // One available codec output is a regression model, not a measured TV DPB size.
 #include "filters/f_android_fel_trace.h"
+#include "filters/f_android_fel.h"
 #include <libavutil/buffer.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #define MP_WARN(...) ((void)0)
 enum { VO_TRUE = 1, VO_FALSE = 0, VO_ERROR = -1, VO_NOTIMPL = -3 };
 enum { IMGFMT_MEDIACODEC = 1, IMGFMT_YUV420P10 = 2 };
+enum { PL_COLOR_SYSTEM_DOLBYVISION = 7 };
 enum { VO_CAP_NORETAIN = 1, VO_CAP_UNTIMED = 2, VO_CAP_GPU_DOVI_EL_SW = 4 };
 enum { VOCTRL_PREPARE_FEL_FRAME = 1, STATUS_SYNCING = 1 };
 enum { VD_ERROR = -1, VD_EOF = 0, VD_PROGRESS = 1, VD_NEW_FRAME = 2, VD_WAIT = 3 };
@@ -247,6 +249,8 @@ static void stage_image(struct mp_image *image)
     cache.outputs[slot].source_frame = mp_image_new_ref(image);
     cache.output_index = slot;
     release_codec(image);
+    if (image->android_fel_staging)
+        mp_android_fel_staging_complete(image->android_fel_staging->data);
 }
 static int control(struct vo *v, int request, void *data)
 {
@@ -462,6 +466,13 @@ static void test_leases_and_crop(void)
     params.rotate = 90; params.vflip = true; params.p_w = 2;
     CHECK(hwdec_reconfig(&p, &mapper, &timer, &hwdec, &params));
     CHECK(mapper_creations == 1); // display geometry cannot discard staged pixels
+    CHECK(mapper->src_params.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION);
+    // The producer stages pure BL. Inheriting EL RPU must not invalidate pixels.
+    params.repr.sys = PL_COLOR_SYSTEM_DOLBYVISION;
+    params.repr.dovi = &params;
+    params.color.hdr = 500;
+    CHECK(hwdec_reconfig(&p, &mapper, &timer, &hwdec, &params));
+    CHECK(mapper_creations == 1 && mapper->dst_params.repr.dovi == &params);
     struct mp_image display = {.imgfmt = IMGFMT_MEDIACODEC, .params = params};
     struct mp_image_params storage = mapper->dst_params;
     struct mp_rect storage_crop = storage.crop;
@@ -470,6 +481,9 @@ static void test_leases_and_crop(void)
     CHECK(storage.rotate == 90 && storage.vflip && storage.p_w == 2);
     CHECK(storage.imgfmt == IMGFMT_YUV420P10 && storage.w == 3840);
     CHECK(!memcmp(&storage.crop, &storage_crop, sizeof(storage_crop)));
+    display.params.repr.sys = 3; // BL-only interpretation without synthetic RPU
+    restore_fel_display_params(&vo, &display, &storage);
+    CHECK(storage.repr.sys == 3);
     params.w = 1920;
     CHECK(hwdec_reconfig(&p, &mapper, &timer, &hwdec, &params));
     CHECK(mapper_creations == 2); // actual pixel format is never ignored

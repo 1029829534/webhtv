@@ -214,6 +214,8 @@ verify_abi() {
   contains_string "$directory/libmpv.so" "WebHTV FEL pipeline:"
   contains_string "$directory/libmpv.so" "WebHTV FEL dropped-frame staging:"
   contains_string "$directory/libmpv.so" "WebHTV FEL BL input isolation: pure-bl;"
+  contains_string "$directory/libmpv.so" "WebHTV FEL producer handoff:"
+  contains_string "$directory/libmpv.so" "WebHTV FEL decoder cost:"
   contains_string "$directory/libmpv.so" "BL-input={isolated="
   contains_string "$directory/libplayer.so" "eventPropertyNode"
   contains_string "$directory/libplayer.so" "bounded NODE snapshot rejected"

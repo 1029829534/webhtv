@@ -52,6 +52,19 @@ awk '
     -x c - $(pkg-config --libs libavutil) -o "$test_output/fel-core-preload-test"
 "$test_output/fel-core-preload-test"
 awk '
+  /^static bool stage_fel_before_publish\(/ || /^static bool finish_output\(/ ||
+  /^bool aimagereader_vk_stable_reuse\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/filters/f_decoder_wrapper.c" \
+  "$mpv_source/video/out/hwdec/hwdec_aimagereader_vk_stable.c" | \
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Wno-unused-function \
+    -fsanitize=address,undefined -I"$mpv_source" \
+    $(pkg-config --cflags libavutil) \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_producer_handoff_test.c" \
+    -x c - $(pkg-config --libs libavutil) -o "$test_output/fel-producer-handoff-test"
+"$test_output/fel-producer-handoff-test"
+awk '
   /^static void mp_image_destructor\(/ || /^void mp_image_unref_data\(/ ||
   /^static void ref_buffer\(/ || /^struct mp_image \*mp_image_new_ref\(/ ||
   /^struct mp_image \*mp_image_new_dummy_ref\(/ { copying = 1 }
