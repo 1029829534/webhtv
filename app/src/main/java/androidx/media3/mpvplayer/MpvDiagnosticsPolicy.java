@@ -40,6 +40,40 @@ final class MpvDiagnosticsPolicy {
     }
 
     /** Persist startup/failure evidence without waiting for the Android main queue. */
+    static boolean isFatalFelLog(int level, String text) {
+        return level > 0 && level <= 20 && text != null
+                && text.trim().startsWith("WebHTV FEL fatal:");
+    }
+
+    static boolean shouldLogNativeImmediately(int level, String line) {
+        // mpv: fatal=10, error=20, warn=30. In particular "failing hardware
+        // decode" must not disappear just because it doesn't contain "failed".
+        return line != null && !line.isEmpty()
+                && (level > 0 && level <= 30 || shouldLogNativeImmediately(line));
+    }
+
+    static final class NativeLogWindow {
+        private long startMs = -1;
+        private int count;
+        private int suppressed;
+
+        boolean allow(long nowMs, String line) {
+            if (startMs < 0 || nowMs - startMs >= 5000 || nowMs < startMs) {
+                startMs = nowMs;
+                count = 0;
+            }
+            if (++count <= 32 || line.contains("WebHTV FEL fatal:")) return true;
+            suppressed++;
+            return false;
+        }
+
+        int takeSuppressed() {
+            int result = suppressed;
+            suppressed = 0;
+            return result;
+        }
+    }
+
     static boolean shouldLogNativeImmediately(String line) {
         if (line == null || line.isEmpty()) return false;
         String lower = line.toLowerCase(Locale.US);

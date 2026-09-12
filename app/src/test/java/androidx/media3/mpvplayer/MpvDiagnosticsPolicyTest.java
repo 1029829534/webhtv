@@ -3,9 +3,38 @@ package androidx.media3.mpvplayer;
 import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 public class MpvDiagnosticsPolicyTest {
+    @Test
+    public void fatalFelRequiresActualErrorRecordNotQuotedMetadata() {
+        assertTrue(MpvDiagnosticsPolicy.isFatalFelLog(20, "WebHTV FEL fatal: decoder stalled\n"));
+        assertFalse(MpvDiagnosticsPolicy.isFatalFelLog(40, "WebHTV FEL fatal: a file title"));
+        assertFalse(MpvDiagnosticsPolicy.isFatalFelLog(20, "title=WebHTV FEL fatal: movie"));
+        assertFalse(MpvDiagnosticsPolicy.isFatalFelLog(20, null));
+    }
+
+    @Test
+    public void warningSeverityPreservesStarvationAndUnknownWarnings() {
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(30,
+                "MediaCodec input and output ports remained unavailable; failing hardware decode"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(20, "opaque driver diagnostic"));
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately(60, "ordinary per-frame detail"));
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately(30, null));
+    }
+
+    @Test
+    public void repeatedWarningsAreBoundedButFatalDiagnosisSurvives() {
+        MpvDiagnosticsPolicy.NativeLogWindow window = new MpvDiagnosticsPolicy.NativeLogWindow();
+        for (int i = 0; i < 32; i++) assertTrue(window.allow(100, "warning"));
+        assertFalse(window.allow(101, "warning"));
+        assertFalse(window.allow(102, "warning"));
+        assertTrue(window.allow(103, "vd: WebHTV FEL fatal: no progress"));
+        assertEquals(2, window.takeSuppressed());
+        assertEquals(0, window.takeSuppressed());
+        assertTrue(window.allow(5100, "warning"));
+    }
 
     @Test
     public void felReconstructionEvidenceIsPersistedBeforeMainQueue() {

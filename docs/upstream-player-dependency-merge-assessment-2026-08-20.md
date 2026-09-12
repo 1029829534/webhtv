@@ -2,11 +2,13 @@
 
 ## Recovery anchor
 
+- 最新状态（2026-09-12）：用户明确要求先提交当前pure-BL候选并打恢复tag；日志39严重卡顿、日志40仍解码失败，可靠性/性能验收未通过。旧 `checkpoint/dv7-fel-pure-bl-20260912` 不含候选修改；以本次guard生成的新提交及recovery tag为候选恢复点，不推送。下一步对照日志39/40，详见P2-4任务文档顶部最新记录；下方“待实播/未提交”是此前状态。
+
 - 当前分支：`feature/mpv-dv7-fel`。
 - 当前实施基线：`792c1f880bc151eb1cb6675034ec144aadc14766`（2026-09-12，用户要求保存的已知问题快照）。
 - 历史完整评估：已核实仓库历史提交 `9fcab83f9084446566240a8e8f5233d87d0274cc` 中的同名文件可读取；主线提交 `784b90420d646eb6c7ddcc63ad622a92c65b02b4` 删除了根目录本地任务文档，因此本分支只恢复当前实施需要的稳定索引。
-- 当前任务：`P2-4`，电视已复测候选：BL 硬解、首个 FEL/NLQ GPU 输入及音频查询门控有效；仍有 49 次硬解错误和至少 34.661 秒 UI 堵塞。已完成用户要求的定向外部调研，发现本地未覆盖的 mpv #18375 后续修复；真实 FEL/性能仍未验收。
-- 下一步：用户已于 08:56 批准 P2-4 第 8 节方案；先独立保存已验证的日志门控修复，再为异步轨道快照与完整错误透传登记 JNI 等新增作用域。证据、完整提交台账、方案与限制见 [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md)。
+- 当前任务：`P2-4`，日志38两次否决v3候选：core暂存6/6、GPU完成6/6、source-held=0，BL仍12包/6帧后停滞4003；不能再用日志37的第6帧未进入VO解释，见任务第9.10节。
+- 下一步：目标电视安装第9.10节新32位APK（SHA256=`7666ca86315bd107dea68ece38bbaeaed211724142f453ddac7703f2c2fe3955`）进行同样片FEL完整播放/seek/退出，核对pure-bl及RPU来源/缺失。pure-BL候选的120包BL、360帧EL/RPU/NLQ、两ABI/ELF/公开导出及最终紧凑两APK各10库/签名已通过；跨项目研究涵盖FFmpeg/Kodi/VLC/GStreamer/Nova。active guard及HEAD保持，未提交/tag、目标电视未验收。证据和完整台账见 [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md)。
 
 ## 稳定任务 ID 与唯一文档索引
 
@@ -15,7 +17,7 @@
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
-| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 2026-09-12已复测：BL/EL 首对到达 GPU，仍有 native 错误及同步轨道查询 ANR；第 8 节已记录 #18375、Kodi/media-kit、官方资料等调研与窄适配建议，本轮未新改代码；独立退出保护仅评估 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
+| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志38后pure-BL/RPU分离候选的host/两ABI/两APK已通过；目标电视待实播，未提交可靠性单元 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |
 
 ## Checkpoint 55：2026-09-06 P9 HDMV 菜单实施启动

@@ -248,11 +248,25 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 独立补丁 `mpv-android-fel.patch` 在现有补丁序列末尾应用，不升级任何锁定依赖。`android-dovi-fel` 默认关闭；只有 App 手动选择「FEL 双层重建」、识别源 Profile 7 并使用 `gpu-next` 时才开启软件 EL 配对。原 `VO_CAP_GPU_DOVI_EL` Android gate 保留，新增的软件 EL 能力不能启动第二路 MediaCodec。
 
-补丁只适配 `FongMi/mpv@06ec6e1746e5cbdcd271e613fdb1f7f7ecd36042` 的 EL force_swdec 必要接线，不吸收其 Surface/HDR/OSD 重写。保留原 PTS 有界配对与 libplacebo NLQ；显式软件 EL 不受 BL 的 `hwdec-software-fallback=no` 拦截，硬解失败重试也遵守 forced EOF，避免不兼容输出下无限循环。现有 FFmpeg、libplacebo、JNI 与原盘/音频补丁保持原样。
+补丁适配 `FongMi/mpv@06ec6e1746e5cbdcd271e613fdb1f7f7ecd36042` 的 EL force_swdec 必要接线，不吸收其 Surface/HDR/OSD 重写。可靠性续修参考 mpv #18375 的预热/持帧问题，仅在新模式将 BL 待配对/预取限制为1/1、EL为8/4；两路独立有界队列，不能把 `hwdec-extra-frames` 当成 MediaCodec Surface 扩池。保持 PTS/NLQ，连续8次解码错误且无成功帧时结束失败解码，不改变禁止 BL 软回退的策略。现有 FFmpeg、libplacebo、原盘/音频补丁保持原样。
 
-本阶段使用同锁温缓存，只重编两 ABI 的 `mpv`：`buildall.sh -n --arch arm64 mpv` 与 `--arch armv7l mpv`，随后 `scripts/build_mpv_native.sh --abi all --stage-only --install`。不得跳过实际编译而仅复制旧 prefix。`scripts/verify_mpv_fel_contract.py --mpv-source <已应用补丁的源码>` 校验 opt-in/软解/默认隔离契约；资产校验同时要求 FEL option、EL 软件解码和 GPU NLQ 输入标记。标记检查不代表真机重建/性能验收通过。
+日志31进一步暴露配对之外的图像持有：FEL 的 Vulkan auto/direct 实例内部改用既有 stable 原始YUV暂存池，不写回用户后端设置，也不改变非FEL选择。暂存至少10-bit，不允许8-bit降级；GPU复制提交后以最多100ms的有界fence等待尝试及时归还AImage，超时仍保留图像所有权，不提前释放或CPU回读。`WebHTV FEL GPU staging`和`WebHTV FEL GPU pool`将实际后端、提交/完成、仍持有图像、位深与等待时间写入App调试日志；旧的direct/fence实现不改。该适配增加新FEL模式的GPU拷贝/显存需求，实际花屏、持续播放和性能仍需电视验证。
 
-当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 为准。只会替换两 ABI 的 `libmpv.so`，其他 18 个 MPV 资产（含两个 `libplayer.so`）必须与基线逐字节相同。
+本阶段使用同锁温缓存，只重编两 ABI 的 `mpv`：**串行**执行 `buildall.sh -n --arch arm64 mpv` 与 `--arch armv7l mpv`（当前脚本会修改共享 `meson.build` 的 iconv 路径，不能并行），随后 `scripts/build_mpv_native.sh --abi all --stage-only --install`。可靠性续修还修改 canonical JNI 的 NODE 回调，必须 `scripts/build_mpv_player_jni.sh --abi all --install` 重建 `libplayer.so`，使 Java 和二进制成套交付。NODE 序列化有深度、节点及字节限制，轨道/章节通过订阅快照传递，缺值不回退逐项 JNI 查询；不改现有串行 mutation/Surface/shutdown 队列。
+
+不得跳过实际编译而仅复制旧 prefix。`scripts/test_mpv_fel_contract.sh` 执行 NODE 与 FEL 策略的 host ASan/UBSan 检查及生产 patch 静态契约；`scripts/verify_mpv_native_assets.sh --require-elf` 额外要求队列/失败与 JNI NODE 标记。它们不代表真机重建、画质、性能或恢复页生命周期验收通过。
+
+日志31续修未再改JNI，因此复用本单元已经编译和验证的两份`libplayer.so`，只需重编两份`libmpv.so`后重新打APK；不能为未改变的FFmpeg/libplacebo或JNI重复全链构建。
+
+日志32续修切断FEL只读状态查询的native循环等待：`hwdec-current`通过wrapper缓存读取，包含真实探测可用状态和独立名称副本；不得调用decoder dispatch锁等待硬解端口。缓存先于async producer的帧发布更新，seek/reinit使旧状态失效；仅FEL的固定container FPS也不取decoder锁。修改型控制仍同步，普通模式不变。`WebHTV FEL status snapshot`输出查询次数、发布序号和可用状态，便于在不能ADB的电视上辨别新路径；host回归直接编译生产wrapper函数，以禁止decoder等待的stub验证读路径，并检查旧模式/重置型控制仍同步。此轮同样仅重编mpv，不改JNI、FFmpeg、libplacebo。
+
+日志33确认上述状态快照已生效但连续播放仍失败，不能把它当作完整根因。新增`WebHTV FEL pipeline diagnostics v=1`：每个VO实例用always-lock-free原子值记录core/BL/EL/VO当前步骤和阶段起点，另外记录收发计数及VO请求帧预算；只在原fatal错误内格式化`WebHTV FEL pipeline:`，不逐帧输出、不同步查询native、不新增线程，不改变解码/渲染/超时策略。该消息复用App的fatal限流豁免，电视没有ADB也可从调试日志取证。host C测试直接编译生产header，覆盖禁用、时钟回绕、缓冲截断及并发；两ABI都必须通过lock-free编译断言和新标记校验。
+
+日志35暴露VO丢帧接线缺口：核心持有未来帧等待第二帧，VO已空闲，但丢帧分支跳过了原本在`draw_frame`中的Surface暂存。FEL+MediaCodec+gpu-next现在通过内部`VOCTRL_PREPARE_FEL_FRAME`在丢弃显示时仍准备当前/未来帧，映射在VO锁外执行，复用既有GPU缓存，不做EL合成或呈现；暂时未就绪请求保留帧重绘，永久失败报告backend error。核心双帧时序、插帧设置及正常/非FEL路径不变。`WebHTV FEL dropped-frame staging`和fatal快照中的`surface-drops/drop-prepared/drop-retries`用于电视验证，fatal与pipeline放在同一物理行保证限流豁免。真实`render_frame()`/暂存函数的host有限缓冲测试证明旧代码停滞、新代码可归还输出；这仍不是电视持续播放验收。
+
+日志36后曾用`dovi_split=bl_rpu`隔离EL；日志38证明全部6帧暂存归还后仍停止，不能把该版本称已修复。当前FEL候选只为Profile 7 FEL的MediaCodec BL使用已有`dovi_split=bl`，硬件输入不含RPU/EL，私有decoder context和packet移除DOVI/HEVC EL配置；共享demux/codec及独立软件EL/RPU不变。现有PTS配对函数从EL继承原始DV映射，GPU仍执行FEL重建。独立packet ref承接BSF所有权，支持EAGAIN重试/seek清理，错误失败关闭，旧模式不扫描码流；不增加公开符号、依赖或JNI变更，仅两ABI mpv增量重建。host测试涵盖真实BSF格式/所有权/输入载荷、软件EL逐帧RPU/PTS/NLQ和实际继承函数（第二参数传GIJoe Profile 7样片路径；需本机FFmpeg开发库和pkg-config）。`WebHTV FEL BL input isolation: pure-bl`、`RPU-source=EL`、配对RPU来源/缺失统计和fatal同行`BL-input={...}`供无ADB电视取证。此候选仍需电视实播，不能据host/编译通过宣称已稳定。
+
+当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 为准。本次可靠性续修只替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16个MPV资产必须与本单元基线逐字节相同。
 
 ## 提交前验证
 
