@@ -39,6 +39,26 @@ final class MpvDiagnosticsPolicy {
         return SENSITIVE_HEADER.matcher(safe).replaceAll("$1=<redacted>");
     }
 
+    /** Persist startup/failure evidence without waiting for the Android main queue. */
+    static boolean shouldLogNativeImmediately(String line) {
+        if (line == null || line.isEmpty()) return false;
+        String lower = line.toLowerCase(Locale.US);
+        return lower.contains("webhtv android fel:")
+                || lower.contains("webhtv fel ")
+                || lower.contains("dolby vision")
+                || lower.contains("dovi")
+                || lower.contains("nlq")
+                || lower.contains("mediacodec started successfully")
+                || lower.contains("using hardware decoding")
+                || lower.contains("using software decoding")
+                || lower.contains("decoder format:")
+                || lower.contains("device name:")
+                || lower.contains("vo: [gpu-next]")
+                || lower.contains("error")
+                || lower.contains("failed")
+                || lower.contains("invalid");
+    }
+
     private static String scheme(String value) {
         int colon = value.indexOf(':');
         if (colon <= 0) return "";

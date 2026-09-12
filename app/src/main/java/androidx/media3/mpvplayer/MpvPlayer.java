@@ -203,7 +203,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private Object videoOutput;
     private MpvLutShader lutShader;
     private String currentPlayableUri;
-    private String playbackTraceId = PlaybackTrace.NONE;
+    private volatile String playbackTraceId = PlaybackTrace.NONE;
     private volatile PlaybackResourceClassifier.Classification resourceClassification;
     private String currentIsoUri;
     private boolean discMenuActive;
@@ -253,7 +253,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private boolean repeatOne;
     private boolean ownsSurface;
     private boolean initialized;
-    private boolean released;
+    private volatile boolean released;
     private boolean surfaceAttached;
     private boolean osdSurfaceAttached;
     private boolean osdSurfaceRequested;
@@ -354,6 +354,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private volatile boolean mainThreadWatchdogRunning;
     private volatile long mainThreadHeartbeatPostedAtMs;
     private volatile long lastMainThreadStallLogAtMs;
+    private long lastNativeLogQueueWarningAtMs;
     private volatile long activeMpvNativeCallStartedAtMs;
     private volatile String activeMpvNativeCallKind = "";
     private volatile String activeMpvNativeCallTarget = "";
@@ -1242,15 +1243,33 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     public void logMessage(String prefix, int level, String text) {
+        if (released) return;
+        String line = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text);
+        String traceId = playbackTraceId;
+        boolean debug = SpiderDebug.isEnabled();
+        boolean loggedImmediately = debug && MpvDiagnosticsPolicy.shouldLogNativeImmediately(line);
+        long enqueuedAtMs = debug ? SystemClock.elapsedRealtime() : 0;
+        // This callback must never call MPV. Record essential native evidence before
+        // a stalled UI can delay it; playback state is still confined to the main thread.
+        if (loggedImmediately) PlaybackTrace.log("mpv-native", traceId, "%s", line);
         postToMain(() -> {
             if (released) return;
-            String line = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text);
+            if (enqueuedAtMs > 0) {
+                long nowMs = SystemClock.elapsedRealtime();
+                long delayMs = Math.max(0, nowMs - enqueuedAtMs);
+                if (delayMs >= MAIN_THREAD_STALL_THRESHOLD_MS
+                        && nowMs - lastNativeLogQueueWarningAtMs >= MAIN_THREAD_STALL_LOG_INTERVAL_MS) {
+                    lastNativeLogQueueWarningAtMs = nowMs;
+                    PlaybackTrace.log("mpv-anr", traceId,
+                            "native-log-queue delay=%dms level=%d", delayMs, level);
+                }
+            }
             rememberLog(line);
             markFailureSignal(line);
             maybeRetryDtsHdAsCore(line);
             String lower = line.toLowerCase(Locale.US);
             if (lower.contains("sub") || lower.contains("font") || lower.contains("track switched") || lower.contains("mkv: select track")) appendSubtitleDiagnostic("native " + line);
-            if (shouldDebugLogMpvLine(line)) PlaybackTrace.log("mpv", playbackTraceId, "%s", line);
+            if (!loggedImmediately && shouldDebugLogMpvLine(line)) PlaybackTrace.log("mpv", traceId, "%s", line);
         });
     }
 
@@ -1272,6 +1291,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             loadStartRetryCount = 0;
             videoReconfigCount = 0;
             lastVideoSizeCandidateLog = null;
+            lastNativeLogQueueWarningAtMs = 0;
             eofReached = false;
             idleActive = false;
             cachedDurationMs = C.TIME_UNSET;
@@ -5154,10 +5174,15 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void maybeRetryDtsHdAsCore(String line) {
         if (!initialized || mediaItem == null || !loadStarted) return;
-        String audioFormat = firstNonEmpty(cachedAudioFormat,
-                stringProperty("audio-params/format", ""));
-        String codecProfile = firstNonEmpty(cachedAudioCodecProfile,
-                stringProperty("current-tracks/audio/codec-profile", ""));
+        if (!MpvDtsHdFallbackPolicy.shouldInspectAudioState(
+                activeAudioSpdif, line, dtsHdCoreFallbackAttempted)) return;
+        // firstNonEmpty(cached, query()) eagerly queried native code for every log
+        // line, even with PCM output or a populated cache. Only a real DTS-HD
+        // AudioTrack init failure may need a missing property, and only once.
+        String audioFormat = TextUtils.isEmpty(cachedAudioFormat)
+                ? stringProperty("audio-params/format", "") : cachedAudioFormat;
+        String codecProfile = TextUtils.isEmpty(cachedAudioCodecProfile)
+                ? stringProperty("current-tracks/audio/codec-profile", "") : cachedAudioCodecProfile;
         MpvDtsHdFallbackPolicy.Decision decision =
                 MpvDtsHdFallbackPolicy.evaluate(activeAudioSpdif,
                         audioFormat, codecProfile, line,

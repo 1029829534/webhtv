@@ -8,6 +8,35 @@ import static org.junit.Assert.assertTrue;
 public class MpvDiagnosticsPolicyTest {
 
     @Test
+    public void felReconstructionEvidenceIsPersistedBeforeMainQueue() {
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(
+                "enhancement_pair: WebHTV Android FEL: software enhancement-layer decoder enabled"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(
+                "enhancement_pair: WebHTV FEL pair: BL=1.0 EL=1.0 NLQ=1 software-EL=1"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(
+                "vo/gpu-next: WebHTV FEL GPU input: matched EL uploaded with active NLQ."));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(
+                "ffmpeg/video: Native Dolby Vision output is unavailable, using the base-layer decoder for profile 7"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately(
+                "ffmpeg/video: MediaCodec started successfully: codec = c2.mtk.hevc.decoder, ret = 0"));
+    }
+
+    @Test
+    public void failureEvidenceDoesNotWaitForTheUi() {
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately("vd: Decoder init failed for hevc"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately("vo/gpu-next: Vulkan error"));
+        assertTrue(MpvDiagnosticsPolicy.shouldLogNativeImmediately("lavf: Invalid data found when processing input"));
+    }
+
+    @Test
+    public void ordinaryPerFrameLogsStayOutOfImmediateDiagnostics() {
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately("cplayer: playing frame pts=12.34"));
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately("vd: sending packet pts=12.34"));
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately(null));
+        assertFalse(MpvDiagnosticsPolicy.shouldLogNativeImmediately(""));
+    }
+
+    @Test
     public void normalPlaybackAndMinimalErrorsNeverQueryDetailedProperties() {
         assertFalse(MpvDiagnosticsPolicy.allowsSynchronousProperties(MpvDiagnosticsPolicy.Request.PLAYBACK, false));
         assertFalse(MpvDiagnosticsPolicy.allowsSynchronousProperties(MpvDiagnosticsPolicy.Request.PLAYBACK, true));

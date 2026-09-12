@@ -3,10 +3,10 @@
 ## Recovery anchor
 
 - 当前分支：`feature/mpv-dv7-fel`。
-- 当前实施基线：`fc62397591701b2232ae7de4f50a032bd7742064`（2026-09-12）。
+- 当前实施基线：`792c1f880bc151eb1cb6675034ec144aadc14766`（2026-09-12，用户要求保存的已知问题快照）。
 - 历史完整评估：已核实仓库历史提交 `9fcab83f9084446566240a8e8f5233d87d0274cc` 中的同名文件可读取；主线提交 `784b90420d646eb6c7ddcc63ad622a92c65b02b4` 删除了根目录本地任务文档，因此本分支只恢复当前实施需要的稳定索引。
-- 当前任务：`P2-4`，手动选择的「FEL 双层重建」App/native 接线及两 ABI 产物已完成；57 项定向测试、native/ELF/符号/资产校验和两个 debug APK 通过，真机验收因 ADB 无设备待进行。尚未提交/tag，不宣称既有性能已完成真机回归。
-- 下一步：手机连接并授权后，安装现成候选包，验证真实 FEL 与默认模式回归；详见 [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md)。
+- 当前任务：`P2-4`，电视已复测候选：BL 硬解、首个 FEL/NLQ GPU 输入及音频查询门控有效；仍有 49 次硬解错误和至少 34.661 秒 UI 堵塞。已完成用户要求的定向外部调研，发现本地未覆盖的 mpv #18375 后续修复；真实 FEL/性能仍未验收。
+- 下一步：用户已于 08:56 批准 P2-4 第 8 节方案；先独立保存已验证的日志门控修复，再为异步轨道快照与完整错误透传登记 JNI 等新增作用域。证据、完整提交台账、方案与限制见 [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md)。
 
 ## 稳定任务 ID 与唯一文档索引
 
@@ -15,7 +15,7 @@
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
-| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 2026-09-12源码/两 ABI 构建/57 项测试/两个 APK 资产校验完成；默认不自动启用，待真机 FEL、生命周期与性能验收，未提交/tag | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
+| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 2026-09-12已复测：BL/EL 首对到达 GPU，仍有 native 错误及同步轨道查询 ANR；第 8 节已记录 #18375、Kodi/media-kit、官方资料等调研与窄适配建议，本轮未新改代码；独立退出保护仅评估 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |
 
 ## Checkpoint 55：2026-09-06 P9 HDMV 菜单实施启动
