@@ -77,6 +77,40 @@ def main():
                 and "avctx->active_thread_type" in decoder
                 and "GPU last-known pass averages, not frame wall time" in renderer,
                 "diagnostics must report actual thread configuration and label cached GPU samples")
+        prepare = stable[stable.index("static bool prepare_conversion("):
+                         stable.index("static bool submit_conversion(")]
+        reuse_hit = prepare[prepare.index("if (hit)"):
+                            prepare.index("p->recording_misses++")]
+        require("p->android_fel && input->initialized && !input->removed && output->written" in prepare
+                and "if (output->pending)" in prepare
+                and reuse_hit.index("record->valid = false")
+                    < reuse_hit.index("update_conversion_descriptor")
+                    < reuse_hit.index("record_conversion")
+                    < reuse_hit.index("record->valid = true")
+                    < reuse_hit.index("output->active_command = record->command")
+                and "output->fel_query_recorded = record->timestamps" in reuse_hit,
+                "completed FEL object slots must refresh current bindings and recording before selection")
+        require("#define FEL_INPUT_CACHE_SIZE 32" in stable
+                and "#define FEL_RECORD_CACHE_SIZE 128" in stable
+                and "p->android_fel ? FEL_INPUT_CACHE_SIZE : INPUT_CACHE_SIZE" in stable
+                and ".flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT" in stable
+                and "command-mode=fresh-bind-record replay=0" in stable,
+                "FEL metadata reuse stays bounded; every frame uses a fresh one-shot recording")
+        destroy = stable[stable.index("static void destroy_conversion_resources("):
+                         stable.index("static int ycbcr_format_depth(")]
+        require(destroy.index("finish_output(p, &p->outputs[n], UINT64_MAX)")
+                    < destroy.index("destroy_recording_cache(p)")
+                    < destroy.index("destroy_output(p, &p->outputs[n])"),
+                "cached commands must finish and be freed before referenced resources are destroyed")
+        require("recording_cache_disabled = true" in stable
+                and "WebHTV FEL reuse:" in stable and "WebHTV FEL api perf:" in stable,
+                "optional reuse failure must stop allocation retries and remain diagnosable")
+        require("#define FEL_ORDER_CAPACITY 8" in stable
+                and "WebHTV FEL frame order:" in stable
+                and "WebHTV FEL api slow:" in stable
+                and "p->fel_slow_count < 4" in stable
+                and "FEL_API_BARRIER_IN" in stable and "FEL_API_DISPATCH" in stable,
+                "frame identity and slow-call evidence must be bounded and stage-specific")
         app = (ROOT / "app/src/main/java/androidx/media3/mpvplayer/MpvPlayer.java").read_text()
         callback = app[app.index("public void logMessage("):app.index("private void openCurrent(")]
         fast_log = callback[callback.index("if (performanceKind >= 0)"):

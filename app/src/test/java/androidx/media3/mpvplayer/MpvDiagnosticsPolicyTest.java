@@ -21,6 +21,10 @@ public class MpvDiagnosticsPolicyTest {
                 {"vo/gpu-next/aimagereader", "WebHTV FEL GPU pool:"},
                 {"enhancement_pair", "WebHTV FEL stats:"},
                 {"vd", "WebHTV FEL decoder queue:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL reuse:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL api perf:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL frame order:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL api slow:"},
         };
         assertEquals(MpvDiagnosticsPolicy.FEL_PERFORMANCE_KINDS, measurements.length);
         for (int kind = 0; kind < measurements.length; kind++) {
@@ -48,8 +52,13 @@ public class MpvDiagnosticsPolicyTest {
         assertFalse(window.allowPerformance(102, 0));
         assertTrue(window.allowPerformance(103, 3)); // GPU init has its own budget.
         assertTrue(window.allowPerformance(103, 4)); // Actual decoder threads too.
+        assertTrue(window.allowPerformance(103, 11)); // Cache evidence has its own budget.
+        for (int i = 0; i < 8; i++) assertTrue(window.allowPerformance(103, 12));
+        assertFalse(window.allowPerformance(104, 12));
+        assertTrue(window.allowPerformance(104, 13)); // Frame identity survives API statistics.
+        assertTrue(window.allowPerformance(104, 14)); // Slow-call evidence has its own budget.
         assertTrue(window.allow(104, "vd: WebHTV FEL fatal: no progress"));
-        assertEquals(1, window.takePerformanceSuppressed());
+        assertEquals(2, window.takePerformanceSuppressed());
         assertEquals(0, window.takePerformanceSuppressed());
         assertTrue(window.allowPerformance(5101, 0));
         assertTrue(window.allowPerformance(50, 0)); // Clock reset starts a new window.

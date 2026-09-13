@@ -31,6 +31,7 @@ enum { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO = 3,
        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 2, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT = 4 };
 #define VK_NULL_HANDLE 0
 typedef int VkResult;
+typedef int VkCommandBuffer;
 typedef unsigned VkQueryPool;
 typedef struct { unsigned timestampValidBits; } VkQueueFamilyProperties;
 typedef struct { struct { float timestampPeriod; } limits; } VkPhysicalDeviceProperties;
@@ -60,10 +61,12 @@ struct mp_image {
 struct mp_frame { int type; struct mp_image *data; };
 struct vk_input { int users; bool removed; };
 struct vk_output {
+    uint64_t fel_serial;
+    int fel_input_slot;
     bool fel_query_recorded;
     VkFence fence;
     VkSemaphore available, acquire, ready, source_release;
-    int command;
+    VkCommandBuffer command, active_command;
     struct fake_image *source_image;
     struct mp_image *source_frame, **source_aliases;
     int num_source_aliases;
@@ -190,6 +193,8 @@ static VkResult vkQueueSubmit(int queue, unsigned count, const VkSubmitInfo *inf
 {
     (void)queue; assert(queue_locked && count == 1 && f == &fence);
     assert(info->commandBufferCount == 1 && info->signalSemaphoreCount >= 1);
+    assert(*info->pCommandBuffers == (gpu.outputs[0].active_command
+        ? gpu.outputs[0].active_command : gpu.outputs[0].command));
     assert(info->pSignalSemaphores[0] == &ready_sem);
     submit_signals = info->signalSemaphoreCount;
     submit_waits = info->waitSemaphoreCount;
@@ -214,6 +219,11 @@ static int64_t mp_time_ns(void) { return now_ns; }
 static double mp_time_sec(void) { return now_ns / 1e9; }
 static bool vk_success(struct aimagereader_vk_stable *p, int result, const char *what)
 { (void)p; (void)what; return result == VK_SUCCESS; }
+// Frame trace formatting/rate limits are exercised with the real functions in
+// fel_vk_cache_test. Here logging must not change the source/fence contract.
+static void trace_fel_frame_order(struct aimagereader_vk_stable *p, char action,
+                                  int output, int input, uint64_t serial, double requested, double mapped)
+{ (void)p; (void)action; (void)output; (void)input; (void)serial; (void)requested; (void)mapped; }
 static VkResult vkGetFenceStatus(int device, VkFence f)
 { (void)device; return !f->reset && now_ns >= f->ready_at ? VK_SUCCESS : VK_NOT_READY; }
 static VkResult vkWaitForFences(int device, int count, VkFence *f, int all, uint64_t timeout)
@@ -428,6 +438,7 @@ static void test_fenced_release(void)
         av_buffer_unref(&image.android_fel_staging);
         // A failed export leaves a signal unconsumed. Disabling future export
         // must also stop future submissions from signaling that semaphore.
+        gpu.outputs[0].active_command = 73; // Cached commands use the same per-frame semaphores.
         assert(submit_conversion(&gpu, &gpu.outputs[0], true, true));
         assert(submit_signals == 1 && submit_waits == 2 && !queue_locked);
         clear_cached_frame();

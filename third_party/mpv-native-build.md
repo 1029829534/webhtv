@@ -2,6 +2,8 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
+2026-09-13 P2-4最新候选（18:39 APK）：仅FEL保留32槽AHB导入/最多128条按需command与descriptor对象槽，但每个新帧重新绑定并录制ONE_TIME命令，停止14:52候选的跨帧命令重放；`WebHTV FEL reuse`须显示`command-mode=fresh-bind-record replay=0`。增加有界`frame order`与`api slow`调试日志，保留每帧同步、10bit/NLQ及原模式。两ABI已按同锁实际重编，18项其他库不变，最终APK与SHA-256见[任务第9.16节](../docs/P2-4-mpv-android-fel.md)。host缓存/生命周期测试需给`test_mpv_fel_contract.sh`提供`ANDROID_NDK_HOME`或`VULKAN_HEADERS_INCLUDE`（NDK sysroot include），只用Vulkan声明，不加载GPU驱动。电视画面正确性及实时性能仍待候选实测验收。
+
 ## 两种构建必须分开
 
 日常 App 构建不会编译 MPV native。仓库已经提交以下目录中的 `.so`，Gradle 和 GitHub Actions 直接把它们作为 assets 打进 APK：

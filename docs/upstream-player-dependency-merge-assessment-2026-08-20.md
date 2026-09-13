@@ -2,6 +2,12 @@
 
 ## Recovery anchor
 
+- 2026-09-13最新候选（18:39包）：P2-4第9.16节已完成逐帧重新绑定/录制及有界帧关联/慢API日志，保留AHB缓存/同步/画质/默认行为。真实函数ASan/UBSan、源/补丁、双ABI/ELF/导出、13项Java及两APK内容/签名/ZIP通过；1200帧1200次新录制、1128次对象槽命中、不重放，18项其他库不变。guard原子收尾并归还临时隔离的Release缓存，不推送。唯一下一步：目标电视安装TV32 SHA256=`4971498a956a723cf348592dc4b228f595efdda56a77a884afb51fec05645722`，同样片三轮完整播放和seek/退出，取新增App调试日志裁决。14:52候选的实机回跳、持续掉帧及独立751ms失败仍未取得新设备验收。以下为历史状态。
+
+- 15:01收尾说明：P2-4-fel-vk-reuse本机验证与两APK均通过，但guard finish因新出现且无法归属本轮的35个`app/.cxx/RelWithDebInfo/621cr346/`及Release tools缓存返回4，尚未提交/tag；原35个保护文件未变。下一步请求临时隔离新增缓存并原样恢复的批准，不绕过guard；详见P2-4第9.15节。
+
+- 2026-09-13日志30续修：基线`dc1401638532840a8362b869b3220cb952ca7b35`约12.9fps/A-V最大7秒。P2-4第9.15节已实现有界AHB/命令复用及API统计，真实函数ASan/UBSan、13项Java、两ABI/ELF/导出、18库不变及两包内容/签名通过，guard `P2-4-fel-vk-reuse`收尾，不推送。唯一下一步：电视安装TV32 SHA256=`67b007a129ba488491cc666683ed8b2cc4a35d3e96c7ef6bf26b8cd56df8ad68`，同GIJoe三轮完整57秒及seek/退出，取reuse/api perf日志验证性能；整体实时播放尚未验收。以下为历史记录。
+
 - 当前2026-09-13日志29续修：基线`1620bac1566727f4067eda631647a11652082e74`三次起播成功但约10–12fps/A-V滞后，不是性能验收。P2-4第9.14节已移除纯FEL统计的主线程/Logcat重复处理，增加无GPU等待的CPU/驱动/GPU分段计时和真实线程报告，保持像素、同步、默认行为和依赖；host、23项Java、双ABI/ELF/导出通过，18库不变。两个最终debug包各10库/签名/ZIP结构通过，guard `P2-4-fel-steady-perf`收尾，不推送。唯一下一步：目标电视安装TV32 SHA256=`871ccbea4ac975055ad54258018c3071c0e51a6624b499746c2e2e1835593f5d`，同GIJoe三轮57秒及seek/退出，取新分段日志再决定CPU并行或GPU链路优化；整体需求未验收。以下均历史状态。
 
 - 当前续修（2026-09-13）：日志42三次首帧751ms失败已按P2-4第9.13节窄修复：实际GPU冷初始化独立有界期限、pending帧回到可取消filter/dispatch、失败仅一次EOF。旧代码冷初始化负例失败，新实际VO/wrapper/GPU host回归、两ABI/ELF/公开导出通过；只变更2份libmpv、18依赖不变。两debug包构建4m44s通过，各10库与v2签名匹配。guard仍为`P2-4-fel-vo-handoff`，HEAD=`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`、恢复tag=`recovery/P2-4-fel-buffer-progress/20260913025508-0a82dc13e255`，续修未提交/tag/推送。唯一下一步：目标电视安装TV32 SHA256=`038d77eb0d694a7c96aa0c17bf3aa23eac7996805702187cdc2de835686489f0`，同GIJoe样片3次起播、完整57秒及seek/退出，取App调试日志裁决；不能以host或打包成功称电视需求完成。其余为历史状态。

@@ -3,6 +3,36 @@ set -euo pipefail
 task_root="$(cd "$(dirname "$0")/.." && pwd)"
 mpv_source="${1:-$task_root/build/mpv-native/mpv-android/buildscripts/deps/mpv}"
 test_output="$(mktemp -d /private/tmp/webhtv-fel-contract.XXXXXX)"
+# Use Vulkan declarations without using Android's libc headers on the host.
+vulkan_headers="${VULKAN_HEADERS_INCLUDE:-}"
+if [[ -z "$vulkan_headers" && -n "${ANDROID_NDK_HOME:-}" ]]; then
+  for candidate in "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/sysroot/usr/include; do
+    if [[ -f "$candidate/vulkan/vulkan.h" ]]; then vulkan_headers="$candidate"; break; fi
+  done
+fi
+if [[ ! -f "$vulkan_headers/vulkan/vulkan.h" ]]; then
+  printf '%s\n' 'Set VULKAN_HEADERS_INCLUDE or ANDROID_NDK_HOME for the FEL Vulkan host contract.' >&2
+  exit 1
+fi
+awk '
+  /^static const char \*const fel_api_names\[/ ||
+  /^static void trace_fel_frame_order\(/ || /^static void format_fel_frame_order\(/ ||
+  /^static struct fel_api_clock fel_api_begin\(/ || /^static void fel_api_end\(/ ||
+  /^static void invalidate_input_recordings\(/ || /^static void destroy_input\(/ ||
+  /^static void destroy_recording_cache\(/ || /^static struct vk_input \*find_input\(/ ||
+  /^static void purge_removed_inputs\(/ || /^static struct vk_input \*select_input_slot\(/ ||
+  /^static bool recording_pending\(/ || /^static bool recording_matches\(/ ||
+  /^static struct vk_recording \*select_recording\(/ || /^static bool allocate_recording\(/ ||
+  /^static void update_conversion_descriptor\(/ || /^static bool record_conversion\(/ ||
+  /^static bool prepare_conversion\(/ || /^void aimagereader_vk_stable_buffer_removed\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/video/out/hwdec/hwdec_aimagereader_vk_stable.c" | \
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -fsanitize=address,undefined -I"$mpv_source" -idirafter "$vulkan_headers" \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_vk_cache_test.c" \
+    -x c - -o "$test_output/fel-vk-cache-test"
+"$test_output/fel-vk-cache-test"
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -I"$task_root/third_party/mpv-player-jni/src" \
   -I"$task_root/third_party/mpv-player-jni/include" -I"$mpv_source" \
