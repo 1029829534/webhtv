@@ -1,6 +1,7 @@
 package androidx.media3.mpvplayer;
 
 import java.util.Locale;
+import java.util.Arrays;
 import java.util.regex.Pattern;
 
 final class MpvDiagnosticsPolicy {
@@ -52,10 +53,64 @@ final class MpvDiagnosticsPolicy {
                 && (level > 0 && level <= 30 || shouldLogNativeImmediately(line));
     }
 
+    static final int FEL_PERFORMANCE_KINDS = 11;
+
+    /** Only native single-line measurements may bypass playback-state processing. */
+    static int felPerformanceKind(String prefix, int level, String text) {
+        if (level != 40 || prefix == null || text == null) return -1;
+        String value = text.trim();
+        if (value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0) return -1;
+        if (prefix.equals("vo/gpu-next/aimagereader")) {
+            if (value.startsWith("WebHTV FEL perf:")) return 0;
+            if (value.startsWith("WebHTV FEL perf stages:")) return 1;
+            if (value.startsWith("WebHTV FEL GPU init:")) return 3;
+            if (value.startsWith("WebHTV FEL map cost:")) return 7;
+            if (value.startsWith("WebHTV FEL GPU pool:")) return 8;
+        } else if (prefix.equals("vo/gpu-next")) {
+            if (value.startsWith("WebHTV FEL render perf:")) return 2;
+        } else if (prefix.equals("vd")) {
+            if (value.startsWith("WebHTV FEL decoder threads:")) return 4;
+            if (value.startsWith("WebHTV FEL decoder cost:")) return 5;
+            if (value.startsWith("WebHTV FEL producer handoff:")) return 6;
+            if (value.startsWith("WebHTV FEL decoder queue:")) return 10;
+        } else if (prefix.equals("enhancement_pair")) {
+            if (value.startsWith("WebHTV FEL stats:")) return 9;
+        }
+        return -1;
+    }
+
     static final class NativeLogWindow {
         private long startMs = -1;
         private int count;
         private int suppressed;
+        private final long[] performanceStartMs = new long[FEL_PERFORMANCE_KINDS];
+        private final int[] performanceCount = new int[FEL_PERFORMANCE_KINDS];
+        private int performanceSuppressed;
+
+        NativeLogWindow() {
+            Arrays.fill(performanceStartMs, -1);
+        }
+
+        boolean allowPerformance(long nowMs, int kind) {
+            if (kind < 0 || kind >= FEL_PERFORMANCE_KINDS) return false;
+            if (performanceStartMs[kind] < 0 || nowMs - performanceStartMs[kind] >= 5000
+                    || nowMs < performanceStartMs[kind]) {
+                performanceStartMs[kind] = nowMs;
+                performanceCount[kind] = 0;
+            }
+            if (performanceCount[kind] < 8) {
+                performanceCount[kind]++;
+                return true;
+            }
+            performanceSuppressed++;
+            return false;
+        }
+
+        int takePerformanceSuppressed() {
+            int result = performanceSuppressed;
+            performanceSuppressed = 0;
+            return result;
+        }
 
         boolean allow(long nowMs, String line) {
             if (startMs < 0 || nowMs - startMs >= 5000 || nowMs < startMs) {

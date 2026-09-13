@@ -274,7 +274,9 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 日志42三次首帧751ms失败否决上一候选：冷启动GPU资源/compute pipeline创建也被算进逐帧750ms。当前修正用同一共享lease的单调phase位标记真实冷初始化，仅此阶段单独有界10秒，普通排队/交接仍750ms，不由“第几帧”或轮询次数续期。BL待交接帧由wrapper持有，每次process检查一次后返回已有dispatch（2ms可中断等待），reset/stop取消自己的VO lease，generation防止旧回写。FEL失败只发送一次EOF且停止feed，避免零样本权重的信号队列空转。`WebHTV FEL GPU init`区分outputs/pipeline/总初始化耗时，`handoff timeout: phase=`与`wait=async`进入App调试日志。
 
-当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.13节为准。早先NODE可靠性单元相对其基线替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16库不变；当前异步交接单元以`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）必须逐字节不变**。新增host回归覆盖实际VO冷初始化并发轮询、初始化/稳态期限、实际wrapper/dispatch待处理帧、取消及失败后的3万次请求只发一次EOF；默认路由未改。新候选的双ABI/ELF/导出、两APK/签名及目标电视画质、可靠性、性能与生命周期须分别记录，不标记任务完成。
+日志29三次进入播放但稳态约10–12fps，不能认为此前交接修复完成实时性能需求。当前增量加入仅FEL/INFO启用的冷/热map分段墙钟、线程CPU、既有copy fence完成后的无WAIT GPU timestamp、既有libplacebo pass均值，以及render/flush/submit/swap和实际decoder线程信息；不支持/失败时只停用计时，不改变像素或生命周期。App纯性能记录按严格来源/级别识别并独立限流，只写一次现有调试日志存储，不重复排队主线程/漂亮Logcat，错误路径不变。
+
+当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.14节为准。早先NODE可靠性单元替换过两 ABI 的 `libmpv.so` 和 `libplayer.so`；本轮以`1620bac1566727f4067eda631647a11652082e74`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）逐字节不变**。host计时/所有权契约、23项Java定向测试、双ABI/ELF/导出、两个debug APK各10库/签名/封装结构通过。GPU区间可能含依赖等待，pass缓存不是整帧墙钟，线程数也不等于CPU利用率；目标电视画质、可靠性、性能与生命周期仍须新日志验证，不以构建通过标记任务完成。
 
 ## 提交前验证
 

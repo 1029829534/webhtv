@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 当前2026-09-13日志29续修：基线`1620bac1566727f4067eda631647a11652082e74`三次起播成功但约10–12fps/A-V滞后，不是性能验收。P2-4第9.14节已移除纯FEL统计的主线程/Logcat重复处理，增加无GPU等待的CPU/驱动/GPU分段计时和真实线程报告，保持像素、同步、默认行为和依赖；host、23项Java、双ABI/ELF/导出通过，18库不变。两个最终debug包各10库/签名/ZIP结构通过，guard `P2-4-fel-steady-perf`收尾，不推送。唯一下一步：目标电视安装TV32 SHA256=`871ccbea4ac975055ad54258018c3071c0e51a6624b499746c2e2e1835593f5d`，同GIJoe三轮57秒及seek/退出，取新分段日志再决定CPU并行或GPU链路优化；整体需求未验收。以下均历史状态。
+
 - 当前续修（2026-09-13）：日志42三次首帧751ms失败已按P2-4第9.13节窄修复：实际GPU冷初始化独立有界期限、pending帧回到可取消filter/dispatch、失败仅一次EOF。旧代码冷初始化负例失败，新实际VO/wrapper/GPU host回归、两ABI/ELF/公开导出通过；只变更2份libmpv、18依赖不变。两debug包构建4m44s通过，各10库与v2签名匹配。guard仍为`P2-4-fel-vo-handoff`，HEAD=`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`、恢复tag=`recovery/P2-4-fel-buffer-progress/20260913025508-0a82dc13e255`，续修未提交/tag/推送。唯一下一步：目标电视安装TV32 SHA256=`038d77eb0d694a7c96aa0c17bf3aa23eac7996805702187cdc2de835686489f0`，同GIJoe样片3次起播、完整57秒及seek/退出，取App调试日志裁决；不能以host或打包成功称电视需求完成。其余为历史状态。
 
 - 最新状态（2026-09-13）：上轮失败候选已完整提交为`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`，tag为`recovery/P2-4-fel-reliability/20260912214750-cbb02fa4c40a`，未推送；日志39/40否决其可靠性/性能验收。active guard `P2-4-fel-buffer-progress`已按P2-4第9.11节实现BL生产者发布前暂存/源归还及BL/EL耗时日志；保留FFmpeg/既有超时保护、EL/RPU/10bit与默认路径。定向host测试、两ABI构建/ELF/公开导出通过，仅两libmpv变化/18依赖不变，两个debug APK各10库及v2签名通过；本轮未提交/tag，未安装到目标电视。唯一下一步：安装SHA256=`26a03ee980a26f900dbd79d6fc0b6c0cc03759f2b91829e52d24df014cae9ef8`的32位候选，同一GIJoe样片重复启动3次、完整57秒和seek/退出，按新交接/耗时日志判断根因。不能称已解决卡死/掉帧。
@@ -21,7 +23,7 @@
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
-| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志42否决上一候选；9.13冷初始化/可取消交接/一次EOF续修已通过host及双ABI/APK，待目标电视实播验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
+| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志29三轮起播成功但严重掉帧；9.14按CPU/驱动/GPU分段继续优化，整体实时播放未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |
 
 ## Checkpoint 55：2026-09-06 P9 HDMV 菜单实施启动

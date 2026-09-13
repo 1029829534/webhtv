@@ -54,6 +54,36 @@ def main():
         wrapper = (source / "filters/f_decoder_wrapper.c").read_text()
         vo = (source / "video/out/vo.c").read_text()
         stable = (source / "video/out/hwdec/hwdec_aimagereader_vk_stable.c").read_text()
+        timing = (source / "filters/f_android_fel_perf.h").read_text()
+        require("CLOCK_THREAD_CPUTIME_ID" in timing and "bits < 64" in timing,
+                "FEL diagnostics must distinguish thread CPU and valid-bit GPU timestamps")
+        collect = stable[stable.index("static void collect_fel_gpu_time("):
+                         stable.index("static void init_fel_gpu_timer(")]
+        finish = stable[stable.index("static bool finish_output("):
+                        stable.index("static void destroy_output(")]
+        require("VK_QUERY_RESULT_WAIT_BIT" not in collect
+                and "VK_QUERY_RESULT_64_BIT" in collect
+                and "output->fel_query_recorded = false" in collect
+                and "p->fel_query_failed = true" in collect,
+                "optional GPU timing cannot wait, reuse old results, or fail playback")
+        require(finish.index('"waiting for AHardwareBuffer conversion"')
+                    < finish.index("collect_fel_gpu_time(p, output)")
+                    < finish.index("vkResetFences("),
+                "read GPU timestamps only after this copy fence succeeds and before reset")
+        require("p->fel_profile = p->android_fel && mp_msg_test(p->log, MSGL_INFO)" in stable
+                and "output->fel_query_recorded = p->fel_query_pool && !p->fel_query_failed" in stable,
+                "timing must be explicit-FEL/log gated and disable cleanly when unavailable")
+        require("WebHTV FEL decoder threads:" in decoder
+                and "avctx->active_thread_type" in decoder
+                and "GPU last-known pass averages, not frame wall time" in renderer,
+                "diagnostics must report actual thread configuration and label cached GPU samples")
+        app = (ROOT / "app/src/main/java/androidx/media3/mpvplayer/MpvPlayer.java").read_text()
+        callback = app[app.index("public void logMessage("):app.index("private void openCurrent(")]
+        fast_log = callback[callback.index("if (performanceKind >= 0)"):
+                            callback.index("String line = MpvDiagnosticsPolicy.redactSensitive")]
+        require("DebugLogStore.add(" in fast_log and "return;" in fast_log
+                and "postToMain(" not in fast_log and "PlaybackTrace.log(" not in fast_log,
+                "pure FEL measurements must not enqueue UI work or duplicate pretty Logcat output")
         output = wrapper[wrapper.index("output_frame:\n", wrapper.index("static void read_frame(")):]
         require(output.index("stage_fel_before_publish(p, frame)") < output.index("mp_pin_in_write(pin, frame)"),
                 "FEL BL must return its source before publishing to the decoder queue")

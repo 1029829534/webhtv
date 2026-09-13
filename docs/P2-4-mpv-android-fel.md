@@ -1,6 +1,69 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
+## 9.14 日志29持续掉帧：先消除诊断干扰并区分CPU/驱动/GPU
+
+2026-09-13 11:41 Asia/Shanghai开始，目标12:40–12:50提供已本机验证的候选（定位研究15–20分钟、实现测试20–25分钟、温缓存双ABI/打包15–20分钟；设备实测另计）。此节沿用同一P2-4，不新增上游任务或第二份文档。授权为用户本轮“继续优化，解决问题，实现需求，必要时可增加详细调试日志”，不需要重复逐项确认；无推送授权。
+
+### 当前证据及决策
+
+基线为WebHTV `1620bac1566727f4067eda631647a11652082e74`，锁定mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`、mpv-android `99a60ad2141d5ace94453590903c2c6b9a0a2443`均保持，不引入新上游提交。
+
+- 三轮`p-xpwush-1/p-xpxv7s-2/p-xpyne5-3`，Mali-G57，4K23.976fps的本地GIJoe样片；每轮有seek，不能用总时长/总帧数混算或把reset后的掉帧峰值相加。持续区间配对约10–12fps，最终A/V滞后数秒。映射CPU墙钟48.4/55.5/61.4ms已超过41.7ms整帧预算；其中可能含驱动阻塞、CPU被抢占和命令回收，并不是GPU shader时间。
+- 当前`aimagereader_vk_stable_map`在原GPU fence后复用槽位，`pl_vulkan_hold_ex`交还输出、录制copy、队列锁/submit、独立SYNC_FD export/deleteAsync。无CPU readback、copy-wait为0，源归还与GPU资源生命周期保护有效。没有证据允许删除这些同步。
+- `vd_lavc::init_avctx → mp_set_avcodec_threads`已支持自动多线程；`f_decoder_wrapper::init_group_decoder/dec_thread`已有独立BL与EL线程；不能无视8帧EL积压盲加worker。FFmpeg调用墙钟不等于所有解码工作线程CPU耗时。
+- `MpvPlayer::logMessage → NativeLogWindow`所有FEL证据共用32条/5秒预算，低频GPU初始化消息仍会被其他警告挤掉；纯统计也排入主线程执行无用故障识别/字幕判断。这一重复工作可确定移除。Logcat阻塞证据支持纯性能日志只写现有App日志存储，不重复漂亮格式输出；真实warning/error仍保持旧处理。
+
+### 增量最佳实践证据（2026-09-13访问）
+
+| 来源/固定身份 | 等级、支持的事实 | 本项目决定与限制 |
+| --- | --- | --- |
+| 本次日志及上述锁定源：FFmpeg `doc/multithreading.txt`、mpv `common/av_common.c`、`vd_lavc.c` | A；frame/slice多线程不同，额外frame线程增加前视延迟；mpv自动核心数+1 | 输出实际thread_count/active_thread_type，不改用户线程设置，不以更多线程替代瓶颈验证 |
+| [Vulkan queries规范](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/queries.adoc) | A；查询依赖timestampValidBits/period；不带WAIT可返回NOT_READY；旧query在reset执行前可能假就绪 | 只在既有copy fence完成后读取同槽timestamp，不等待、不新增fence；不支持或失败则统计不可用，不能使播放失败 |
+| [Khronos/Arm async compute](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/performance/async_compute/README.adoc) | A/C；Mali compute与vertex共享执行资源，fragment/compute依赖可能造成流水线气泡；多队列收益依设备/任务而异 | 当前已有compute队列，不盲加CPU/GPU队列；必须先区分阶段墙钟与GPU执行 |
+| 同revision [command buffer多线程与回收基准](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/performance/command_buffer_usage/README.adoc) | A/C；多线程录制面向大量drawcall的CPU瓶颈；过多线程/command buffer可能反而变慢 | FEL copy只有一次dispatch；不照搬1800 drawcall/8线程的收益，不为未证实的reset成本引入复杂缓存 |
+| 锁定libplacebo `src/vulkan/gpu.c::vk_timer_query/timer_begin`、`gpu_tex.c::pl_vulkan_hold_ex`及mpv `vo_gpu_next::info_callback` | A/B、成熟项目代码；异步GPU timestamp、已存在渲染pass性能缓存；hold会提交命令而非纯CPU引用计数 | 复用现有render pass统计，独立记录copy时间和CPU阶段；不把API墙钟当GPU耗时，不加同步属性查询 |
+| GitHub issues检索：mpv Vulkan Android slow、跨项目Mali vkQueueSubmit performance；原响应保存本证据目录 | B/D；找到的Pi输出分辨率/Flutter/渲染后端讨论不直接证明当前MediaTek路径问题 | 未找到可直接移植且适配当前证据的修复；不采用不相关issue猜测。此前9.12/9.13已有的mpv讨论与所有权规范继续有效 |
+| 学术论文/更多泛博客 | 本小单元不适用 | 不修改FEL算法或提出新并行调度；规范、实际源码和有方法的Arm基准足以决定观测方式，电视实时性仍必须实测 |
+
+对比：不改会继续缺乏可决策耗时；无修改上游已有GPU timer但不覆盖自定义AHB copy，亦不处理App限流；盲增线程/去fence/改变shader或默认renderer风险高且无证据。采用窄适配：保留所有像素/时序与依赖，只给FEL增加聚合CPU分段、可选无等待copy timestamp、已有render pass耗时和实际解码并行信息；纯性能日志独立有界存储，不再重复送主线程/Logcat。它减少确定的诊断开销，但不预先声称主掉帧已解决。
+
+允许路径为guard列出的FEL补丁、定向tests/校验脚本、`MpvPlayer/MpvDiagnosticsPolicy`及对应测试、两份libmpv、原任务/构建文档和索引；构建源码缓存只是可复现输入工作副本。保护原`app/.cxx/`；JNI/FFmpeg/libplacebo/Exo/音频/光盘/默认FEL关闭状态不变。新增GPU查询仅几百字节，失败不影响像素、没有新线程/公开API/依赖或许可证变更。
+
+验收：GPU时间处理覆盖有效位回绕、未就绪/不支持/失败、fence前不可读和复用，CPU阶段冷/热分离；日志覆盖洪泛后保留低频证据、同类限流、fatal不丢及不转发非纯统计。先真实函数/host ASan+UBSan及纯Java定向测试，后双ABI ELF/公开导出和18依赖字节不变、TV32/Mobile64包内10库与签名。目标电视同设置至少三轮完整57秒（启动10秒后统计稳态）及seek/退出，目标23.976fps附近持续配对、无递增A/V偏差/4003且不改变画质；未取得此证据不得标全部需求完成。
+
+回滚：回到上述基线提交对应的任务源、Java/测试及两份libmpv成套恢复，不动其他脏文件、不移动原tag。唯一下一步见顶部Recovery anchor。
+
+### 实施与本机验证（2026-09-13）
+
+- `MpvDiagnosticsPolicy::felPerformanceKind`只接受固定native来源、INFO级别和单行已知统计；11类各自最多8条/5秒，不挤占/受限于旧警告预算。`MpvPlayer::logMessage`对这些纯统计仅脱敏后写一次现有App日志存储，不排主线程、不走漂亮Logcat、不调用MPV；真实warning/error/fatal、未知日志、状态回调、字幕和DTS-HD回退保持原路径。
+- `f_android_fel_perf.h`、stable mapper、`vo_gpu_next`、`vd_lavc`补充暖态map分段墙钟/线程CPU、独立冷初始化、既有copy fence后的无WAIT timestamp、已有libplacebo pass缓存、render/flush/submit/swap耗时及实际解码线程数/类型。未更改解码线程数、调度、图像/位深/NLQ、fence所有权、依赖或默认路由。诊断失败只使统计不可用，不使播放失败。
+- 真实函数host ASan/UBSan、240帧CPU/异步交接、取消/EOF/lease及新增计时契约通过；`MpvDiagnosticsPolicyTest`13项、`MpvDtsHdFallbackPolicyTest`10项全部通过。证据：`native-contract.log`、`java-tests.log`。本轮未提供本地GIJoe实样给EL解码host测试，该项明确SKIP，不重复早先实样验证，也不算设备验收。
+- 同锁两ABI增量编译通过，只有`libmpv.so`两份变化，其余18库（含JNI）逐字节相同；ELF/SONAME/DT_NEEDED和公开mpv导出一致。证据：`arm64-build.log`、`armv7l-build.log`、`native-assets.log`、`native-boundary.log`。仅保留已有shadow/locale/Gradle弃用警告，不处理无关问题。
+- 首次APK构建1m6s，两个包内容/签名正确但增量封装有约15–18MB空洞。原包及精确的package缓存已移到证据目录保留；仅重封装一次（58s），没有重跑native或已通过的单测。最终两个包各10库逐一匹配且签名通过，ZIP开销分别745822/805437字节，低于原5MiB门槛；只交付最终包。证据：`apk-build.log`、`apk-repack.log`、`apk-final-artifacts.log`。
+- 原12:50估计已超出：代码/测试续接与最终封装结构检查后需重封装。13:03本机产物校验完成，剩余仅文档/恢复提交；未扩展研究或重新全编依赖。保护`app/.cxx/`，CMake staging复用隔离临时目录。
+
+| 最终产物 | SHA-256 | 字节 |
+| --- | --- | ---: |
+| arm64-v8a libmpv | `5bf20e53d76076d2a7e297384d19fbda8bd078cd54ecc9d054d6f7844333e780` | 17791200 |
+| armeabi-v7a libmpv | `1a99e35a4d2e2c7265108f4cd371a673c06f16897b1e5ba2a211eb862e6c62ff` | 14599740 |
+| Mobile arm64 debug APK | `11592a5d8a3eb326930cbd3f64704d58ad9a00f25492b3e4143c0e3ad4a15180` | 151588356 |
+| Leanback armv7 debug APK | `871ccbea4ac975055ad54258018c3071c0e51a6624b499746c2e2e1835593f5d` | 130473287 |
+
+最终FEL patch SHA-256=`291efca6434faacaba46e3e794beee8717c5269f480c69a423748ee8eedd4bc1`；固定前置基线正向应用、实际编译源码反向校验通过（收尾仅去掉六处补丁hunk标题尾空格，编译源码/二进制不变）。未改lock SHA-256=`a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159`。源/测试校验值见同证据目录`source-identity.sha256`。基线仍为`1620bac1566727f4067eda631647a11652082e74`；本机已验证的诊断单元通过guard `P2-4-fel-steady-perf`原子提交并创建同ID下annotated恢复tag，不推送、不将该tag解释为电视实时性能通过。
+
+设备门槛仍未关闭：V2453A手机曾短暂连接随后断开，目标Mali-G57电视没有ADB，本轮没有新包真机播放证据。下一轮保持相同FEL设置，重播GIJoe完整57秒至少3次并seek/退出，日志需保留`WebHTV FEL perf`/`perf stages`/`render perf`/`decoder threads`和配对/A-V进度。只用无seek稳态区间的计数差：map墙钟与线程CPU区分运算/阻塞，分段定位具体API，再结合GPU conversion与已有pass数据决定是否值得增加CPU并行；不把GPU区间或各pass均值之和当作整帧耗时。
+
 ## Recovery anchor
+
+- 2026-09-13日志29（本次1,355,757字节、11:18–11:20，不是早前同名文件）确认`1620bac1566727f4067eda631647a11652082e74`候选三轮均进入FEL播放，未见FEL fatal/交接超时，但稳定片段配对约10–12fps，23.976fps片源仍严重掉帧且A/V偏差4–5秒。该提交/tag `recovery/P2-4-fel-vo-handoff/20260913112303-1620bac15667`为本轮回滚点，未推送。
+- 本轮单元 `P2-4-fel-steady-perf` / upstream，分支`feature/mpv-dv7-fel`，保护`app/.cxx/`35文件。用户明确批准继续优化、必要时补详细日志并评估CPU多线程。第9.14节的低开销分段计时和纯FEL性能日志去重已通过本机验证，按同ID guard收尾；不盲改线程数/队列、像素、同步、默认路径或依赖。
+- 已有证据：排除第一次统计后，GPU map的CPU墙钟均值48.4/55.5/61.4ms，非纯GPU执行时间；AImage获取约0.10ms，无超时/错误，异步归还855/855；EL多数仍有8帧待配对。旧32条/5秒通用日志预算会吞掉低频初始化/性能消息。日志还记录一次Logcat漂亮格式同步打印卡主线程1512ms，不能单凭此认定全部持续掉帧根因。
+- 本轮证据目录`/private/tmp/webhtv-fel-perf.C10X7r/`；已编辑构建缓存的stable mapper/新perf helper、`vd_lavc`实际线程报告、`vo_gpu_next`渲染/flush/submit/swap计时，以及App严格来源/级别的纯统计日志快速通道和测试。未改变像素/同步/线程数；CPU并行已存在，不能把线程增加视为已证实加速。新增query区间是GPU conversion区间（可能包含GPU依赖等待），不是纯shader执行时间；libplacebo统计是最近pass均值，不是整帧耗时。
+- 定向native契约（ASan/UBSan）已通过：保留240帧交接/释放所有权用例，新增真实计时函数的冷/热区间、不支持/创建失败/NOT_READY/查询失败、有效位回绕、fence前禁止查询与无WAIT；静态opt-in及实际App快速分支检查通过。固定前置基线正向应用/构建缓存反向校验通过，生产FEL补丁已重生成；EL实样解码未重跑（本地未传样片），不冒充真机验证。
+- Java23项、双ABI/ELF/18库不变及两个最终APK/签名/封装校验已通过；最终TV32 SHA256=`871ccbea4ac975055ad54258018c3071c0e51a6624b499746c2e2e1835593f5d`、Mobile64=`11592a5d8a3eb326930cbd3f64704d58ad9a00f25492b3e4143c0e3ad4a15180`。未安装到目标电视，整体需求仍待性能验收，不重跑已通过的本机门槛。
+- 唯一下一步：目标电视安装上述最终TV32包，用同设置GIJoe样片三轮完整57秒并seek/退出，导出App日志，按第9.14节新增CPU/驱动/GPU证据选择下一项真实瓶颈优化；不能以本机验证声称实时播放已实现。
+
+### 日志42续修交付记录（历史）
 
 - 最新恢复点：2026-09-13用户要求快速保存日志41对应候选，已原子提交`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`并创建`recovery/P2-4-fel-buffer-progress/20260913025508-0a82dc13e255`，含最新源码/native，未推送。用户确认起播成功率提高，但均明显卡顿，且有一次4003；不是验收通过。
 - 当前分支`feature/mpv-dv7-fel`，guard `P2-4-fel-vo-handoff` / `upstream`保持active；仅FEL补丁/定向测试与校验脚本、两份libmpv、原任务/构建文档。保护原`app/.cxx/`35文件，不改FFmpeg/libplacebo/JNI/Exo/音频/光盘或默认设置。本轮未提交/tag、未推送。

@@ -144,6 +144,63 @@ index 0000000000..bde8c7298f
 +{
 +    return fel && consecutive_errors >= MP_ANDROID_FEL_ERROR_LIMIT;
 +}
+diff --git a/filters/f_android_fel_perf.h b/filters/f_android_fel_perf.h
+new file mode 100644
+--- /dev/null
++++ b/filters/f_android_fel_perf.h
+@@ -0,0 +1,52 @@
++/* Optional Android FEL measurements. LGPL-2.1-or-later, like mpv. */
++#pragma once
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <time.h>
++
++enum mp_fel_perf_stage {
++    MP_FEL_PERF_POLL, MP_FEL_PERF_IMPORT, MP_FEL_PERF_RECLAIM,
++    MP_FEL_PERF_RECORD, MP_FEL_PERF_ACQUIRE, MP_FEL_PERF_QUEUE_LOCK,
++    MP_FEL_PERF_SUBMIT, MP_FEL_PERF_TEX_RELEASE, MP_FEL_PERF_EXPORT,
++    MP_FEL_PERF_IMAGE_RETURN, MP_FEL_PERF_OTHER, MP_FEL_PERF_COUNT,
++};
++
++struct mp_fel_perf_stat {
++    uint64_t count, total, peak;
++};
++
++static inline void mp_fel_perf_add(struct mp_fel_perf_stat *stat, uint64_t ns)
++{
++    stat->count++;
++    stat->total += ns;
++    if (ns > stat->peak)
++        stat->peak = ns;
++}
++
++static inline int64_t mp_fel_thread_cpu_ns(void)
++{
++#ifdef CLOCK_THREAD_CPUTIME_ID
++    struct timespec ts;
++    if (!clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts))
++        return (int64_t)ts.tv_sec * INT64_C(1000000000) + ts.tv_nsec;
++#endif
++    return 0; // unavailable, never fabricate a CPU utilization value
++}
++
++static inline bool mp_fel_gpu_duration(uint64_t start, uint64_t end,
++                                        unsigned bits, double period,
++                                        uint64_t *ns)
++{
++    if (!bits || bits > 64 || !isfinite(period) || period <= 0)
++        return false;
++    uint64_t delta = end - start;
++    if (bits < 64)
++        delta &= (UINT64_C(1) << bits) - 1;
++    double duration = delta * period;
++    if (!isfinite(duration) || duration >= (double)UINT64_MAX)
++        return false;
++    *ns = (uint64_t)duration;
++    return true;
++}
 diff --git a/filters/f_android_fel_trace.h b/filters/f_android_fel_trace.h
 new file mode 100644
 index 0000000000..c46564f803
@@ -1252,7 +1309,6 @@ index 0000000000..73b7bfb1ac
 +    return ret;
 +}
 diff --git a/video/decode/vd_lavc.c b/video/decode/vd_lavc.c
-index c981c0035c..91c9db0cf1 100644
 --- a/video/decode/vd_lavc.c
 +++ b/video/decode/vd_lavc.c
 @@ -16,6 +16,7 @@
@@ -1263,7 +1319,15 @@ index c981c0035c..91c9db0cf1 100644
  #include <stdio.h>
  #include <stdlib.h>
  #include <assert.h>
-@@ -41,6 +42,8 @@
+@@ -24,6 +25,7 @@
+ #include <libavcodec/avcodec.h>
+ #include <libavformat/version.h>
+ #include <libavutil/common.h>
++#include <libavutil/cpu.h>
+ #include <libavutil/hwcontext.h>
+ #include <libavutil/opt.h>
+ #include <libavutil/intreadwrite.h>
+@@ -41,6 +43,8 @@
  #include "video/fmt-conversion.h"
 
  #include "filters/f_decoder_wrapper.h"
@@ -1272,7 +1336,7 @@ index c981c0035c..91c9db0cf1 100644
  #include "filters/filter_internal.h"
  #include "video/hwdec.h"
  #include "video/img_format.h"
-@@ -55,6 +58,7 @@
+@@ -55,6 +59,7 @@
  #include "video/out/vo.h"
 
  #include "options/m_option.h"
@@ -1280,7 +1344,7 @@ index c981c0035c..91c9db0cf1 100644
 
  static void init_avctx(struct mp_filter *vd);
  static void uninit_avctx(struct mp_filter *vd);
-@@ -280,6 +284,14 @@ typedef struct lavc_ctx {
+@@ -280,6 +285,14 @@ typedef struct lavc_ctx {
      struct vo *vo;
      struct mp_hwdec_devices *hwdec_devs;
      bool force_swdec;
@@ -1295,7 +1359,7 @@ index c981c0035c..91c9db0cf1 100644
 
      // Wrapped AVHWDeviceContext* used for decoding.
      AVBufferRef *hwdec_dev;
-@@ -748,7 +760,10 @@ static void select_and_set_hwdec(struct mp_filter *vd)
+@@ -748,7 +761,10 @@ static void select_and_set_hwdec(struct mp_filter *vd)
                           "decoding; retrying with the configured video "
                           "output.\n");
              ctx->force_eof = true;
@@ -1307,7 +1371,7 @@ index c981c0035c..91c9db0cf1 100644
              MP_WARN(ctx, "Software decoding fallback is disabled.\n");
              ctx->force_eof = true;
          } else {
-@@ -988,6 +1003,20 @@ static void init_avctx(struct mp_filter *vd)
+@@ -988,6 +1004,20 @@ static void init_avctx(struct mp_filter *vd)
          goto error;
      }
 
@@ -1328,7 +1392,23 @@ index c981c0035c..91c9db0cf1 100644
  #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
      if (avctx->width > 8192 || avctx->height > 8192) {
          MP_ERR(vd, "Frame size too big %" PRIu32 "x%" PRIu32 ".\n", avctx->width, avctx->height);
-@@ -1024,6 +1053,7 @@ static void reset_avctx(struct mp_filter *vd)
+@@ -999,6 +1029,15 @@ static void init_avctx(struct mp_filter *vd)
+     if (avcodec_open2(avctx, lavc_codec, NULL) < 0)
+         goto error;
+
++    if (ctx->android_fel) {
++        MP_INFO(vd, "WebHTV FEL decoder threads: layer=%s codec=%s requested=%d "
++                    "actual=%d active-type=%d frame=%d slice=%d logical-cpus=%d.\n",
++                ctx->force_swdec ? "EL" : "BL", lavc_codec->name, threads,
++                avctx->thread_count, avctx->active_thread_type,
++                !!(avctx->active_thread_type & FF_THREAD_FRAME),
++                !!(avctx->active_thread_type & FF_THREAD_SLICE), av_cpu_count());
++    }
++
+     // Sometimes, the first packet contains information required for correct
+     // decoding of the rest of the stream. The only currently known case is the
+     // x264 build number (encoded in a SEI element), needed to enable a
+@@ -1024,6 +1063,7 @@ static void reset_avctx(struct mp_filter *vd)
 
      if (ctx->avctx && avcodec_is_open(ctx->avctx))
          avcodec_flush_buffers(ctx->avctx);
@@ -1336,7 +1416,7 @@ index c981c0035c..91c9db0cf1 100644
      ctx->flushing = false;
      ctx->hwdec_request_reinit = false;
      // Wait for the first keyframe after reset to ensure the decoder state is
-@@ -1063,6 +1093,14 @@ static void uninit_avctx(struct mp_filter *vd)
+@@ -1063,6 +1103,14 @@ static void uninit_avctx(struct mp_filter *vd)
      clear_decoder_queues(ctx);
      av_frame_free(&ctx->pic);
      mp_free_av_packet(&ctx->avpkt);
@@ -1351,7 +1431,7 @@ index c981c0035c..91c9db0cf1 100644
      av_buffer_unref(&ctx->cached_hw_frames_ctx);
 
      avcodec_free_context(&ctx->avctx);
-@@ -1072,6 +1110,7 @@ static void uninit_avctx(struct mp_filter *vd)
+@@ -1072,6 +1120,7 @@ static void uninit_avctx(struct mp_filter *vd)
      ctx->hwdec_failed = false;
      ctx->hwdec_fail_count = 0;
      ctx->max_delay_queue = 0;
@@ -1359,10 +1439,12 @@ index c981c0035c..91c9db0cf1 100644
      ctx->hw_probing = false;
      ctx->hwdec = (struct hwdec_info){0};
      ctx->use_hwdec = false;
-@@ -1325,6 +1364,45 @@ static void prepare_decoding(struct mp_filter *vd)
-         reset_avctx(vd);
- }
+@@ -1323,6 +1372,45 @@ static void prepare_decoding(struct mp_filter *vd)
 
+     if (ctx->hwdec_request_reinit)
+         reset_avctx(vd);
++}
++
 +static void trace_fel_decoder(vd_ffmpeg_ctx *ctx, enum mp_fel_stage stage,
 +                              double pts, unsigned inputs, unsigned outputs)
 +{
@@ -1400,12 +1482,10 @@ index c981c0035c..91c9db0cf1 100644
 +                (long long)(ctx->fel_call_max_ns / 1000), result);
 +        ctx->fel_cost_log_at = now;
 +    }
-+}
-+
+ }
+
  static void handle_err(struct mp_filter *vd)
- {
-     vd_ffmpeg_ctx *ctx = vd->priv;
-@@ -1333,6 +1411,28 @@ static void handle_err(struct mp_filter *vd)
+@@ -1333,6 +1421,28 @@ static void handle_err(struct mp_filter *vd)
      MP_WARN(vd, "Error while decoding frame%s!\n",
              ctx->use_hwdec ? " (hardware decoding)" : "");
 
@@ -1434,7 +1514,7 @@ index c981c0035c..91c9db0cf1 100644
      if (ctx->use_hwdec) {
          ctx->hwdec_fail_count += 1;
          if (ctx->hwdec_fail_count >= hwdec_opts->software_fallback)
-@@ -1351,7 +1451,7 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+@@ -1351,7 +1461,7 @@ static int send_packet(struct mp_filter *vd, struct de
      if (ctx->hwdec_failed)
          return AVERROR(EAGAIN);
 
@@ -1443,7 +1523,7 @@ index c981c0035c..91c9db0cf1 100644
          return AVERROR_EOF;
 
      prepare_decoding(vd);
-@@ -1370,7 +1470,42 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
+@@ -1370,7 +1480,42 @@ static int send_packet(struct mp_filter *vd, struct de
 
      mp_set_av_packet(ctx->avpkt, pkt, &ctx->codec_timebase);
 
@@ -1487,7 +1567,7 @@ index c981c0035c..91c9db0cf1 100644
      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
          return ret;
 
-@@ -1413,9 +1548,13 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1413,9 +1558,13 @@ static int decode_frame(struct mp_filter *vd)
      if (ctx->num_requeue_packets)
          send_queued_packet(vd);
 
@@ -1501,7 +1581,7 @@ index c981c0035c..91c9db0cf1 100644
              // If flushing was initialized earlier and has ended now, make it
              // start over in case we get new packets at some point in the future.
              // This must take the delay queue into account, so avctx returns EOF
-@@ -1424,6 +1563,7 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1424,6 +1573,7 @@ static int decode_frame(struct mp_filter *vd)
                  reset_avctx(vd);
          } else if (ret == AVERROR(EAGAIN)) {
              // just retry after caller writes a packet
@@ -1509,7 +1589,7 @@ index c981c0035c..91c9db0cf1 100644
          } else {
              handle_err(vd);
          }
-@@ -1452,12 +1592,14 @@ static int decode_frame(struct mp_filter *vd)
+@@ -1452,12 +1602,14 @@ static int decode_frame(struct mp_filter *vd)
      ctx->hwdec_fail_count = 0;
 
      mpi->pts = mp_pts_from_av(ctx->pic->pts, &ctx->codec_timebase);
@@ -1524,7 +1604,7 @@ index c981c0035c..91c9db0cf1 100644
      return ret;
  }
 
-@@ -1486,7 +1628,7 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+@@ -1486,7 +1638,7 @@ static int receive_frame(struct mp_filter *vd, struct
           */
          do {
              force_fallback(vd);
@@ -1533,7 +1613,7 @@ index c981c0035c..91c9db0cf1 100644
 
          ctx->requeue_packets = pkts;
          ctx->num_requeue_packets = num_pkts;
-@@ -1595,6 +1737,8 @@ static void vd_lavc_reset(struct mp_filter *vd)
+@@ -1595,6 +1747,8 @@ static void vd_lavc_reset(struct mp_filter *vd)
 
      ctx->state = (struct lavc_state){0};
      ctx->framedrop_flags = 0;
@@ -1542,7 +1622,7 @@ index c981c0035c..91c9db0cf1 100644
  }
 
  static void vd_lavc_destroy(struct mp_filter *vd)
-@@ -1618,6 +1762,16 @@ static struct mp_decoder *create(struct mp_filter *parent,
+@@ -1618,6 +1772,16 @@ static struct mp_decoder *create(struct mp_filter *par
                                   struct mp_codec_params *codec,
                                   const char *decoder)
  {
@@ -1559,7 +1639,7 @@ index c981c0035c..91c9db0cf1 100644
      struct mp_filter *vd = mp_filter_create(parent, &vd_lavc_filter);
      if (!vd)
          return NULL;
-@@ -1644,11 +1798,18 @@ static struct mp_decoder *create(struct mp_filter *parent,
+@@ -1644,13 +1808,20 @@ static struct mp_decoder *create(struct mp_filter *par
      mp_mutex_init(&ctx->dr_lock);
 
      // hwdec/DR
@@ -1569,16 +1649,18 @@ index c981c0035c..91c9db0cf1 100644
          ctx->vo = info->dr_vo;
          ctx->force_swdec = info->force_swdec;
 +        ctx->android_fel = info->android_fel;
-+    }
-+
+     }
+
 +    if (ctx->android_fel && ctx->vo) {
 +        atomic_store_explicit(&ctx->vo->fel_trace.enabled, true, memory_order_relaxed);
 +        trace_fel_decoder(ctx, MP_FEL_RESET, MP_NOPTS_VALUE, 0, 0);
 +        MP_INFO(vd, "WebHTV FEL pipeline diagnostics v=1 enabled; "
 +                    "fatal includes lock-free core/BL/EL/VO progress.\n");
-     }
-
++    }
++
      reinit(vd);
+
+     if (!ctx->avctx) {
 diff --git a/video/mp_image.c b/video/mp_image.c
 index 1ce0555807..41148ef200 100644
 --- a/video/mp_image.c
@@ -1731,10 +1813,9 @@ index 4952b4fb38..0b03d0d1c6 100644
              delete_image(o, image, acquire_fence);
          else
 diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hwdec_aimagereader_vk_stable.c
-index da3725a89a..b83cab4611 100644
 --- a/video/out/hwdec/hwdec_aimagereader_vk_stable.c
 +++ b/video/out/hwdec/hwdec_aimagereader_vk_stable.c
-@@ -17,22 +17,28 @@
+@@ -17,22 +17,29 @@
  #include <unistd.h>
 
  #include <android/data_space.h>
@@ -1746,6 +1827,7 @@ index da3725a89a..b83cab4611 100644
  #include "common/common.h"
  #include "common/msg.h"
 +#include "filters/f_android_fel.h"
++#include "filters/f_android_fel_perf.h"
 +#include "options/options.h"
 +#include "osdep/timer.h"
  #include "video/out/gpu/context.h"
@@ -1763,7 +1845,15 @@ index da3725a89a..b83cab4611 100644
  #define INPUT_CACHE_SIZE 8
  #define EXTERNAL_FORMAT_DESCRIPTOR_COUNT 4
  #define CONVERSION_FENCE_TIMEOUT_NS UINT64_C(250000000)
-@@ -70,6 +76,7 @@ struct vk_output {
+@@ -60,6 +67,7 @@ struct vk_output {
+ };
+
+ struct vk_output {
++    bool fel_query_recorded;
+     VkImage image;
+     VkDeviceMemory memory;
+     VkImageView view;
+@@ -70,6 +78,7 @@ struct vk_output {
      VkSemaphore available;
      VkSemaphore acquire;
      VkSemaphore ready;
@@ -1771,7 +1861,7 @@ index da3725a89a..b83cab4611 100644
      VkFence fence;
      AImage *source_image;
      struct mp_image *source_frame;
-@@ -94,6 +101,8 @@ struct aimagereader_vk_stable {
+@@ -94,6 +103,8 @@ struct aimagereader_vk_stable {
      PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAHBProperties;
      PFN_vkGetPhysicalDeviceImageFormatProperties2 GetImageFormatProperties2;
      PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
@@ -1780,7 +1870,7 @@ index da3725a89a..b83cab4611 100644
 
      VkCommandPool command_pool;
      VkFormat output_format;
-@@ -119,14 +128,45 @@ struct aimagereader_vk_stable {
+@@ -119,13 +130,171 @@ struct aimagereader_vk_stable {
      struct vk_input inputs[INPUT_CACHE_SIZE];
      int num_inputs;
      uint64_t input_serial;
@@ -1796,9 +1886,104 @@ index da3725a89a..b83cab4611 100644
 +    double fel_log_at;
 +    uint64_t fel_wait_ns, fel_max_wait_ns;
 +    uint64_t fel_async_returns, fel_release_failures;
++    bool fel_profile, fel_profile_warm;
++    int64_t fel_map_started, fel_map_cpu_started, fel_map_checkpoint;
++    struct mp_fel_perf_stat fel_map_warm, fel_map_cold, fel_map_cpu;
++    struct mp_fel_perf_stat fel_map_stages[MP_FEL_PERF_COUNT];
++    VkQueryPool fel_query_pool;
++    unsigned fel_timestamp_bits;
++    double fel_timestamp_period;
++    bool fel_query_failed;
++    struct mp_fel_perf_stat fel_gpu_copy;
++    uint64_t fel_query_unavailable;
  };
-
++
 +static int output_sample_depth(VkFormat format);
++
++static void fel_perf_checkpoint(struct aimagereader_vk_stable *p,
++                                enum mp_fel_perf_stage stage)
++{
++    if (!p->fel_map_checkpoint)
++        return;
++    int64_t now = mp_time_ns();
++    if (p->fel_profile_warm)
++        mp_fel_perf_add(&p->fel_map_stages[stage],
++                       MPMAX(0, now - p->fel_map_checkpoint));
++    p->fel_map_checkpoint = now;
++}
++
++static void fel_perf_finish_map(struct aimagereader_vk_stable *p)
++{
++    if (!p->fel_map_started)
++        return;
++    fel_perf_checkpoint(p, MP_FEL_PERF_OTHER);
++    mp_fel_perf_add(p->fel_profile_warm ? &p->fel_map_warm : &p->fel_map_cold,
++                   MPMAX(0, p->fel_map_checkpoint - p->fel_map_started));
++    int64_t cpu = mp_fel_thread_cpu_ns();
++    if (p->fel_profile_warm && p->fel_map_cpu_started > 0 && cpu >= p->fel_map_cpu_started)
++        mp_fel_perf_add(&p->fel_map_cpu, cpu - p->fel_map_cpu_started);
++    p->fel_map_started = p->fel_map_checkpoint = 0;
++}
++
++// Called only AFTER the existing copy fence has signalled. Without that fence
++// a recycled query could still expose the previous frame's available result.
++static void collect_fel_gpu_time(struct aimagereader_vk_stable *p,
++                                  struct vk_output *output)
++{
++    if (!output->fel_query_recorded)
++        return;
++    output->fel_query_recorded = false;
++    uint64_t values[2] = {0};
++    VkResult result = vkGetQueryPoolResults(p->device, p->fel_query_pool,
++        2 * (uint32_t)(output - p->outputs), 2, sizeof(values), values,
++        sizeof(values[0]), VK_QUERY_RESULT_64_BIT); // deliberately no WAIT_BIT
++    uint64_t ns;
++    if (result == VK_SUCCESS && mp_fel_gpu_duration(values[0], values[1],
++            p->fel_timestamp_bits, p->fel_timestamp_period, &ns)) {
++        mp_fel_perf_add(&p->fel_gpu_copy, ns);
++    } else {
++        p->fel_query_unavailable++;
++        if (result != VK_NOT_READY)
++            p->fel_query_failed = true; // diagnostics must never fail playback
++    }
++}
++
++static void init_fel_gpu_timer(struct aimagereader_vk_stable *p)
++{
++    if (!p->fel_profile)
++        return;
++    uint32_t count = 0;
++    vkGetPhysicalDeviceQueueFamilyProperties(p->vk->phys_device, &count, NULL);
++    if (p->queue_family >= count)
++        return;
++    VkQueueFamilyProperties *families = talloc_array(NULL, VkQueueFamilyProperties, count);
++    if (!families)
++        return;
++    vkGetPhysicalDeviceQueueFamilyProperties(p->vk->phys_device, &count, families);
++    p->fel_timestamp_bits = p->queue_family < count
++        ? families[p->queue_family].timestampValidBits : 0;
++    talloc_free(families);
++    VkPhysicalDeviceProperties props;
++    vkGetPhysicalDeviceProperties(p->vk->phys_device, &props);
++    p->fel_timestamp_period = props.limits.timestampPeriod;
++    if (!p->fel_timestamp_bits || !isfinite(p->fel_timestamp_period) ||
++        p->fel_timestamp_period <= 0)
++        return;
++    VkQueryPoolCreateInfo info = {
++        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
++        .queryType = VK_QUERY_TYPE_TIMESTAMP,
++        .queryCount = 2 * p->output_capacity,
++    };
++    if (vkCreateQueryPool(p->device, &info, NULL, &p->fel_query_pool) != VK_SUCCESS)
++        p->fel_query_pool = VK_NULL_HANDLE;
++    mp_info(p->log, "WebHTV FEL perf: timer=%s bits=%u period-ns=%.3f "
++                    "queue-family=%u compute-queues=%d graphics-family=%u "
++                    "graphics-queues=%d no-query-wait=1.\n",
++            p->fel_query_pool ? "gpu-timestamp" : "unavailable",
++            p->fel_timestamp_bits, p->fel_timestamp_period, p->queue_family,
++            p->vk->queue_compute.count, p->vk->queue_graphics.index,
++            p->vk->queue_graphics.count);
++}
 +
 +static void log_fel_pool(struct aimagereader_vk_stable *p, bool force)
 +{
@@ -1822,12 +2007,43 @@ index da3725a89a..b83cab4611 100644
 +            p->fence_timeouts, p->fel_wait_ns / 1000, p->fel_max_wait_ns / 1000,
 +            p->output_count, force, p->fel_async_returns, p->fel_release_failures);
 +    p->fel_log_at = now;
++    if (p->fel_profile) {
++        mp_info(p->log, "WebHTV FEL perf: warm-attempts=%" PRIu64
++                " warm-map-us=%" PRIu64 " cpu-samples=%" PRIu64
++                " thread-cpu-us=%" PRIu64 " cold-attempts=%" PRIu64
++                " cold-map-us=%" PRIu64 " gpu-samples=%" PRIu64
++                " gpu-copy-us=%" PRIu64 " gpu-copy-max-us=%" PRIu64
++                " gpu-unavailable=%" PRIu64 " gpu-disabled=%d final=%d.\n",
++                p->fel_map_warm.count, p->fel_map_warm.total / 1000,
++                p->fel_map_cpu.count, p->fel_map_cpu.total / 1000,
++                p->fel_map_cold.count, p->fel_map_cold.total / 1000,
++                p->fel_gpu_copy.count, p->fel_gpu_copy.total / 1000,
++                p->fel_gpu_copy.peak / 1000, p->fel_query_unavailable,
++                !p->fel_query_pool || p->fel_query_failed, force);
++        mp_info(p->log, "WebHTV FEL perf stages: poll-us=%" PRIu64
++                " import-us=%" PRIu64 " reclaim-us=%" PRIu64
++                " record-us=%" PRIu64 " acquire-us=%" PRIu64
++                " queue-lock-us=%" PRIu64 " submit-us=%" PRIu64
++                " tex-release-us=%" PRIu64 " export-us=%" PRIu64
++                " image-return-us=%" PRIu64 " other-us=%" PRIu64
++                " (warm cumulative CPU wall time).\n",
++                p->fel_map_stages[MP_FEL_PERF_POLL].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_IMPORT].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_RECLAIM].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_RECORD].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_ACQUIRE].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_QUEUE_LOCK].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_SUBMIT].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_TEX_RELEASE].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_EXPORT].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_IMAGE_RETURN].total / 1000,
++                p->fel_map_stages[MP_FEL_PERF_OTHER].total / 1000);
++    }
 +}
-+
+
  static bool vk_success(struct aimagereader_vk_stable *p, VkResult result,
                         const char *operation)
- {
-@@ -145,7 +185,7 @@ static bool has_extension(pl_vulkan vk, const char *name)
+@@ -145,7 +314,7 @@ static bool can_import_sync_fd(pl_vulkan vk)
      return false;
  }
 
@@ -1836,15 +2052,15 @@ index da3725a89a..b83cab4611 100644
  {
      PFN_vkGetPhysicalDeviceExternalSemaphoreProperties get_properties =
          (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)
-@@ -168,8 +208,64 @@ static bool can_import_sync_fd(pl_vulkan vk)
+@@ -168,10 +337,68 @@ static bool can_import_sync_fd(pl_vulkan vk)
          .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
      };
      get_properties(vk->phys_device, &info, &properties);
 -    return properties.externalSemaphoreFeatures &
 -           VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
 +    return properties.externalSemaphoreFeatures;
-+}
-+
+ }
+
 +static VkSemaphore create_fel_release_semaphore(struct aimagereader_vk_stable *p)
 +{
 +    if (!p->android_fel || !p->release_sync_fd)
@@ -1882,6 +2098,7 @@ index da3725a89a..b83cab4611 100644
 +        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
 +    };
 +    VkResult result = p->GetSemaphoreFdKHR(p->device, &info, &fd);
++    fel_perf_checkpoint(p, MP_FEL_PERF_EXPORT);
 +    if (result != VK_SUCCESS) {
 +        // No export consumed this signal. Do not signal it again on reuse;
 +        // retain it until the existing VkFence proves safe destruction.
@@ -1894,16 +2111,19 @@ index da3725a89a..b83cab4611 100644
 +    // SYNC_FD export consumes the signal payload. Android takes fd ownership
 +    // and gates buffer reuse on GPU completion (-1 denotes already signaled).
 +    p->api.AImage_deleteAsync(output->source_image, fd);
++    fel_perf_checkpoint(p, MP_FEL_PERF_IMAGE_RETURN);
 +    output->source_image = NULL;
 +    p->fel_async_returns++;
 +    if (output->source_frame && output->source_frame->android_fel_staging)
 +        mp_android_fel_staging_release_fenced(
 +            output->source_frame->android_fel_staging->data);
 +    return true;
- }
-
++}
++
  static bool has_ycbcr_conversion(pl_vulkan vk)
-@@ -281,6 +377,46 @@ static void clear_output_frames(struct vk_output *output)
+ {
+     const VkStructureType ycbcr_type =
+@@ -281,6 +508,46 @@ static bool finish_output(struct aimagereader_vk_stabl
      output->num_source_aliases = 0;
  }
 
@@ -1950,7 +2170,12 @@ index da3725a89a..b83cab4611 100644
  static bool finish_output(struct aimagereader_vk_stable *p,
                            struct vk_output *output, uint64_t timeout_ns)
  {
-@@ -311,6 +447,14 @@ static bool finish_output(struct aimagereader_vk_stable *p,
+@@ -307,10 +574,19 @@ static bool finish_output(struct aimagereader_vk_stabl
+     if (!vk_success(p, result, "waiting for AHardwareBuffer conversion"))
+         return false;
+
++    collect_fel_gpu_time(p, output);
+     if (output->source_image) {
          p->api.AImage_delete(output->source_image);
          output->source_image = NULL;
      }
@@ -1965,7 +2190,7 @@ index da3725a89a..b83cab4611 100644
      if (output->input) {
          if (output->input->users > 0)
              output->input->users--;
-@@ -347,6 +491,8 @@ static void destroy_output(struct aimagereader_vk_stable *p,
+@@ -347,6 +623,8 @@ static void destroy_output(struct aimagereader_vk_stab
          vkDestroySemaphore(p->device, output->acquire, NULL);
      if (output->ready)
          vkDestroySemaphore(p->device, output->ready, NULL);
@@ -1974,7 +2199,7 @@ index da3725a89a..b83cab4611 100644
      if (output->fence)
          vkDestroyFence(p->device, output->fence, NULL);
      *output = (struct vk_output){0};
-@@ -354,16 +500,16 @@ static void destroy_output(struct aimagereader_vk_stable *p,
+@@ -354,16 +632,16 @@ static void destroy_conversion_resources(struct aimage
 
  static void destroy_conversion_resources(struct aimagereader_vk_stable *p)
  {
@@ -1994,7 +2219,7 @@ index da3725a89a..b83cab4611 100644
          struct vk_output *output = &p->outputs[n];
          output->descriptor = VK_NULL_HANDLE;
          if (output->command)
-@@ -376,7 +522,7 @@ static void destroy_conversion_resources(struct aimagereader_vk_stable *p)
+@@ -376,7 +654,7 @@ static void destroy_conversion_resources(struct aimage
      }
 
      p->mapper->tex[0] = NULL;
@@ -2003,7 +2228,7 @@ index da3725a89a..b83cab4611 100644
          destroy_output(p, &p->outputs[n]);
 
      for (int n = 0; n < p->num_inputs; n++)
-@@ -509,6 +655,9 @@ static VkFormat choose_output_format(
+@@ -509,6 +787,9 @@ static VkFormat choose_output_format(
          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
 
      for (int n = 0; n < num_candidates; n++) {
@@ -2013,7 +2238,7 @@ index da3725a89a..b83cab4611 100644
          VkFormatProperties props;
          vkGetPhysicalDeviceFormatProperties(p->vk->phys_device,
                                              candidates[n], &props);
-@@ -648,6 +797,7 @@ static bool create_output_image(struct aimagereader_vk_stable *p,
+@@ -648,6 +929,7 @@ static bool create_output_image(struct aimagereader_vk
                      "creating conversion fence"))
          return false;
 
@@ -2021,7 +2246,7 @@ index da3725a89a..b83cab4611 100644
      return true;
  }
 
-@@ -670,7 +820,7 @@ static bool create_outputs(
+@@ -670,7 +952,7 @@ static bool create_outputs(
 
      uint32_t queue_families[3];
      int num_queue_families = collect_queue_families(p, queue_families);
@@ -2030,7 +2255,7 @@ index da3725a89a..b83cab4611 100644
          if (!create_output_image(p, &p->outputs[n], queue_families,
                                   num_queue_families))
              return false;
-@@ -680,14 +830,14 @@ static bool create_outputs(
+@@ -680,14 +962,14 @@ static bool create_outputs(
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .commandPool = p->command_pool,
          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -2048,7 +2273,7 @@ index da3725a89a..b83cab4611 100644
          p->outputs[n].command = commands[n];
 
      return true;
-@@ -904,15 +1054,15 @@ static bool create_pipeline(
+@@ -904,15 +1186,15 @@ static bool create_pipeline(
      VkDescriptorPoolSize pool_sizes[] = {
          {
              .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2067,7 +2292,7 @@ index da3725a89a..b83cab4611 100644
          .poolSizeCount = MP_ARRAY_SIZE(pool_sizes),
          .pPoolSizes = pool_sizes,
      };
-@@ -921,14 +1071,14 @@ static bool create_pipeline(
+@@ -921,14 +1203,14 @@ static bool create_pipeline(
                      "creating conversion descriptor pool"))
          return false;
 
@@ -2086,7 +2311,7 @@ index da3725a89a..b83cab4611 100644
          .pSetLayouts = layouts,
      };
      if (!vk_success(p, vkAllocateDescriptorSets(
-@@ -936,9 +1086,11 @@ static bool create_pipeline(
+@@ -936,9 +1218,11 @@ static bool create_pipeline(
                      "allocating conversion descriptors"))
          return false;
 
@@ -2099,7 +2324,7 @@ index da3725a89a..b83cab4611 100644
          VkDescriptorImageInfo target = {
              .imageView = output->view,
              .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-@@ -1100,13 +1252,21 @@ static struct vk_input *create_input(struct aimagereader_vk_stable *p,
+@@ -1100,13 +1384,21 @@ static struct vk_input *create_input(struct aimageread
      int output_height = p->mapper->src_params.h;
 
      if (!p->resources_ready) {
@@ -2123,7 +2348,32 @@ index da3725a89a..b83cab4611 100644
      } else if (p->buffer_width != (int)desc->width ||
                 p->buffer_height != (int)desc->height ||
                 p->width != output_width || p->height != output_height ||
-@@ -1439,6 +1599,11 @@ static bool submit_conversion(struct aimagereader_vk_stable *p,
+@@ -1314,6 +1606,14 @@ static bool record_conversion(struct aimagereader_vk_s
+                     "beginning conversion command buffer"))
+         return false;
+
++    output->fel_query_recorded = p->fel_query_pool && !p->fel_query_failed;
++    uint32_t query = 2 * (uint32_t)(output - p->outputs);
++    if (output->fel_query_recorded) {
++        vkCmdResetQueryPool(output->command, p->fel_query_pool, query, 2);
++        vkCmdWriteTimestamp(output->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
++                            p->fel_query_pool, query);
++    }
++
+     VkImageMemoryBarrier acquire[] = {
+         {
+             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+@@ -1419,6 +1719,9 @@ static bool record_conversion(struct aimagereader_vk_s
+                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                          0, NULL, 0, NULL, MP_ARRAY_SIZE(release), release);
+
++    if (output->fel_query_recorded)
++        vkCmdWriteTimestamp(output->command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++                            p->fel_query_pool, query + 1);
+     return vk_success(p, vkEndCommandBuffer(output->command),
+                       "ending conversion command buffer");
+ }
+@@ -1439,6 +1742,11 @@ static bool submit_conversion(struct aimagereader_vk_s
          wait_semaphores[wait_count] = output->acquire;
          wait_stages[wait_count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
      }
@@ -2135,7 +2385,7 @@ index da3725a89a..b83cab4611 100644
 
      VkSubmitInfo submit_info = {
          .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-@@ -1447,8 +1612,8 @@ static bool submit_conversion(struct aimagereader_vk_stable *p,
+@@ -1447,13 +1755,15 @@ static bool submit_conversion(struct aimagereader_vk_s
          .pWaitDstStageMask = wait_count ? wait_stages : NULL,
          .commandBufferCount = 1,
          .pCommandBuffers = &output->command,
@@ -2146,17 +2396,25 @@ index da3725a89a..b83cab4611 100644
      };
 
      p->vk->lock_queue(p->vk, p->queue_family, 0);
-@@ -1469,6 +1634,9 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_create(
++    fel_perf_checkpoint(p, MP_FEL_PERF_QUEUE_LOCK);
+     VkResult result = vkQueueSubmit(p->queue, 1, &submit_info, output->fence);
+     p->vk->unlock_queue(p->vk, p->queue_family, 0);
++    fel_perf_checkpoint(p, MP_FEL_PERF_SUBMIT);
+     bool success =
+         vk_success(p, result, "submitting AHardwareBuffer conversion");
+     if (success)
+@@ -1469,6 +1779,10 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
      p->log = mapper->log;
      p->mapper = mapper;
      p->api = *api;
 +    p->android_fel = mapper->owner->ra_ctx->vo->opts->android_dovi_fel;
++    p->fel_profile = p->android_fel && mp_msg_test(p->log, MSGL_INFO);
 +    p->output_count = OUTPUT_COUNT;
 +    p->output_capacity = p->android_fel ? FEL_OUTPUT_CAPACITY : OUTPUT_COUNT;
 
      struct mpvk_ctx *ctx = ra_vk_ctx_get(mapper->owner->ra_ctx);
      p->gpu = ra_pl_get(mapper->ra);
-@@ -1499,11 +1667,19 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_create(
+@@ -1499,11 +1813,19 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
              get_device_proc(
                  p->device,
                  "vkGetAndroidHardwareBufferPropertiesANDROID");
@@ -2181,7 +2439,12 @@ index da3725a89a..b83cab4611 100644
          }
      }
      if (!p->queue || !p->GetAHBProperties || !p->GetImageFormatProperties2)
-@@ -1523,8 +1699,17 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_create(
+@@ -1519,12 +1841,22 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
+                     "creating AHardwareBuffer conversion command pool"))
+         goto error;
+
++    init_fel_gpu_timer(p);
+     mapper->dst_params = mapper->src_params;
      mapper->dst_params.imgfmt = IMGFMT_RGB0;
      mapper->dst_params.hw_subfmt = 0;
      mapper->dst_params_ready = false;
@@ -2201,7 +2464,7 @@ index da3725a89a..b83cab4611 100644
      if (p->ImportSemaphoreFdKHR) {
          MP_VERBOSE(mapper, "Using Vulkan sync_fd for AImage acquire fences\n");
      } else {
-@@ -1544,6 +1729,7 @@ void aimagereader_vk_stable_destroy(struct aimagereader_vk_stable **state)
+@@ -1544,6 +1876,7 @@ void aimagereader_vk_stable_destroy(struct aimagereade
      if (!p)
          return;
 
@@ -2209,7 +2472,16 @@ index da3725a89a..b83cab4611 100644
      mp_verbose(p->log, "Vulkan conversion pool stats: submitted=%" PRIu64
                         " completed=%" PRIu64 " reclaimed=%" PRIu64
                         " fence-timeouts=%" PRIu64 " pool-retries=%" PRIu64
-@@ -1574,15 +1760,17 @@ void aimagereader_vk_stable_buffer_removed(struct aimagereader_vk_stable *p,
+@@ -1553,6 +1886,8 @@ void aimagereader_vk_stable_destroy(struct aimagereade
+     if (p->gpu)
+         pl_gpu_finish(p->gpu);
+     destroy_conversion_resources(p);
++    if (p->fel_query_pool)
++        vkDestroyQueryPool(p->device, p->fel_query_pool, NULL);
+     if (p->command_pool)
+         vkDestroyCommandPool(p->device, p->command_pool, NULL);
+
+@@ -1574,15 +1909,17 @@ bool aimagereader_vk_stable_reuse(struct aimagereader_
  bool aimagereader_vk_stable_reuse(struct aimagereader_vk_stable *p,
                                    struct mp_image *frame)
  {
@@ -2228,18 +2500,29 @@ index da3725a89a..b83cab4611 100644
                  p->mapper->tex[0] = output->ratex;
                  return true;
              }
-@@ -1622,7 +1810,7 @@ int aimagereader_vk_stable_map(
+@@ -1622,9 +1959,15 @@ int aimagereader_vk_stable_map(
      if (!crop || !p->mapper->src_params.w || !p->mapper->src_params.h)
          return -1;
 
 -    for (int n = 0; n < OUTPUT_COUNT; n++)
++    if (p->fel_profile) {
++        p->fel_profile_warm = p->resources_ready;
++        p->fel_map_started = p->fel_map_checkpoint = mp_time_ns();
++        p->fel_map_cpu_started = mp_fel_thread_cpu_ns();
++    }
 +    for (int n = 0; n < p->output_count; n++)
          finish_output(p, &p->outputs[n], 0);
      purge_removed_inputs(p);
++    fel_perf_checkpoint(p, MP_FEL_PERF_POLL);
 
-@@ -1640,23 +1828,31 @@ int aimagereader_vk_stable_map(
+     AHardwareBuffer_Desc desc;
+     p->api.AHardwareBuffer_describe(buffer, &desc);
+@@ -1638,25 +1981,34 @@ int aimagereader_vk_stable_map(
+                        "(buffer %ux%u, crop %d,%d-%d,%d)\n",
+                desc.width, desc.height, crop->left, crop->top,
                 crop->right, crop->bottom);
-         return -1;
+-        return -1;
++        goto error;
      }
 +    bool cold_init = p->android_fel && !p->resources_ready;
 +    int64_t init_started = cold_init ? mp_time_ns() : 0;
@@ -2255,7 +2538,14 @@ index da3725a89a..b83cab4611 100644
          input = create_input(p, buffer, &desc, data_space);
      if (!input)
          goto error;
--
++    if (cold_init) {
++        mp_android_fel_staging_end_init(frame->android_fel_staging
++            ? frame->android_fel_staging->data : NULL);
++        mp_info(p->log, "WebHTV FEL GPU init: ready pts=%.6f elapsed-ms=%lld.\n",
++                frame->pts, (long long)((mp_time_ns() - init_started) / 1000000));
++    }
++    fel_perf_checkpoint(p, MP_FEL_PERF_IMPORT);
+
 -    int next_output = (p->output_index + 1) % OUTPUT_COUNT;
 -    int selected_output = -1;
 -    for (int n = 0; n < OUTPUT_COUNT; n++) {
@@ -2264,15 +2554,9 @@ index da3725a89a..b83cab4611 100644
 -            selected_output = candidate;
 -            break;
 -        }
-+    if (cold_init) {
-+        mp_android_fel_staging_end_init(frame->android_fel_staging
-+            ? frame->android_fel_staging->data : NULL);
-+        mp_info(p->log, "WebHTV FEL GPU init: ready pts=%.6f elapsed-ms=%lld.\n",
-+                frame->pts, (long long)((mp_time_ns() - init_started) / 1000000));
-     }
+-    }
 -    if (selected_output < 0) {
 -        selected_output = next_output;
-+
 +    int waiting_output = -1;
 +    int selected_output = select_reusable_output(p, &waiting_output);
 +    if (selected_output < 0 && waiting_output >= 0) {
@@ -2280,7 +2564,11 @@ index da3725a89a..b83cab4611 100644
          if (!finish_output(p, &p->outputs[selected_output],
                             CONVERSION_FENCE_TIMEOUT_NS)) {
              p->pool_retries++;
-@@ -1668,6 +1864,33 @@ int aimagereader_vk_stable_map(
+@@ -1665,9 +2017,37 @@ int aimagereader_vk_stable_map(
+                                 "output=%d retries=%" PRIu64 "\n",
+                         selected_output, p->pool_retries);
+             }
++            fel_perf_finish_map(p);
              return RA_HWDEC_MAP_RETRY;
          }
      }
@@ -2314,10 +2602,35 @@ index da3725a89a..b83cab4611 100644
      p->output_index = selected_output;
      output = &p->outputs[selected_output];
 
-@@ -1735,6 +1958,17 @@ int aimagereader_vk_stable_map(
+@@ -1685,6 +2065,7 @@ int aimagereader_vk_stable_map(
+         p->reclaimed_outputs++;
+     }
+     clear_output_frames(output);
++    fel_perf_checkpoint(p, MP_FEL_PERF_RECLAIM);
+
+     VkDescriptorImageInfo source = {
+         .imageView = input->view,
+@@ -1703,6 +2084,7 @@ int aimagereader_vk_stable_map(
+     frame_ref = mp_image_new_ref(frame);
+     if (!frame_ref || !record_conversion(p, output, input, &desc, crop))
+         goto error;
++    fel_perf_checkpoint(p, MP_FEL_PERF_RECORD);
+
+     if (*acquire_fence >= 0) {
+         int import_result =
+@@ -1712,6 +2094,7 @@ int aimagereader_vk_stable_map(
+             goto error;
+         acquire_imported = import_result > 0;
+     }
++    fel_perf_checkpoint(p, MP_FEL_PERF_ACQUIRE);
+     if (!submit_conversion(p, output, wait_for_output, acquire_imported)) {
+         if (acquire_imported)
+             reset_acquire_semaphore(p, output);
+@@ -1735,11 +2118,25 @@ int aimagereader_vk_stable_map(
          .semaphore = (pl_vulkan_sem){.sem = output->ready},
      ));
      p->mapper->tex[0] = output->ratex;
++    fel_perf_checkpoint(p, MP_FEL_PERF_TEX_RELEASE);
 +    if (p->android_fel && !release_fel_source_async(p, output)) {
 +        // Release the codec image after the actual GPU copy fence, not after
 +        // a future decoded frame arrives. The independent texture remains
@@ -2328,10 +2641,17 @@ index da3725a89a..b83cab4611 100644
 +        p->fel_wait_ns += elapsed;
 +        p->fel_max_wait_ns = MPMAX(p->fel_max_wait_ns, elapsed);
 +    }
++    fel_perf_finish_map(p);
 +    log_fel_pool(p, false);
      return 0;
 
  error:
+     mp_image_unrefp(&frame_ref);
+     if (output)
+         release_output_after_error(p, output, wait_for_output);
++    fel_perf_finish_map(p);
+     return -1;
+ }
 diff --git a/video/out/vo.c b/video/out/vo.c
 index 9e77c94244..afd50aba13 100644
 --- a/video/out/vo.c
@@ -2683,10 +3003,32 @@ index 302ea423b2..7ad253377b 100644
  bool vo_is_visible(struct vo *vo);
  void vo_queue_frame(struct vo *vo, struct vo_frame *frame);
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 49dddd5003..eff7c71e8d 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
-@@ -116,6 +116,7 @@ struct priv {
+@@ -17,6 +17,7 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+
++#include <inttypes.h>
+ #include <sys/stat.h>
+ #include <time.h>
+
+@@ -31,12 +32,14 @@
+ #include "config.h"
+ #include "common/common.h"
+ #include "common/stats.h"
++#include "filters/f_android_fel_perf.h"
+ #include "misc/io_utils.h"
+ #include "options/m_config.h"
+ #include "options/options.h"
+ #include "options/path.h"
+ #include "osdep/io.h"
+ #include "osdep/threads.h"
++#include "osdep/timer.h"
+ #include "stream/stream.h"
+ #include "sub/draw_bmp.h"
+ #include "video/fmt-conversion.h"
+@@ -116,6 +119,7 @@ struct priv {
      struct mp_pass_perf hwdec_perf;
      struct ra_hwdec_mapper *el_hwdec_mapper;
      struct timer_pool *el_hwdec_timer;
@@ -2694,10 +3036,23 @@ index 49dddd5003..eff7c71e8d 100644
      struct timer_pool *sw_upload_timer;
      struct mp_pass_perf sw_upload_perf;
 
-@@ -577,10 +578,40 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
-     return desc.num_planes;
- }
+@@ -170,6 +174,10 @@ struct priv {
+     // Performance data of last frame
+     struct frame_info perf_fresh;
+     struct frame_info perf_redraw;
++
++    // Explicit FEL diagnostics only; never wait for GPU timing results.
++    struct mp_fel_perf_stat fel_render_wall[4], fel_render_cpu[4];
++    double fel_render_log_at;
 
+     struct mp_image_params target_params;
+ };
+@@ -575,12 +583,42 @@ static int plane_data_from_imgfmt(struct pl_plane_data
+         return 0; // can't handle padded components without `pl_bit_encoding`
+
+     return desc.num_planes;
++}
++
 +static void restore_fel_display_params(struct vo *vo, struct mp_image *mpi,
 +                                        struct mp_image_params *par)
 +{
@@ -2712,8 +3067,8 @@ index 49dddd5003..eff7c71e8d 100644
 +    // The producer stages pure BL before EL supplies its RPU. Storage is raw
 +    // YUV in either case; the actual frame decides DV vs HDR10 interpretation.
 +    par->repr.sys = mpi->params.repr.sys;
-+}
-+
+ }
+
  static bool hwdec_reconfig(struct priv *p, struct ra_hwdec_mapper **mapper,
                             struct timer_pool **timer, struct ra_hwdec *hwdec,
                             const struct mp_image_params *par)
@@ -2735,7 +3090,7 @@ index 49dddd5003..eff7c71e8d 100644
      if (*mapper) {
          if (mp_image_params_static_equal(par, &(*mapper)->src_params)) {
              (*mapper)->src_params.repr.dovi = par->repr.dovi;
-@@ -964,6 +995,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
+@@ -964,6 +1002,7 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const s
          }
 
          par = p->hwdec_mapper->dst_params;
@@ -2743,7 +3098,7 @@ index 49dddd5003..eff7c71e8d 100644
          fp->mapped_coordinates =
              p->hwdec_mapper->dst_params_map_coordinates;
          fp->mapped_params = par;
-@@ -1084,6 +1116,13 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
+@@ -1084,6 +1123,13 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const s
          if (el_ok) {
              pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
              frame->enhancement_layer = &fp->el_frame;
@@ -2757,10 +3112,85 @@ index 49dddd5003..eff7c71e8d 100644
          } else {
              MP_WARN(vo, "Failed setting up enhancement layer; "
                      "rendering base layer only.\n");
-@@ -1500,8 +1539,45 @@ static int preload_deferred_hwdec_frame(struct priv *p,
-     return 1;
+@@ -1157,6 +1203,72 @@ static void info_callback(void *priv, const struct pl_
+
+     frame->count = info->index + 1;
+     pl_dispatch_info_move(&frame->info[info->index], info->pass);
++}
++
++enum { FEL_RENDER, FEL_FLUSH, FEL_SUBMIT, FEL_SWAP };
++
++static int64_t fel_render_begin(struct vo *vo, int64_t *cpu)
++{
++    struct priv *p = vo->priv;
++    if (!vo->opts->android_dovi_fel || !p->fel_input_logged ||
++        !mp_msg_test(vo->log, MSGL_INFO))
++        return 0;
++    *cpu = mp_fel_thread_cpu_ns();
++    return mp_time_ns();
++}
++
++static void fel_render_end(struct priv *p, int stage, int64_t start, int64_t cpu)
++{
++    if (!start)
++        return;
++    mp_fel_perf_add(&p->fel_render_wall[stage], MPMAX(0, mp_time_ns() - start));
++    int64_t end_cpu = mp_fel_thread_cpu_ns();
++    if (cpu > 0 && end_cpu >= cpu)
++        mp_fel_perf_add(&p->fel_render_cpu[stage], end_cpu - cpu);
++}
++
++static void log_fel_render_perf(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++    if (!vo->opts->android_dovi_fel || !p->fel_input_logged ||
++        !mp_msg_test(vo->log, MSGL_INFO))
++        return;
++    double now = mp_time_sec();
++    if (now - p->fel_render_log_at < 3.0)
++        return;
++    p->fel_render_log_at = now;
++
++    uint64_t gpu_ns[2] = {0};
++    int gpu_passes[2] = {0};
++    struct frame_info *frames[] = {&p->perf_fresh, &p->perf_redraw};
++    for (int f = 0; f < 2; f++) {
++        for (int i = 0; i < frames[f]->count; i++) {
++            const struct pl_dispatch_info *info = &frames[f]->info[i];
++            if (info->num_samples > 0) {
++                gpu_ns[f] += info->average;
++                gpu_passes[f]++;
++            }
++        }
++    }
++    MP_INFO(vo, "WebHTV FEL render perf: render-n=%" PRIu64
++            " render-us=%" PRIu64 " render-cpu-us=%" PRIu64
++            " render-max-us=%" PRIu64 " flush-n=%" PRIu64
++            " flush-us=%" PRIu64 " flush-cpu-us=%" PRIu64
++            " submit-n=%" PRIu64 " submit-us=%" PRIu64
++            " submit-cpu-us=%" PRIu64 " swap-n=%" PRIu64
++            " swap-us=%" PRIu64 " swap-cpu-us=%" PRIu64
++            " gpu-frame-pass-avg-us=%" PRIu64 " gpu-frame-passes=%d"
++            " gpu-blend-pass-avg-us=%" PRIu64 " gpu-blend-passes=%d"
++            " (CPU cumulative; GPU last-known pass averages, not frame wall time).\n",
++            p->fel_render_wall[FEL_RENDER].count, p->fel_render_wall[FEL_RENDER].total / 1000,
++            p->fel_render_cpu[FEL_RENDER].total / 1000, p->fel_render_wall[FEL_RENDER].peak / 1000,
++            p->fel_render_wall[FEL_FLUSH].count, p->fel_render_wall[FEL_FLUSH].total / 1000,
++            p->fel_render_cpu[FEL_FLUSH].total / 1000,
++            p->fel_render_wall[FEL_SUBMIT].count, p->fel_render_wall[FEL_SUBMIT].total / 1000,
++            p->fel_render_cpu[FEL_SUBMIT].total / 1000,
++            p->fel_render_wall[FEL_SWAP].count, p->fel_render_wall[FEL_SWAP].total / 1000,
++            p->fel_render_cpu[FEL_SWAP].total / 1000,
++            gpu_ns[0] / 1000, gpu_passes[0], gpu_ns[1] / 1000, gpu_passes[1]);
  }
 
+ static void update_options(struct vo *vo)
+@@ -1498,10 +1610,47 @@ static int preload_deferred_hwdec_frame(struct priv *p
+ #endif
+
+     return 1;
++}
++
 +static void trace_fel_vo(struct vo *vo, enum mp_fel_stage stage,
 +                         double pts, int held, unsigned inputs, unsigned outputs)
 +{
@@ -2794,8 +3224,8 @@ index 49dddd5003..eff7c71e8d 100644
 +            return ret == RA_HWDEC_MAP_RETRY ? VO_FALSE : VO_ERROR;
 +    }
 +    return VO_TRUE;
-+}
-+
+ }
+
  static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  {
 +    trace_fel_vo(vo, MP_FEL_VO_DRAW, frame->current ? frame->current->pts : MP_NOPTS_VALUE,
@@ -2803,7 +3233,7 @@ index 49dddd5003..eff7c71e8d 100644
      struct priv *p = vo->priv;
      pl_options pars = p->pars;
      pl_gpu gpu = p->gpu;
-@@ -1550,6 +1626,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1550,6 +1699,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame
          }
      }
 
@@ -2811,7 +3241,7 @@ index 49dddd5003..eff7c71e8d 100644
      struct mp_image *preloaded = NULL;
      if (p->want_reset && frame->num_frames &&
          frame->frame_id > p->last_id)
-@@ -1639,6 +1716,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1639,6 +1789,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame
 
      struct ra_swapchain *sw = p->ra_ctx->swapchain;
 
@@ -2819,7 +3249,7 @@ index 49dddd5003..eff7c71e8d 100644
      struct pl_color_space target_csp = {0};
      // TODO: Implement this for all backends
      if (sw->fns->target_csp)
-@@ -1697,6 +1775,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1697,6 +1848,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame
          external_params = set_colorspace_hint(p, NULL);
      }
 
@@ -2827,7 +3257,7 @@ index 49dddd5003..eff7c71e8d 100644
      struct pl_swapchain_frame swframe;
      bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
      pl_swapchain pl_sw = get_active_swapchain(p);
-@@ -1808,6 +1887,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1808,6 +1960,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame
 
          p->hwdec_map_retry = false;
          p->hwdec_map_failed = false;
@@ -2835,40 +3265,52 @@ index 49dddd5003..eff7c71e8d 100644
          switch (pl_queue_update(p->queue, &mix, &qparams)) {
          case PL_QUEUE_ERR:
              if (p->hwdec_map_retry) {
-@@ -1891,6 +1971,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1891,8 +2044,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame
      }
 
      // Render frame
 +    trace_fel_vo(vo, MP_FEL_VO_RENDER, MP_NOPTS_VALUE, -1, 0, 0);
      stats_time_start(p->stats, "render");
++    int64_t render_cpu = 0, render_start = fel_render_begin(vo, &render_cpu);
      bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
++    fel_render_end(p, FEL_RENDER, render_start, render_cpu);
      stats_time_end(p->stats, "render");
-@@ -1930,6 +2011,7 @@ done:
+     if (!render_ok) {
+         MP_ERR(vo, "Failed rendering frame!\n");
+@@ -1930,7 +2086,10 @@ done:
      if (!valid)
          pl_tex_clear(gpu, swframe.fbo, (float[4]){0.0, 0.0, 0.0, 1.0});
 
 +    trace_fel_vo(vo, MP_FEL_VO_FLUSH, MP_NOPTS_VALUE, -1, 0, 0);
++    int64_t flush_cpu = 0, flush_start = fel_render_begin(vo, &flush_cpu);
      pl_gpu_flush(gpu);
++    fel_render_end(p, FEL_FLUSH, flush_start, flush_cpu);
      p->frame_pending = true;
      return VO_TRUE;
-@@ -1941,13 +2023,16 @@ static void flip_page(struct vo *vo)
+ }
+@@ -1941,13 +2100,21 @@ static void flip_page(struct vo *vo)
      struct ra_swapchain *sw = p->ra_ctx->swapchain;
      pl_swapchain pl_sw = get_active_swapchain(p);
 
 +    trace_fel_vo(vo, MP_FEL_VO_SUBMIT, MP_NOPTS_VALUE, -1, 0, 0);
      if (p->frame_pending) {
++        int64_t submit_cpu = 0, submit_start = fel_render_begin(vo, &submit_cpu);
          if (pl_sw && !pl_swapchain_submit_frame(pl_sw))
              MP_ERR(vo, "Failed presenting frame!\n");
++        fel_render_end(p, FEL_SUBMIT, submit_start, submit_cpu);
          p->frame_pending = false;
      }
 
 +    trace_fel_vo(vo, MP_FEL_VO_SWAP, MP_NOPTS_VALUE, -1, 0, 0);
++    int64_t swap_cpu = 0, swap_start = fel_render_begin(vo, &swap_cpu);
      sw->fns->swap_buffers(sw);
++    fel_render_end(p, FEL_SWAP, swap_start, swap_cpu);
 +    trace_fel_vo(vo, MP_FEL_VO_IDLE, MP_NOPTS_VALUE, -1, 0, 1);
++    log_fel_render_perf(vo);
  }
 
  static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
-@@ -2351,6 +2436,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
+@@ -2351,6 +2518,8 @@ static int control(struct vo *vo, uint32_t request, vo
      struct priv *p = vo->priv;
 
      switch (request) {
@@ -2877,7 +3319,7 @@ index 49dddd5003..eff7c71e8d 100644
      case VOCTRL_SET_PANSCAN:
          resize(vo);
          return VO_TRUE;
-@@ -3178,6 +3265,7 @@ const struct vo_driver video_out_gpu_next = {
+@@ -3178,6 +3347,7 @@ const struct vo_driver video_out_gpu_next = {
              VO_CAP_FILM_GRAIN |
              VO_CAP_VFLIP |
              VO_CAP_GPU_DOVI |

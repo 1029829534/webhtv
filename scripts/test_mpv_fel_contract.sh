@@ -54,6 +54,8 @@ awk '
 "$test_output/fel-core-preload-test"
 awk '
   /^static int stage_fel_before_publish\(/ || /^static bool finish_output\(/ ||
+  /^static void fel_perf_checkpoint\(/ || /^static void fel_perf_finish_map\(/ ||
+  /^static void collect_fel_gpu_time\(/ || /^static void init_fel_gpu_timer\(/ ||
   /^static VkSemaphore create_fel_release_semaphore\(/ ||
   /^static bool release_fel_source_async\(/ || /^static bool submit_conversion\(/ ||
   /^bool aimagereader_vk_stable_reuse\(/ { copying = 1 }

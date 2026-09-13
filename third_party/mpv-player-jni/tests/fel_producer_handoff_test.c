@@ -2,6 +2,7 @@
 // The device has one available output; this is a contract model, not a claim
 // about the tested TV's measured hardware DPB capacity or GPU performance.
 #include "filters/f_android_fel.h"
+#include "filters/f_android_fel_perf.h"
 #include <libavutil/buffer.h>
 #include <assert.h>
 #include <stdint.h>
@@ -13,18 +14,27 @@
 #define MP_INFO(...) ((void)0)
 #define MP_ERR(...) ((void)0)
 #define mp_warn(...) ((void)0)
+#define mp_info(...) ((void)0)
+#define talloc_array(ctx, type, count) ((type *)calloc(count, sizeof(type)))
+#define talloc_free free
 #define POOL_LOG_INTERVAL 120
 enum { MP_FRAME_VIDEO = 1, MP_FRAME_EOF = 2 };
 enum { IMGFMT_MEDIACODEC = 1, IMGFMT_YUV420P10 = 2 };
 enum { VO_ERROR = -1, VO_NOTIMPL = -3, VO_FALSE = 0, VO_TRUE = 1 };
 enum { VK_SUCCESS = 0, VK_NOT_READY = 1, VK_TIMEOUT = 2, VK_TRUE = 1 };
+enum { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO = 8, VK_QUERY_TYPE_TIMESTAMP = 2,
+       VK_QUERY_RESULT_64_BIT = 1 };
 enum { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO = 3,
        VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
        VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, VK_STRUCTURE_TYPE_SUBMIT_INFO,
        VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT = 1,
        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 2, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT = 4 };
-#define VK_NULL_HANDLE NULL
+#define VK_NULL_HANDLE 0
 typedef int VkResult;
+typedef unsigned VkQueryPool;
+typedef struct { unsigned timestampValidBits; } VkQueueFamilyProperties;
+typedef struct { struct { float timestampPeriod; } limits; } VkPhysicalDeviceProperties;
+typedef struct { int sType, queryType; unsigned queryCount; } VkQueryPoolCreateInfo;
 typedef unsigned VkPipelineStageFlags;
 struct fake_semaphore { bool signal; };
 typedef struct fake_semaphore *VkSemaphore;
@@ -50,6 +60,7 @@ struct mp_image {
 struct mp_frame { int type; struct mp_image *data; };
 struct vk_input { int users; bool removed; };
 struct vk_output {
+    bool fel_query_recorded;
     VkFence fence;
     VkSemaphore available, acquire, ready, source_release;
     int command;
@@ -64,6 +75,8 @@ struct mapper { void *tex[4]; };
 struct fake_vk {
     void (*lock_queue)(struct fake_vk *, unsigned, unsigned);
     void (*unlock_queue)(struct fake_vk *, unsigned, unsigned);
+    int phys_device;
+    struct { unsigned index; int count; } queue_compute, queue_graphics;
 };
 struct aimagereader_vk_stable {
     bool android_fel, release_sync_fd;
@@ -78,6 +91,15 @@ struct aimagereader_vk_stable {
              void (*AImage_deleteAsync)(struct fake_image *, int); } api;
     struct mapper *mapper;
     struct vk_output outputs[1];
+    bool fel_profile, fel_profile_warm, fel_query_failed;
+    int output_capacity;
+    int64_t fel_map_started, fel_map_cpu_started, fel_map_checkpoint;
+    struct mp_fel_perf_stat fel_map_warm, fel_map_cold, fel_map_cpu;
+    struct mp_fel_perf_stat fel_map_stages[MP_FEL_PERF_COUNT], fel_gpu_copy;
+    VkQueryPool fel_query_pool;
+    unsigned fel_timestamp_bits;
+    double fel_timestamp_period;
+    uint64_t fel_query_unavailable;
 };
 struct vo { struct aimagereader_vk_stable *gpu; };
 struct priv {
@@ -94,6 +116,10 @@ static bool finish_output(struct aimagereader_vk_stable *, struct vk_output *, u
 static VkSemaphore create_fel_release_semaphore(struct aimagereader_vk_stable *);
 static bool release_fel_source_async(struct aimagereader_vk_stable *, struct vk_output *);
 static bool submit_conversion(struct aimagereader_vk_stable *, struct vk_output *, bool, bool);
+static void fel_perf_checkpoint(struct aimagereader_vk_stable *, enum mp_fel_perf_stage);
+static void fel_perf_finish_map(struct aimagereader_vk_stable *);
+static void init_fel_gpu_timer(struct aimagereader_vk_stable *);
+static void collect_fel_gpu_time(struct aimagereader_vk_stable *, struct vk_output *);
 bool aimagereader_vk_stable_reuse(struct aimagereader_vk_stable *, struct mp_image *);
 static int64_t now_ns, gpu_delay_ns;
 static int64_t prepare_started_ns;
@@ -108,12 +134,48 @@ static struct priv producer;
 static struct fake_semaphore ready_sem, source_sem, available_sem, acquire_sem;
 static int create_result, export_result, exported_fd, fd_transfers, queue_locked;
 static unsigned submit_waits, submit_signals;
+static int query_calls, query_result, query_create_result, query_create_calls;
+static unsigned query_bits = 36;
+static float query_period = 1.0f;
+static uint64_t query_values[2];
 
 static void queue_lock(struct fake_vk *vk, unsigned family, unsigned index)
 { (void)vk; (void)family; assert(index == 0 && !queue_locked); queue_locked = 1; }
 static void queue_unlock(struct fake_vk *vk, unsigned family, unsigned index)
 { (void)vk; (void)family; assert(index == 0 && queue_locked); queue_locked = 0; }
-static struct fake_vk vk = {queue_lock, queue_unlock};
+static struct fake_vk vk = {.lock_queue = queue_lock, .unlock_queue = queue_unlock};
+static void vkGetPhysicalDeviceQueueFamilyProperties(int device, unsigned *count,
+                                                     VkQueueFamilyProperties *families)
+{
+    (void)device;
+    if (families) { assert(*count == 1); families[0].timestampValidBits = query_bits; }
+    *count = 1;
+}
+static void vkGetPhysicalDeviceProperties(int device, VkPhysicalDeviceProperties *props)
+{ (void)device; props->limits.timestampPeriod = query_period; }
+static VkResult vkCreateQueryPool(int device, const VkQueryPoolCreateInfo *info,
+                                  void *allocator, VkQueryPool *pool)
+{
+    (void)device;
+    assert(!allocator && info->queryCount == 2 && info->queryType == VK_QUERY_TYPE_TIMESTAMP);
+    query_create_calls++;
+    if (query_create_result == VK_SUCCESS) *pool = 7;
+    return query_create_result;
+}
+static VkResult vkGetQueryPoolResults(int device, VkQueryPool pool, unsigned first,
+    unsigned count, size_t size, void *data, size_t stride, unsigned flags)
+{
+    (void)device;
+    assert(pool == 7 && first == 0 && count == 2 && size == sizeof(query_values));
+    assert(stride == sizeof(uint64_t) && flags == VK_QUERY_RESULT_64_BIT); // Never WAIT.
+    assert(!fence.reset && now_ns >= fence.ready_at); // Read only this submission's results.
+    query_calls++;
+    if (query_result == VK_SUCCESS) {
+        uint64_t *values = data;
+        values[0] = query_values[0]; values[1] = query_values[1];
+    }
+    return query_result;
+}
 static VkResult vkCreateSemaphore(int device, const VkSemaphoreCreateInfo *info,
                                   const void *allocator, VkSemaphore *sem)
 {
@@ -234,12 +296,17 @@ static void reset(void)
     gpu_delay_ns = MP_TIME_MS_TO_NS(12);
     injected_result = VO_TRUE;
     create_result = export_result = VK_SUCCESS;
+    query_calls = query_create_calls = 0;
+    query_result = query_create_result = VK_SUCCESS;
+    query_bits = 36;
+    query_period = 1.0f;
     exported_fd = 37;
     fd_transfers = queue_locked = 0;
     ready_sem = source_sem = available_sem = acquire_sem = (struct fake_semaphore){0};
     gpu = (struct aimagereader_vk_stable){.android_fel = true, .output_count = 1,
         .api = {delete_image, delete_image_async}, .mapper = &mapper,
         .vk = &vk, .GetSemaphoreFdKHR = export_fd};
+    gpu.output_capacity = 1;
     vo = (struct vo){.gpu = &gpu};
     producer = (struct priv){.android_fel = true, .queue = &producer,
         .stream_info.dr_vo = &vo};
@@ -384,6 +451,77 @@ static void test_fenced_release(void)
     assert(!release_fel_source_async(&gpu, &gpu.outputs[0]));
     assert(!gpu.fel_async_returns && !fd_transfers);
 }
+static void test_performance_queries(void)
+{
+    uint64_t ns = 99;
+    assert(mp_fel_gpu_duration(100, 120, 64, 2.5, &ns) && ns == 50);
+    assert(mp_fel_gpu_duration(UINT64_MAX - 4, 5, 64, 1, &ns) && ns == 10);
+    assert(mp_fel_gpu_duration((UINT64_C(1) << 36) - 4, 7, 36, 1, &ns) && ns == 11);
+    assert(!mp_fel_gpu_duration(0, 1, 0, 1, &ns));
+    assert(!mp_fel_gpu_duration(0, 1, 65, 1, &ns));
+    assert(!mp_fel_gpu_duration(0, 1, 64, NAN, &ns));
+    assert(!mp_fel_gpu_duration(0, 1, 64, 0, &ns));
+    assert(!mp_fel_gpu_duration(0, UINT64_MAX, 64, 2, &ns));
+
+    for (int kind = 0; kind < 6; kind++) {
+        reset();
+        gpu.fel_profile = kind != 0;
+        if (kind == 1) query_bits = 0;
+        if (kind == 2) query_period = 0;
+        if (kind == 3) query_period = NAN;
+        if (kind == 4) query_create_result = -7;
+        init_fel_gpu_timer(&gpu);
+        assert(query_create_calls == (kind >= 4));
+        assert((gpu.fel_query_pool != 0) == (kind == 5));
+    }
+
+    for (int result = 0; result < 3; result++) {
+        reset();
+        gpu.release_sync_fd = gpu.fel_profile = true;
+        init_fel_gpu_timer(&gpu);
+        struct mp_image image = make_frame(0);
+        assert(await_handoff(&image));
+        struct vk_output *out = &gpu.outputs[0];
+        out->fel_query_recorded = true;
+        query_result = result == 0 ? VK_SUCCESS : result == 1 ? VK_NOT_READY : -7;
+        query_values[0] = (UINT64_C(1) << 36) - 4;
+        query_values[1] = 7;
+        assert(!finish_output(&gpu, out, 0) && !query_calls && out->fel_query_recorded);
+        now_ns = fence.ready_at;
+        assert(finish_output(&gpu, out, 0));
+        assert(query_calls == 1 && !out->fel_query_recorded && !out->pending);
+        assert(gpu.fel_gpu_copy.count == (unsigned)(result == 0));
+        assert(gpu.fel_gpu_copy.total == (unsigned)(result == 0 ? 11 : 0));
+        assert(gpu.fel_query_unavailable == (unsigned)(result != 0));
+        assert(gpu.fel_query_failed == (result == 2));
+        assert(finish_output(&gpu, out, 0) && query_calls == 1); // No stale double sample.
+        assert(mp_android_fel_staging_gpu_complete(image.android_fel_staging->data));
+        av_buffer_unref(&image.android_fel_staging);
+        clear_cached_frame();
+    }
+
+    reset();
+    gpu.fel_map_started = gpu.fel_map_checkpoint = now_ns;
+    now_ns += 100;
+    fel_perf_checkpoint(&gpu, MP_FEL_PERF_IMPORT);
+    now_ns += 50;
+    fel_perf_finish_map(&gpu);
+    assert(gpu.fel_map_cold.count == 1 && gpu.fel_map_cold.total == 150);
+    assert(!gpu.fel_map_stages[MP_FEL_PERF_IMPORT].count);
+    gpu.fel_profile_warm = true;
+    gpu.fel_map_started = gpu.fel_map_checkpoint = now_ns;
+    now_ns += 20;
+    fel_perf_checkpoint(&gpu, MP_FEL_PERF_SUBMIT);
+    now_ns += 10;
+    fel_perf_finish_map(&gpu);
+    assert(gpu.fel_map_warm.count == 1 && gpu.fel_map_warm.total == 30);
+    assert(gpu.fel_map_stages[MP_FEL_PERF_SUBMIT].total == 20);
+    assert(gpu.fel_map_stages[MP_FEL_PERF_OTHER].total == 10);
+    assert(!gpu.fel_map_cpu.count && !gpu.fel_map_started && !gpu.fel_map_checkpoint);
+    fel_perf_finish_map(&gpu); // No active profiling cannot change counters.
+    assert(gpu.fel_map_warm.count == 1);
+}
+
 int main(void)
 {
     assert(!mp_android_fel_staging_ready(NULL));
@@ -391,6 +529,8 @@ int main(void)
     test_handoff();
     test_timeout_and_isolation();
     test_fenced_release();
+    test_performance_queries();
     puts("PASS: actual producer/GPU handoff: 120 CPU-fence + 120 async-fence frames, independent render/source signals, fd ownership/reuse/failure, bounded timeout, opt-in isolation");
+    puts("PASS: real FEL timing helpers: cold/warm CPU stages, unsupported/failed timers, wrap/overflow, fence-before-query, no WAIT, unavailable results preserve playback");
     return 0;
 }

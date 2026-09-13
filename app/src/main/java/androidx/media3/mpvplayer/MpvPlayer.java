@@ -1275,6 +1275,20 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     @Override
     public void logMessage(String prefix, int level, String text) {
         if (released) return;
+        int performanceKind = MpvDiagnosticsPolicy.felPerformanceKind(prefix, level, text);
+        if (performanceKind >= 0) {
+            // Measurements cannot change playback state. Keep them out of the UI
+            // queue and synchronous pretty Logcat output, even when rate-limited.
+            if (SpiderDebug.isEnabled() && nativeLogWindow.allowPerformance(
+                    SystemClock.elapsedRealtime(), performanceKind)) {
+                int suppressed = nativeLogWindow.takePerformanceSuppressed();
+                String measurement = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text.trim());
+                com.github.catvod.crawler.DebugLogStore.add("mpv-native",
+                        "trace=" + playbackTraceId + " " + measurement
+                                + (suppressed > 0 ? " perf-rate-limited=" + suppressed : ""));
+            }
+            return;
+        }
         String line = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text);
         String traceId = playbackTraceId;
         long logGeneration = propertyGeneration.get();
