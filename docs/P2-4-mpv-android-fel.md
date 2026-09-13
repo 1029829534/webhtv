@@ -2,6 +2,17 @@
 
 ## Recovery anchor
 
+- 最新恢复点：2026-09-13用户要求快速保存日志41对应候选，已原子提交`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`并创建`recovery/P2-4-fel-buffer-progress/20260913025508-0a82dc13e255`，含最新源码/native，未推送。用户确认起播成功率提高，但均明显卡顿，且有一次4003；不是验收通过。
+- 当前分支`feature/mpv-dv7-fel`，guard `P2-4-fel-vo-handoff` / `upstream`保持active；仅FEL补丁/定向测试与校验脚本、两份libmpv、原任务/构建文档。保护原`app/.cxx/`35文件，不改FFmpeg/libplacebo/JNI/Exo/音频/光盘或默认设置。本轮未提交/tag、未推送。
+- 日志42否决9.12候选：三次均首帧`staged=0`、751ms交接失败；第一轮GPU map累计CPU耗时2127383us，最终才出现`async-returns=1`。异步归还的最终计数不能证明超时前已归还。首次创建输出/compute pipeline也被算进750ms；失败后反复写EOF，首轮BL队列膨胀到28481个信号帧。没有证据将网络、BL硬解能力或EL/NLQ算法归为此次首帧失败原因。
+- 第9.13节已实施：实际mapper冷初始化单独有界10秒，正常排队/交接仍750ms；wrapper用`fel_stage_frame`持有待处理帧，返回可取消的原dispatch，失败EOF仅一次。保留9.12的generation/lease确认与独立release fence、EL/NLQ/10bit、既有缓存上限及默认路径。
+- 定向证据：旧VO在2.13秒冷初始化并发轮询负例失败；新实际VO/core通过冷初始化/稳态期限、单调阶段、取消/旧generation、lookahead/lease/crop测试。真实wrapper/read/process/dispatch通过pending期间不继续decode/不重复PTS修正、取消、3万次失败后请求只发一次EOF；120 CPU/120异步fence帧及C++契约仍通过。证据根目录`/private/tmp/webhtv-fel-startup.hjGizG/`。
+- 本机交付：固定前置基线重新生成补丁；双ABI增量构建、ELF/公开导出通过，只变更2份libmpv、18依赖含JNI不变。TV32/Mobile64 debug一次Gradle调用4m44s成功，两包各10库与v2签名匹配。电视APK SHA256=`038d77eb0d694a7c96aa0c17bf3aa23eac7996805702187cdc2de835686489f0`，手机=`bb0e60a46c9ae913fc9df181bc8334d59fd75de9a66c05f3e3ab17ef82a521f4`。完整身份/构建更正见9.13末尾。
+- 未验收风险：电视无ADB，新包未安装/实播；不能以host/构建证明真实FEL画质、重复启动、吞吐或系统GPU挂死可恢复。不能沿用日志42旧APK/旧统计判断本候选。
+- 唯一下一步：目标电视安装上述TV32包，保持FEL双层重建，用同一GIJoe样片至少3次起播、完整57秒及seek/退出；取App调试日志核对`GPU init`、`handoff timeout: phase=`、`wait=async`、GPU/配对/帧率/A-V数据，裁决是否越过首帧失败及剩余掉帧。第9.12及以下旧恢复条目均为历史记录。
+
+### 日志41之前的恢复记录（历史）
+
 - 当前基线：用户明确指定的失败候选快照已经提交为 `cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`，恢复tag为 `recovery/P2-4-fel-reliability/20260912214750-cbb02fa4c40a`。包含第9.10节最新源码、补丁与native资产；未推送。此前 `checkpoint/dv7-fel-pure-bl-20260912` 只指向旧HEAD，不能恢复该测试候选，不移动它。
 - 本轮（2026-09-12 21:52起，Asia/Shanghai）：用户授权继续分析修复；新guard为 `P2-4-fel-buffer-progress` / `upstream`，保护原 `app/.cxx/` 35个文件。只允许FEL补丁、定向测试/校验脚本、两份libmpv和原任务/构建文档；不改JNI、FFmpeg、libplacebo、Exo、音频或光盘功能。
 - 新证据：日志39一轮6帧后失败，另一轮持续配对1030帧但约13fps、A/V偏差达数秒；日志40两轮分别13/6帧后4003。均pure-bl生效，已配对RPU全部来自EL且无缺失，所有已提交GPU拷贝在最终统计中完成；这否决了“纯BL输入已经解决停滞”。根因不能仅由最终统计反推第一次端口超时前的持有顺序。
@@ -665,3 +676,131 @@ Gradle 使用 `JAVA_HOME=/usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/
 | `third_party/mpv-native-lock.json`（未改） | — | `a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159` |
 
 当前交付仅是用户已批准可靠性修复的测试候选；不finish或创建“验证通过”的commit/tag，不推送。唯一下一步与顶部恢复锚点一致：在目标电视用相同样片验证源归还与下一次decode的顺序、重复启动和持续吞吐。如发布前归还已经生效仍复现，现假设被否决，必须换路线而非继续扩大队列、错误预算或超时。
+
+### 9.12 日志41：完成确认与异步释放栅栏
+
+本轮基线为`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`；固定四仓依赖仍见第2节，没有新上游合并。用户2026-09-13明确授权继续优化/实现并要求难点跨项目研究，不需逐步确认。当前问题是设备帧的同步与调度，不是重写FEL/NLQ算法。
+
+#### 证据、现有实现与设计依据
+
+访问日期2026-09-13；原始资料保存在`/private/tmp/webhtv-fel-vo-handoff.81ObkE/`。
+
+| 来源、身份 | 等级/实际结论 | 本轮影响与限制 |
+| --- | --- | --- |
+| 日志41；本地`vo.c::vo_prepare_fel_frame/process_fel_prepare`与`stage_fel_before_publish` | A；mapper可以返回可用纹理而GPU尚未完成，消费者确认后重入，ready快速路径可能遗留同一请求槽；正常交接约90–103ms且GPU CPU-wait约25–26ms/帧 | 修补状态确认，不能仅抬高750ms；总交接时间不等于GPU执行时间 |
+| AOSP `frameworks/av@e2f098935447ca4945946de5cb69db843fe3f003` [`NdkImage.h`](https://android.googlesource.com/platform/frameworks/av/+/e2f098935447ca4945946de5cb69db843fe3f003/media/ndk/include/media/NdkImage.h) 的`AImage_deleteAsync` | A；API26支持随image归还传递releaseFenceFd，硬件buffer由栅栏表示可复用时刻，调用后不可再用AImage指针 | 在GPU提交后异步归还，不等于允许未完成GPU时无保护复用。现有接口已动态加载，不新增Android最低版本 |
+| AOSP `frameworks/native@4f463a6b1de9198963dc6aff74154a504ba3f8f6` [`GLConsumer.cpp::syncForReleaseLocked`](https://android.googlesource.com/platform/frameworks/native/+/4f463a6b1de9198963dc6aff74154a504ba3f8f6/libs/gui/GLConsumer.cpp) | A/B；系统成熟消费路径使用native fence交回BufferQueue，缺少能力才CPU等待 | 借鉴所有权规则而非复制OpenGL代码，保留fallback |
+| Khronos Vulkan-Docs `f84d432d5b8912362f96f581f29bbc4f3c8c7843` [`synchronization.adoc`](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/synchronization.adoc) 的`vkGetSemaphoreFdKHR`/copy transference | A；导出SYNC_FD将fd所有权交应用，copy-transference消耗源semaphore的payload；必须避免未消费signal再次signal、泄漏fd/使用已销毁资源 | 独立source-release semaphore，与libplacebo ready semaphore分离；导出失败停止该mapper的后续异步导出并安全等待，不复用未消费的信号 |
+| Khronos/Arm Vulkan-Samples `200b3b21bd1970fc92d887dbac5abf52e0f94dde` [`wait_idle/README.adoc`](https://github.com/KhronosGroup/Vulkan-Samples/blob/200b3b21bd1970fc92d887dbac5abf52e0f94dde/samples/performance/wait_idle/README.adoc) | A/C；Mali实测说明CPU逐帧等GPU会使流水线闲置；应按资源生命周期使用异步fence | 支持减少CPU阻塞的方向，不把示例22%改善或G76结果外推到此G57电视 |
+| 当前mpv补丁树`hwdec_aimagereader_vk_direct.c::finish_frame/export_release_fence` | A；既有direct路径已有SYNC_FD能力探测、导出、AImage_deleteAsync和fallback；stable目前仅导入acquire fence | 复用已存在的内部API与设计，新增行为只在显式FEL stable暂存中；不修改default/direct实现 |
+| [mpv PR17303](https://github.com/mpv-player/mpv/pull/17303)，head `2eb4c8c38cb3e5213bd94e29fc50c2354f2f22db`、merge `731450f883f24bfa0e3441c205477f1c8d85f1ee`，已读描述及维护者/Android用户讨论 | B/C；GPU fence必须与实际清理消费路径配套，否则可出现泄漏；该PR属于OpenGL | 仅作为生命周期风险旁证，不移植、不将其当本Vulkan故障的修复 |
+| 论文类别 | 本轮不作为规范依据 | 没有新重建或调度算法要推导；决定由Android/Vulkan所有权规范、实际状态机回归和同设备测量裁决。泛CPU/GPU吞吐论文不能证明特定厂商的fence实现，不额外扩展搜索 |
+
+现有调用链：独立BL wrapper → 单槽`vo_prepare_fel_frame` → VO线程`preload_dropped_fel_frame` → AImageReader → stable GPU copy → libplacebo独立纹理与EL配对/呈现。`finish_output()`仍拥有提交后的VkFence/input缓存生命周期；提前交回的只能是带释放栅栏的AImage，不能销毁VkImage/VkMemory、复用未完成command buffer或覆盖仍被帧租约引用的输出。FFmpeg纯BL输入与EL/RPU继承、10bit输出、裁剪/HDR、seek/reset和错误预算保持。
+
+#### 方案比较、决定及验证
+
+- 不改：日志已否决稳定性/实时性，不满足目标。
+- 原样使用上游/当前CPU逐帧同步：保留简单所有权，但阻断流水线；只修槽可消除一个错误来源，不能解决额外GPU等待。
+- WebHTV窄适配（采用）：请求只有“安全归还源”才可确认，快速路径不遗留自己的槽；支持SYNC_FD时提交独立release semaphore并立即交还AImage+fd，GPU输入/输出及render ready semaphore继续受原队列约束；无能力或导出失败使用原有界等待。增加源已交还与GPU真正完成的区分、异步归还计数及VO分段耗时，日志不把异步交还冒充GPU完成。
+- 整体更换renderer/另建GPU线程、CPU readback、降低分辨率/位深或丢EL：扩大回归面或违反需求，本轮不选。
+
+验收：先让定向测试在旧VO状态机稳定失败，再验证延迟fence、快速命中清槽、无能力、fd导出失败、fd=-1已完成、重复使用/取消/销毁和非FEL隔离；GPU未完成时只能在有效release fence保护下交还源，不能提前复用GPU资源。保留两ABI/ELF/导出、18个未改依赖、APK逐库/签名。真实性/性能仍须同一GIJoe样片至少3次可重复起播、57秒完整播放及seek/退出；吞吐目标接近23.976fps且无持续A/V累积，默认模式无新增GPU/EL工作。不能以host模拟代替真实10bit像素、功耗或电视性能验收。
+
+回滚：撤销本guard的FEL补丁、测试/诊断和两份libmpv，恢复上述已保存的用户候选；不改已发布tag，不推送。新增导出沿用既有Vulkan扩展，无新动态依赖、JNI/公开API、许可或包下载能力；不支持的设备继续安全fallback。
+
+#### 实施与定向验证
+
+- `vo_prepare_fel_frame()`先消费同一请求再判断prepared快速路径，其他帧的快速命中不消费当前请求。`process_fel_prepare()`仅在源已安全归还时确认成功，texture已映射但源仍占用则保留同槽重试；提交结果同时核对generation和lease身份。
+- stable为显式FEL且EXPORTABLE时创建独立source-release semaphore，与libplacebo ready semaphore一起提交；SYNC_FD导出成功后由`AImage_deleteAsync`接管图像/fd，调用后不再使用AImage。原VkFence继续保护input/cache/command buffer生命周期，直到GPU真正完成才标记complete和重用GPU资源。导出失败会禁止该mapper后续source semaphore signal，避免重复signal未消费payload；继续原有界等待。fd=-1成功表示已signal，不误判为导出失败。
+- 原子lease状态区分safe-to-publish与GPU-completed；前者只在实际GPU完成或Android已接管release fence后可见。`producer handoff`增加gpu-complete字段；GPU pool增加async-returns/release-failures；`map cost`分离MediaCodec release、AImage acquire、GPU map的累计CPU墙钟时间，均只对FEL计时。
+- 新host回归先对旧代码运行，按预期在“映射成功但源未归还，应该继续等待”断言失败。修正后定向ASan/UBSan检查实际core/VO和生产者/submit/export/finish/reuse函数：120个CPU fence帧、120个async fence帧、源归还/fd转移先于发布、GPU未完成时保留input/command资源、fd=-1、分配/导出失败、失败后禁止再次signal、重复调用不二次转移fd、两信号独立与非FEL隔离全部通过。证据`targeted.log`；模拟时钟不作为电视性能改善的量化证据。
+
+#### 双ABI与APK交付证据（2026-09-13）
+
+证据根目录：`/private/tmp/webhtv-fel-vo-handoff.81ObkE/`。固定mpv/FFmpeg/libplacebo/mpv-android revision与NDK/API见第2节；没有JNI/依赖升级。源API还核对了同一AOSP revision的`NdkImage.cpp::AImage_deleteAsync/AImage::close`：releaseFenceFd随关闭进入reader释放路径，图像对象此后不可用；调用顺序与既有direct路径一致。
+
+| 验证 | 结果 |
+| --- | --- |
+| 旧代码负例 | `core-before.log`按预期断言失败；原因是mapped但源未归还时过早确认 |
+| 改后实际函数ASan/UBSan与C++策略 | `targeted.log`三组通过；含请求/延迟/复用/回退/超时/隔离，不重复无关BSF/Java/JNI测试 |
+| 补丁生成/反向应用/静态接线 | `patch-generation.log`、`static-contract.log`通过；修改的两个shell脚本语法通过 |
+| arm64、armv7串行增量构建/安装 | `arm64-build.log`、`armv7-build.log`、`stage.log`通过；没有重复完整依赖构建 |
+| ELF/SONAME/依赖/新诊断标记 | `native-assets.log`两ABI通过；已有局部变量shadow警告不在改动处，未扩展修复 |
+| baseline/candidate native边界与mpv公开接口 | `native-boundary.log`；2份libmpv变化，其他18库及公开mpv导出完全不变 |
+| TV32/Mobile64 debug构建 | `apk-build.log`一次调用1m12s通过；复用隔离CXX目录，原35文件受保护 |
+| APK内容/签名/结构 | `apk-artifacts.log`两包各10库逐一匹配、v2签名通过；电视ZIP开销799964字节，手机754872字节，无显著增量空洞 |
+| 目标电视真实FEL画质、性能、重复启动/seek/退出 | **未执行**；ADB列表为空，不能用host模型代替 |
+
+| 产物/输入 | 大小（字节） | SHA256 |
+| --- | ---: | --- |
+| `app/src/arm64_v8a/assets/mpv-libs/arm64-v8a/libmpv.so` | 17782888 | `c0dbdade8e905d9ee4dadf1abe686d9ac40660471bb6d34a6c5a3104b986dc0c` |
+| `app/src/armeabi_v7a/assets/mpv-libs/armeabi-v7a/libmpv.so` | 14589660 | `941dc0af9b3cdc902964cea9c1a9fd5bb903ec444cf7c3965cbefe4dccae06bf` |
+| `app/build/outputs/apk/leanbackArmeabi_v7a/debug/app-leanback-armeabi_v7a-debug.apk` | 130456903 | `7db281f0024e60f3ce8e451a53b84c41d99eb475fba8b778d1abd21019a11a3d` |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 151588356 | `6854b1c300d928de2f658b020787f6f1868c0b9d4f83ebbf58d00852dbce4bbb` |
+| `third_party/patches/mpv-android-fel.patch` | — | `4a5ffb6acdd9764de642c7e17a37883bf382539552a6469c39db8bda58eb0366` |
+| `third_party/mpv-native-lock.json`（未改） | — | `a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159` |
+
+旧两APK保存在本证据目录的`before-async-tv.apk`与`before-async-mobile.apk`，未删除用户文件。同步/资源生命周期核对较估计久，04:29已确认APK构建成功，停止可选检查，仅完成包内身份/签名和记录。当前仅交付待电视验证候选，不将guard结束或需求标为完成；后续唯一动作是顶部所列同设备重复实播，优先看真实异步能力、交接耗时、4003和持续帧率，而非继续盲调队列/超时。
+
+### 9.13 日志42：冷初始化误用帧期限与失败EOF空转
+
+本节继续同一`P2-4-fel-vo-handoff`原子单元；基线、固定四仓revision及回滚点不变，无依赖/JNI/App接口升级。授权沿用用户持续修复FEL并保护默认功能/性能的要求。
+
+#### 已确认事实与可证伪原因
+
+日志`/Users/macbookpro/Downloads/webhtv-debug-log (42).txt`的三轮`p-xl7f32-1`、`p-xl7t3k-2`、`p-xl86d0-3`均在首帧`result=0 elapsed-ms=751 staged=0`失败，最终各GPU只提交1次、异步归还1次，未配对出首帧。第一轮`map cost`记录`gpu-map-us=2127383`（CPU墙钟，不是GPU执行时间），超过当前750ms；普通native日志经主线程转发有延迟，不能混用打印顺序反推GPU事件先后。第一轮另有主线程缓存扫描1506ms，只作为调度干扰保留，不扩展修缓存功能。
+
+代码`stage_fel_before_publish()`在BL线程内sleep/poll，`vo_prepare_fel_frame()`也从请求入槽开始计750ms；`preload_hwdec_image → hwdec_reconfig → stable_map → create_input → create_outputs/create_pipeline`首次创建资源没有独立阶段，故正常冷初始化也会超时。原host模拟从已建好的资源开始，没有覆盖这个真实缺口。另一处确定错误：`read_frame()`在`fel_stage_failed`后每次被请求都写EOF；`f_async_queue::frame_get_samples()`对信号帧计0，因而max_samples=1挡不住重复EOF，日志队列28481并非真实硬件帧/DPB数。
+
+#### 增量最佳实践证据（2026-09-13访问）
+
+| 来源/固定身份 | 等级/支持的事实 | 本轮适用与限制 |
+| --- | --- | --- |
+| 日志42与本地上述实际函数；固定mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`加当前补丁 | A；首次资源创建与逐帧交接混计、EOF信号无样本权重 | 用冷初始化/并发消费和EOF一次性回归裁决，不能再只测试已初始化mapper |
+| Khronos/Arm [Pipeline Management](https://github.com/KhronosGroup/Vulkan-Samples/blob/200b3b21bd1970fc92d887dbac5abf52e0f94dde/samples/performance/pipeline_cache/README.adoc) | A/C；`vkCreateComputePipelines`会内部编译shader，首次资源准备与稳态渲染是不同工作负载；已有SPIR-V不等于免驱动编译 | 支持独立冷初始化阶段；暂不加入持久化pipeline cache，因为它不能保证第一次启动正确，且不能凭示例数字推断本电视耗时 |
+| 同revision的[CPU/GPU同步样例](https://github.com/KhronosGroup/Vulkan-Samples/blob/200b3b21bd1970fc92d887dbac5abf52e0f94dde/samples/performance/wait_idle/README.adoc) | A/C；避免CPU同步等待阻断工作管线 | 保留上节独立release fence，不恢复逐帧CPU等GPU；性能仍须实测 |
+| mpv [filters/filter.h](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/filters/filter.h) async规则、`misc/dispatch.c::mp_dispatch_queue_process`、[`f_decoder_wrapper.c::lavc_process`](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/filters/f_decoder_wrapper.c) | A；pending数据属于filter状态，等待应回到可处理reset的dispatch；上游用`eof_returned`只传播一次EOF | 复用已有BL线程/dispatch，不新增线程或让复位重入一个仍持有栈帧的process函数；只修FEL失败分支 |
+| 9.12的Android/Vulkan所有权规范、AOSP成熟消费者、mpv PR17303讨论 | A/B；异步image归还不解除GPU资源生命周期保护 | 沿用，不重复搜索；generation+lease身份仍防止取消后旧任务写回新任务 |
+| 论文/额外泛博客 | 本轮不适用 | 不推导新的调度或FEL重建算法；精确状态机、规范与冷初始化实测足以决定，不以泛基准支持电视实时性结论 |
+
+原始增量证据目录`/private/tmp/webhtv-fel-startup.hjGizG/`。
+
+#### 比较、决定、验收与回滚
+
+- 不改：三次实播已否决。
+- 只把所有帧750ms改大：掩盖稳态卡死、延长stop/reset等待，不采用。
+- 无修改上游：正常async filter/EOF设计可借鉴，但上游没有本项目Android硬解源归还前发布的约束，不能删除FEL交接。
+- 采用窄适配：显式标记实际GPU资源冷初始化，只有该阶段使用单独的有界初始化预算（10秒），普通排队/拷贝交接仍750ms；单调阶段标记不能被重复轮询续期。BL pending帧交给wrapper持有，每次process只检查一次，返回已有dispatch处理reset/退出；取消只撤销同一lease的VO请求，不等GPU、不释放GPU仍持有的资源。失败只发一次EOF且停止继续feed。分段输出初始化/资源/pipeline耗时，让下一次电视日志能验证具体慢点。
+- 未选方案：CPU readback/降精度/丢EL/增队列、更换renderer、增加GPU线程或依赖，均不需要且违反当前范围。
+
+最小验证：先在旧VO代码稳定重现2.13秒冷初始化被750ms误杀；改后覆盖冷初始化、10秒初始化挂起、750ms稳态停滞、阶段切换不续期、reset/取消/旧generation、pending时不继续decode、失败后大量请求只产生一次EOF和默认模式隔离。继续使用真实函数体及ASan/UBSan；再串行构建两ABI、ELF/导出/18未改库、两APK逐库与签名。原GPU fence/lease/NLQ/10bit、BL/EL配对、core lookahead契约保持。目标电视仍须至少三次成功起播、完整57秒及seek/退出；本机测试不是该验收替代。
+
+回滚：同9.12，恢复`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`对应任务源/测试/两份libmpv；已知它也有严重掉帧，不称稳定版本。当前工作未经实播验证，不自动提交/tag成通过状态、不推送。
+
+#### 实施与host验证
+
+- `f_android_fel.h`新增单调冷初始化阶段；`vo.c::fel_prepare_timed_out`按实际mapper阶段计时，只对冷资源阶段使用10秒，其余仍750ms。`vo_cancel_fel_frame`只取消同一lease；保留generation/身份双核对及原source/GPU就绪语义。
+- `f_decoder_wrapper.c`用`fel_stage_frame`持有待交接帧，`stage_fel_before_publish`单次非阻塞检查、期限由VO统一管理；`dec_thread`回到原dispatch并仅有pending时2ms可中断等待；reset/stop先取消待处理引用，再复位/终止。失败发出一次EOF后不再feed/read，正常路径没有新增定时唤醒。
+- stable mapper只在真实`resources_ready=false`时标记冷初始化，初始化日志分开输出图像资源与pipeline创建时间；不新增GPU工作、不改shader像素算法、依赖或默认策略。
+- `core-before.log`对旧真实VO函数稳定失败在“初始化中并发轮询仍应等待”，不是编译失败。`core-after.log`通过旧core/lookahead/lease/裁剪及新增阶段期限/取消；`producer-after.log`通过120 CPU/120异步fence帧及fd生命周期；第一次该测试失败是fake VO仍提前把未归还源标为成功，按真实VO现有契约修正fake后通过，没有放宽生产契约。`async-after.log`编译真实read/process/dispatch/reset/handoff，覆盖2.13秒冷初始化、待处理期间无额外decode或PTS修正、取消与3万次失败后请求仅一次EOF，ASan/UBSan通过。
+- ADB列表为空；目标电视仍不能自动安装/实播，后续必须通过App调试日志验证。上一APK和本轮待打包产物不能混用。未修改原`app/.cxx/`。
+
+#### 2026-09-13本机候选产物与边界
+
+09:12（Asia/Shanghai）原估计定位15–20分钟、修复测试20–30分钟、双ABI/APK15–20分钟，目标10:10–10:25；补齐真实filter/dispatch退出边界的回归超出估计，10:29已停止可选研究，仅完成构建核验。首次native编译发现初始化标记误插到同名`find_input`调用的buffer-removed函数，已移动至真正map路径；相关失败保存在`{arm64,armv7}-build-before-fix.log`。上游buildall在此错误下仍能以旧prefix继续stage，新标记检查拦截了旧产物；本轮临时构建编排增加编译错误/新标记检查，最终两ABI确实重新链接后才stage，不修改仓库构建框架。静态接线检查也约束begin/create_input/end必须在同一map函数按顺序出现。原host测试的函数体未受这次插入位置修正影响，不重复跑已通过用例。
+
+最终`arm64-build.log`、`armv7-build.log`、`stage.log`、`native-assets.log`及`native-boundary.log`均通过；仅2份libmpv改变，18依赖字节不变，公开libmpv导出一致。保留原有局部变量shadow警告。`patch-generation-final.log`/`static-contract-final.log`通过，两个修改shell脚本语法通过。Java/JNI未修改，不重跑无关单测矩阵。
+
+Gradle使用JDK21、原隔离CXX init script与授权缓存，`apk-build.log`记录一次调用4m44s成功（172项，18执行/154缓存），未重试或切换offline。期间工具授权/配置输出等待不能当作native或网络故障。`apk-artifacts.log`核验两包各10个MPV库逐一匹配，两个signature日志v2通过；电视/手机ZIP结构开销分别797680/752635字节，没有增量APK空洞。原日志42两包已移入证据目录`log42-before-tv.apk`/`log42-before-mobile.apk`保留，未删除用户数据。
+
+| 产物/输入 | 大小（字节） | SHA256 |
+| --- | ---: | --- |
+| `app/src/arm64_v8a/assets/mpv-libs/arm64-v8a/libmpv.so` | 17785112 | `1531f24447944768932207d1809b1cd82e8b5ab9155826e957cb2502ce270291` |
+| `app/src/armeabi_v7a/assets/mpv-libs/armeabi-v7a/libmpv.so` | 14591980 | `8edf92a75f30dea35b1218cde0005d45f8d44924b4d5e95f7dae62b80b23dd0d` |
+| `app/build/outputs/apk/leanbackArmeabi_v7a/debug/app-leanback-armeabi_v7a-debug.apk` | 130456903 | `038d77eb0d694a7c96aa0c17bf3aa23eac7996805702187cdc2de835686489f0` |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 151588356 | `bb0e60a46c9ae913fc9df181bc8334d59fd75de9a66c05f3e3ab17ef82a521f4` |
+| `third_party/patches/mpv-android-fel.patch` | — | `20d26942ff703d308da40fd5820813ae482050a3ec3944eabb3e6529135ebc7f` |
+| `third_party/mpv-native-lock.json`（未改） | — | `a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159` |
+
+诊断接线已读`MpvDiagnosticsPolicy::shouldLogNativeImmediately`及`MpvPlayer::logMessage`：新`WebHTV FEL`日志走既有App调试通道，不依赖ADB；普通信息仍可能限流/经主线程延迟，fatal维持豁免。新增`GPU init`耗时是CPU墙钟，不能冒充GPU执行时间。本候选尚未电视验收，不finish/commit/tag、不推送；唯一下一步与顶部一致。

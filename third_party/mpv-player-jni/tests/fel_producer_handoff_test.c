@@ -18,7 +18,26 @@ enum { MP_FRAME_VIDEO = 1, MP_FRAME_EOF = 2 };
 enum { IMGFMT_MEDIACODEC = 1, IMGFMT_YUV420P10 = 2 };
 enum { VO_ERROR = -1, VO_NOTIMPL = -3, VO_FALSE = 0, VO_TRUE = 1 };
 enum { VK_SUCCESS = 0, VK_NOT_READY = 1, VK_TIMEOUT = 2, VK_TRUE = 1 };
+enum { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO = 3,
+       VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+       VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, VK_STRUCTURE_TYPE_SUBMIT_INFO,
+       VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT = 1,
+       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 2, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT = 4 };
+#define VK_NULL_HANDLE NULL
 typedef int VkResult;
+typedef unsigned VkPipelineStageFlags;
+struct fake_semaphore { bool signal; };
+typedef struct fake_semaphore *VkSemaphore;
+typedef struct { int sType; unsigned handleTypes; } VkExportSemaphoreCreateInfo;
+typedef struct { int sType; const void *pNext; } VkSemaphoreCreateInfo;
+typedef struct { int sType; VkSemaphore semaphore; int handleType; } VkSemaphoreGetFdInfoKHR;
+typedef struct {
+    int sType;
+    unsigned waitSemaphoreCount, commandBufferCount, signalSemaphoreCount;
+    const VkSemaphore *pWaitSemaphores, *pSignalSemaphores;
+    const VkPipelineStageFlags *pWaitDstStageMask;
+    const int *pCommandBuffers;
+} VkSubmitInfo;
 struct fake_fence { int64_t ready_at; bool reset; };
 typedef struct fake_fence *VkFence;
 struct fake_image { bool returned; };
@@ -32,6 +51,8 @@ struct mp_frame { int type; struct mp_image *data; };
 struct vk_input { int users; bool removed; };
 struct vk_output {
     VkFence fence;
+    VkSemaphore available, acquire, ready, source_release;
+    int command;
     struct fake_image *source_image;
     struct mp_image *source_frame, **source_aliases;
     int num_source_aliases;
@@ -40,11 +61,21 @@ struct vk_output {
     void *ratex;
 };
 struct mapper { void *tex[4]; };
+struct fake_vk {
+    void (*lock_queue)(struct fake_vk *, unsigned, unsigned);
+    void (*unlock_queue)(struct fake_vk *, unsigned, unsigned);
+};
 struct aimagereader_vk_stable {
-    bool android_fel;
+    bool android_fel, release_sync_fd;
     int device, output_count;
+    int queue;
+    unsigned queue_family;
+    struct fake_vk *vk;
+    VkResult (*GetSemaphoreFdKHR)(int, const VkSemaphoreGetFdInfoKHR *, int *);
     uint64_t fence_timeouts, submitted_outputs, completed_outputs, reclaimed_outputs;
-    struct { void (*AImage_delete)(struct fake_image *); } api;
+    uint64_t fel_async_returns, fel_release_failures;
+    struct { void (*AImage_delete)(struct fake_image *);
+             void (*AImage_deleteAsync)(struct fake_image *, int); } api;
     struct mapper *mapper;
     struct vk_output outputs[1];
 };
@@ -54,14 +85,18 @@ struct priv {
     void *queue;
     struct { struct vo *dr_vo; } stream_info;
     unsigned long long fel_staged, fel_stage_retries;
-    int64_t fel_stage_ns, fel_stage_max_ns;
+    int64_t fel_stage_ns, fel_stage_max_ns, fel_stage_started;
     double fel_stage_log_at;
 };
 
-static bool stage_fel_before_publish(struct priv *, struct mp_frame);
+static int stage_fel_before_publish(struct priv *, struct mp_frame);
 static bool finish_output(struct aimagereader_vk_stable *, struct vk_output *, uint64_t);
+static VkSemaphore create_fel_release_semaphore(struct aimagereader_vk_stable *);
+static bool release_fel_source_async(struct aimagereader_vk_stable *, struct vk_output *);
+static bool submit_conversion(struct aimagereader_vk_stable *, struct vk_output *, bool, bool);
 bool aimagereader_vk_stable_reuse(struct aimagereader_vk_stable *, struct mp_image *);
 static int64_t now_ns, gpu_delay_ns;
+static int64_t prepare_started_ns;
 static int prepare_calls, held_outputs, returned_outputs, injected_result;
 static struct fake_image source_image;
 static struct fake_fence fence;
@@ -70,10 +105,51 @@ static struct mapper mapper;
 static struct aimagereader_vk_stable gpu;
 static struct vo vo;
 static struct priv producer;
+static struct fake_semaphore ready_sem, source_sem, available_sem, acquire_sem;
+static int create_result, export_result, exported_fd, fd_transfers, queue_locked;
+static unsigned submit_waits, submit_signals;
+
+static void queue_lock(struct fake_vk *vk, unsigned family, unsigned index)
+{ (void)vk; (void)family; assert(index == 0 && !queue_locked); queue_locked = 1; }
+static void queue_unlock(struct fake_vk *vk, unsigned family, unsigned index)
+{ (void)vk; (void)family; assert(index == 0 && queue_locked); queue_locked = 0; }
+static struct fake_vk vk = {queue_lock, queue_unlock};
+static VkResult vkCreateSemaphore(int device, const VkSemaphoreCreateInfo *info,
+                                  const void *allocator, VkSemaphore *sem)
+{
+    (void)device; assert(!allocator && info->sType == VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+    const VkExportSemaphoreCreateInfo *export = info->pNext;
+    assert(export && export->handleTypes == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT);
+    if (create_result != VK_SUCCESS) return create_result;
+    *sem = &source_sem;
+    return VK_SUCCESS;
+}
+static VkResult vkQueueSubmit(int queue, unsigned count, const VkSubmitInfo *info, VkFence f)
+{
+    (void)queue; assert(queue_locked && count == 1 && f == &fence);
+    assert(info->commandBufferCount == 1 && info->signalSemaphoreCount >= 1);
+    assert(info->pSignalSemaphores[0] == &ready_sem);
+    submit_signals = info->signalSemaphoreCount;
+    submit_waits = info->waitSemaphoreCount;
+    if (submit_signals == 2) {
+        assert(info->pSignalSemaphores[1] == &source_sem && !source_sem.signal);
+        source_sem.signal = true; // Pending signal; not yet GPU-completed.
+    }
+    return VK_SUCCESS;
+}
+static VkResult export_fd(int device, const VkSemaphoreGetFdInfoKHR *info, int *fd)
+{
+    (void)device;
+    assert(info->semaphore == &source_sem && source_sem.signal);
+    assert(info->handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT);
+    if (export_result != VK_SUCCESS) return export_result;
+    source_sem.signal = false; // SYNC_FD copy transference consumes this signal.
+    *fd = exported_fd;
+    return VK_SUCCESS;
+}
 
 static int64_t mp_time_ns(void) { return now_ns; }
 static double mp_time_sec(void) { return now_ns / 1e9; }
-static void mp_sleep_ns(int64_t duration) { assert(duration > 0); now_ns += duration; }
 static bool vk_success(struct aimagereader_vk_stable *p, int result, const char *what)
 { (void)p; (void)what; return result == VK_SUCCESS; }
 static VkResult vkGetFenceStatus(int device, VkFence f)
@@ -99,6 +175,17 @@ static void delete_image(struct fake_image *img)
     held_outputs--;
     returned_outputs++;
 }
+static void delete_image_async(struct fake_image *img, int fd)
+{
+    assert(img == &source_image && !img->returned && fd == exported_fd);
+    assert(!mp_android_fel_staging_ready(gpu.outputs[0].source_frame->android_fel_staging->data));
+    if (fd == -1) assert(now_ns >= fence.ready_at); // Already signaled, not export failure.
+    // This transfers AImage/fd ownership; actual reuse remains fence-gated.
+    img->returned = true;
+    held_outputs--;
+    returned_outputs++;
+    fd_transfers++;
+}
 static void clear_cached_frame(void)
 {
     struct vk_output *out = &gpu.outputs[0];
@@ -113,7 +200,12 @@ static int vo_prepare_fel_frame(struct vo *v, struct mp_image *image)
     assert(v == &vo);
     prepare_calls++;
     if (injected_result != VO_TRUE) return injected_result;
-    if (aimagereader_vk_stable_reuse(v->gpu, image)) return VO_TRUE;
+    if (!prepare_started_ns) prepare_started_ns = now_ns;
+    if (now_ns - prepare_started_ns >= MP_ANDROID_FEL_FRAME_TIMEOUT_NS)
+        return VO_ERROR;
+    if (aimagereader_vk_stable_reuse(v->gpu, image))
+        return mp_android_fel_staging_ready(image->android_fel_staging->data)
+            ? VO_TRUE : VO_FALSE;
     clear_cached_frame();
     image->android_fel_staging = av_buffer_allocz(1);
     assert(image->android_fel_staging);
@@ -126,19 +218,28 @@ static int vo_prepare_fel_frame(struct vo *v, struct mp_image *image)
     input = (struct vk_input){.users = 1};
     gpu.outputs[0] = (struct vk_output){.fence = &fence,
         .source_image = &source_image, .source_frame = ref, .input = &input,
-        .pending = true, .ratex = &gpu};
-    gpu.submitted_outputs++;
+        .pending = true, .ratex = &gpu, .ready = &ready_sem,
+        .available = &available_sem, .acquire = &acquire_sem,
+        .source_release = create_fel_release_semaphore(&gpu)};
+    assert(submit_conversion(&gpu, &gpu.outputs[0], false, false));
+    release_fel_source_async(&gpu, &gpu.outputs[0]);
     return VO_FALSE; // Submitted is not completed, even if the handle exists.
 }
 static void reset(void)
 {
     clear_cached_frame();
     now_ns = 1000000000LL;
+    prepare_started_ns = 0;
     prepare_calls = held_outputs = returned_outputs = 0;
     gpu_delay_ns = MP_TIME_MS_TO_NS(12);
     injected_result = VO_TRUE;
+    create_result = export_result = VK_SUCCESS;
+    exported_fd = 37;
+    fd_transfers = queue_locked = 0;
+    ready_sem = source_sem = available_sem = acquire_sem = (struct fake_semaphore){0};
     gpu = (struct aimagereader_vk_stable){.android_fel = true, .output_count = 1,
-        .api.AImage_delete = delete_image, .mapper = &mapper};
+        .api = {delete_image, delete_image_async}, .mapper = &mapper,
+        .vk = &vk, .GetSemaphoreFdKHR = export_fd};
     vo = (struct vo){.gpu = &gpu};
     producer = (struct priv){.android_fel = true, .queue = &producer,
         .stream_info.dr_vo = &vo};
@@ -147,9 +248,25 @@ static struct mp_image make_frame(int id)
 {
     assert(held_outputs == 0); // Calling the codec here would stall otherwise.
     held_outputs++;
+    prepare_started_ns = 0;
     source_image = (struct fake_image){0};
     return (struct mp_image){.imgfmt = IMGFMT_MEDIACODEC, .pts = id / 24.0,
         .planes[3] = (void *)(uintptr_t)(id + 1)};
+}
+static bool await_handoff(struct mp_image *image)
+{
+    int result;
+    // Model separate dispatch ticks: each production call must return without
+    // sleeping. VO phase/deadline behavior is tested with its real bodies in
+    // fel_core_preload_test; these fakes only supply the GPU/codec contract.
+    do {
+        int64_t before = now_ns;
+        result = stage_fel_before_publish(&producer,
+                    (struct mp_frame){MP_FRAME_VIDEO, image});
+        assert(now_ns == before);
+        if (result == VO_FALSE) now_ns += MP_TIME_MS_TO_NS(2);
+    } while (result == VO_FALSE);
+    return result == VO_TRUE;
 }
 static void test_handoff(void)
 {
@@ -160,7 +277,7 @@ static void test_handoff(void)
     // The actual new handoff closes that window without changing the codec.
     for (int id = 0; id < 120; id++) {
         if (id) image = make_frame(id);
-        assert(stage_fel_before_publish(&producer, (struct mp_frame){MP_FRAME_VIDEO, &image}));
+        assert(await_handoff(&image));
         assert(held_outputs == 0 && source_image.returned && input.users == 0);
         assert(mp_android_fel_staging_ready(image.android_fel_staging->data));
         assert(!gpu.outputs[0].pending && gpu.completed_outputs == (unsigned)id + 1);
@@ -177,7 +294,7 @@ static void test_timeout_and_isolation(void)
     struct mp_image image = make_frame(0);
     gpu_delay_ns = MP_TIME_MS_TO_NS(2000);
     int64_t started = now_ns;
-    assert(!stage_fel_before_publish(&producer, (struct mp_frame){MP_FRAME_VIDEO, &image}));
+    assert(!await_handoff(&image));
     assert(now_ns - started == MP_TIME_MS_TO_NS(750));
     assert(held_outputs == 1 && !producer.fel_staged);
     assert(!mp_android_fel_staging_ready(image.android_fel_staging->data));
@@ -198,10 +315,74 @@ static void test_timeout_and_isolation(void)
         if (kind == 4) image.imgfmt = IMGFMT_YUV420P10;
         if (kind == 5) injected_result = VO_NOTIMPL;
         if (kind == 6) injected_result = VO_ERROR;
-        assert(stage_fel_before_publish(&producer, frame) == (kind != 6));
+        assert(stage_fel_before_publish(&producer, frame) == (kind == 6 ? VO_ERROR : VO_TRUE));
         assert(!image.android_fel_staging && !producer.fel_staged);
         assert(prepare_calls == (kind >= 5));
     }
+}
+static void test_fenced_release(void)
+{
+    reset();
+    gpu.release_sync_fd = true;
+    for (int id = 0; id < 120; id++) {
+        struct mp_image image = make_frame(id);
+        int64_t started = now_ns;
+        assert(await_handoff(&image));
+        assert(now_ns - started == MP_TIME_MS_TO_NS(2)); // No per-frame GPU wait.
+        assert(held_outputs == 0 && returned_outputs == id + 1 && submit_signals == 2);
+        assert(mp_android_fel_staging_ready(image.android_fel_staging->data));
+        assert(!mp_android_fel_staging_gpu_complete(image.android_fel_staging->data));
+        assert(gpu.outputs[0].pending && input.users == 1 && now_ns < fence.ready_at);
+        assert(!release_fel_source_async(&gpu, &gpu.outputs[0])); // No double fd transfer.
+        // Kernel/consumer reuse must still wait for this fence. The GPU input
+        // cannot be freed even though AImage ownership has already returned.
+        assert(!finish_output(&gpu, &gpu.outputs[0], 0) && input.users == 1);
+        now_ns = fence.ready_at;
+        assert(finish_output(&gpu, &gpu.outputs[0], 0));
+        assert(input.users == 0 && mp_android_fel_staging_gpu_complete(image.android_fel_staging->data));
+        assert(gpu.completed_outputs == (unsigned)id + 1 && fd_transfers == id + 1);
+        av_buffer_unref(&image.android_fel_staging);
+    }
+    assert(!source_sem.signal && gpu.fel_async_returns == 120);
+    clear_cached_frame();
+
+    // Unsupported/allocation/export failures retain CPU-fence protection.
+    for (int kind = 0; kind < 3; kind++) {
+        reset();
+        gpu.release_sync_fd = kind != 0;
+        if (kind == 1) create_result = -7;
+        if (kind == 2) export_result = -7;
+        struct mp_image image = make_frame(0);
+        int64_t started = now_ns;
+        assert(await_handoff(&image));
+        assert(now_ns - started == gpu_delay_ns && fd_transfers == 0);
+        assert(!gpu.release_sync_fd && gpu.fel_release_failures == (unsigned)(kind != 0));
+        assert(mp_android_fel_staging_gpu_complete(image.android_fel_staging->data));
+        av_buffer_unref(&image.android_fel_staging);
+        // A failed export leaves a signal unconsumed. Disabling future export
+        // must also stop future submissions from signaling that semaphore.
+        assert(submit_conversion(&gpu, &gpu.outputs[0], true, true));
+        assert(submit_signals == 1 && submit_waits == 2 && !queue_locked);
+        clear_cached_frame();
+    }
+
+    reset();
+    gpu.release_sync_fd = true;
+    exported_fd = -1;
+    gpu_delay_ns = 0;
+    struct mp_image image = make_frame(0);
+    assert(await_handoff(&image));
+    assert(fd_transfers == 1 && gpu.release_sync_fd && gpu.fel_async_returns == 1);
+    assert(finish_output(&gpu, &gpu.outputs[0], 0));
+    av_buffer_unref(&image.android_fel_staging);
+    clear_cached_frame();
+
+    reset();
+    gpu.android_fel = false;
+    gpu.release_sync_fd = true;
+    assert(!create_fel_release_semaphore(&gpu));
+    assert(!release_fel_source_async(&gpu, &gpu.outputs[0]));
+    assert(!gpu.fel_async_returns && !fd_transfers);
 }
 int main(void)
 {
@@ -209,6 +390,7 @@ int main(void)
     mp_android_fel_staging_complete(NULL);
     test_handoff();
     test_timeout_and_isolation();
-    puts("PASS: actual producer handoff and GPU completion/cache-hit bodies: 120 limited-pool frames, fence-before-return-before-publish, bounded timeout, opt-in isolation");
+    test_fenced_release();
+    puts("PASS: actual producer/GPU handoff: 120 CPU-fence + 120 async-fence frames, independent render/source signals, fd ownership/reuse/failure, bounded timeout, opt-in isolation");
     return 0;
 }

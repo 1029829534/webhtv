@@ -33,7 +33,8 @@ awk '
     -x c - -o "$test_output/fel-vo-drop-test"
 "$test_output/fel-vo-drop-test"
 awk '
-  /^static void cancel_fel_prepare\(/ || /^int vo_prepare_fel_frame\(/ ||
+  /^static void cancel_fel_prepare\(/ || /^void vo_cancel_fel_frame\(/ ||
+  /^static bool fel_prepare_timed_out\(/ || /^int vo_prepare_fel_frame\(/ ||
   /^static int64_t process_fel_prepare\(/ || /^static bool use_video_lookahead\(/ ||
   /^static int get_req_frames\(/ || /^static bool needs_new_frame\(/ ||
   /^static void add_new_frame\(/ || /^static bool have_new_frame\(/ ||
@@ -52,7 +53,9 @@ awk '
     -x c - $(pkg-config --libs libavutil) -o "$test_output/fel-core-preload-test"
 "$test_output/fel-core-preload-test"
 awk '
-  /^static bool stage_fel_before_publish\(/ || /^static bool finish_output\(/ ||
+  /^static int stage_fel_before_publish\(/ || /^static bool finish_output\(/ ||
+  /^static VkSemaphore create_fel_release_semaphore\(/ ||
+  /^static bool release_fel_source_async\(/ || /^static bool submit_conversion\(/ ||
   /^bool aimagereader_vk_stable_reuse\(/ { copying = 1 }
   copying { print }
   copying && /^}/ { copying = 0 }
@@ -64,6 +67,19 @@ awk '
     -include "$task_root/third_party/mpv-player-jni/tests/fel_producer_handoff_test.c" \
     -x c - $(pkg-config --libs libavutil) -o "$test_output/fel-producer-handoff-test"
 "$test_output/fel-producer-handoff-test"
+awk '
+  /^static int stage_fel_before_publish\(/ || /^static void reset_fel_staging\(/ ||
+  /^static void read_frame\(/ || /^static void decf_process\(/ ||
+  /^static MP_THREAD_VOID dec_thread\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/filters/f_decoder_wrapper.c" | \
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Wno-unused-function \
+    -fsanitize=address,undefined -I"$mpv_source" \
+    $(pkg-config --cflags libavutil) \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_async_producer_test.c" \
+    -x c - $(pkg-config --libs libavutil) -o "$test_output/fel-async-producer-test"
+"$test_output/fel-async-producer-test"
 awk '
   /^static void mp_image_destructor\(/ || /^void mp_image_unref_data\(/ ||
   /^static void ref_buffer\(/ || /^struct mp_image \*mp_image_new_ref\(/ ||

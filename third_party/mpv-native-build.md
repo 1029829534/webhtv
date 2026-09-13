@@ -268,7 +268,13 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 日志39/40否决pure-BL候选的可靠性与实时性能。生产者交接续修在独立BL worker发布硬件帧前，通过已有非阻塞VO暂存接口等待GPU完成且AImage归还；共享AVBuffer原子标记保证源归还先于发布及下一次decode，2ms轮询、750ms总界限，不新增App/core同步等待。缓存命中继续推进fence，FEL mapper保持raw-YUV存储以兼容稍后从EL继承RPU，不增加第二次像素拷贝或降位深。`WebHTV FEL producer handoff`和`WebHTV FEL decoder cost`记录交接及BL/EL耗时；非FEL不进入新增计时路径。`fel_producer_handoff_test.c`直接编译生产函数体验证有限输出进展与所有权顺序，仍不能替代电视验收。
 
-当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.11节为准。早先NODE可靠性单元相对其基线替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16库不变；当前生产者交接单元以`cbb02fa4c40a2d0b1d04a43d6c5be4265129f98e`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）逐字节不变**。双ABI、ELF/导出、两debug APK逐库及v2签名已验证；默认路由未改，新FEL候选的目标电视画质、可靠性、性能与生命周期仍待实播，不标记任务完成。
+日志41的751ms超时暴露“mapper已返回纹理但源未完成→确认后重入→ready快速路径不清请求槽”。VO先确认自己的请求，映射成功但源未归还时保留同槽重试。FEL stable若支持SYNC_FD导出，则用独立source-release semaphore随GPU copy提交，导出fd交`AImage_deleteAsync`，使CPU不必逐帧等待GPU；libplacebo的render-ready semaphore不被导出消费，原VkFence继续保护GPU input/output/command资源。原子状态区分安全交还源和GPU完成。无能力、信号量创建或fd导出失败时保留有界CPU等待；失败后禁止再次signal未消费的source semaphore。不改变默认模式、位深、EL/RPU、缓存上限和超时预算。
+
+新`WebHTV FEL source release`、`map cost`、`async-returns`及producer的`gpu-complete`供无ADB电视取证。定向回归编译实际VO/submit/export/finish/producer函数，涵盖120帧CPU归还、120帧异步归还、延迟完成、fd=-1/失败/复用、独立两信号和准入隔离；它们不是电视画质/实时性能验收。
+
+日志42三次首帧751ms失败否决上一候选：冷启动GPU资源/compute pipeline创建也被算进逐帧750ms。当前修正用同一共享lease的单调phase位标记真实冷初始化，仅此阶段单独有界10秒，普通排队/交接仍750ms，不由“第几帧”或轮询次数续期。BL待交接帧由wrapper持有，每次process检查一次后返回已有dispatch（2ms可中断等待），reset/stop取消自己的VO lease，generation防止旧回写。FEL失败只发送一次EOF且停止feed，避免零样本权重的信号队列空转。`WebHTV FEL GPU init`区分outputs/pipeline/总初始化耗时，`handoff timeout: phase=`与`wait=async`进入App调试日志。
+
+当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.13节为准。早先NODE可靠性单元相对其基线替换两 ABI 的 `libmpv.so` 和 `libplayer.so`，其他16库不变；当前异步交接单元以`0a82dc13e255524d7c0e4e04c2f51ec9119aec88`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）必须逐字节不变**。新增host回归覆盖实际VO冷初始化并发轮询、初始化/稳态期限、实际wrapper/dispatch待处理帧、取消及失败后的3万次请求只发一次EOF；默认路由未改。新候选的双ABI/ELF/导出、两APK/签名及目标电视画质、可靠性、性能与生命周期须分别记录，不标记任务完成。
 
 ## 提交前验证
 

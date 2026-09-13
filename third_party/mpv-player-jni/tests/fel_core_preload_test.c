@@ -56,6 +56,8 @@ struct vo_internal {
     uint64_t fel_prepare_generation;
     int fel_prepare_result;
     int64_t fel_prepare_started, fel_prepare_retry;
+    int64_t fel_prepare_phase_started;
+    unsigned char fel_prepare_phase;
     bool send_reset;
 };
 struct vo {
@@ -97,8 +99,10 @@ struct priv { struct fake_ra *ra_ctx; };
 
 static int live_images, live_pixels, codec_held, codec_capacity, cursor, total;
 static int controls, wakes, polls, control_result, mapper_creations;
-static bool reset_during_control, software, unexpected, has_frame;
+static bool reset_during_control, software, unexpected, has_frame, defer_completion;
 static int64_t fake_now;
+static int64_t initialization_ns;
+static struct mp_image *initializing_client;
 static struct aimagereader_vk_stable cache;
 static struct vo_internal in;
 static struct mp_vo_opts vo_opts;
@@ -113,6 +117,7 @@ static struct MPContext ctx;
 static bool output_has_live_fel_frame(struct aimagereader_vk_stable *, struct vk_output *);
 static int select_reusable_output(struct aimagereader_vk_stable *, int *);
 static void cancel_fel_prepare(struct vo *);
+void vo_cancel_fel_frame(struct vo *, struct mp_image *);
 int vo_prepare_fel_frame(struct vo *, struct mp_image *);
 static int64_t process_fel_prepare(struct vo *);
 static int video_output_image(struct MPContext *, bool *);
@@ -235,8 +240,13 @@ static void stage_image(struct mp_image *image)
 {
     for (int n = 0; n < cache.output_count; n++) {
         if (cache.outputs[n].source_frame &&
-            cache.outputs[n].source_frame->pixels == image->pixels)
+            cache.outputs[n].source_frame->pixels == image->pixels) {
+            if (!defer_completion) {
+                release_codec(image);
+                mp_android_fel_staging_complete(image->android_fel_staging->data);
+            }
             return;
+        }
     }
     int waiting;
     int slot = select_reusable_output(&cache, &waiting);
@@ -248,15 +258,32 @@ static void stage_image(struct mp_image *image)
     mp_image_unrefp(&cache.outputs[slot].source_frame);
     cache.outputs[slot].source_frame = mp_image_new_ref(image);
     cache.output_index = slot;
-    release_codec(image);
-    if (image->android_fel_staging)
-        mp_android_fel_staging_complete(image->android_fel_staging->data);
+    if (!defer_completion) {
+        release_codec(image);
+        if (image->android_fel_staging)
+            mp_android_fel_staging_complete(image->android_fel_staging->data);
+    }
 }
 static int control(struct vo *v, int request, void *data)
 {
     CHECK(!v->in->lock); // a blocking GPU must never hold the core's VO lock
     CHECK(request == VOCTRL_PREPARE_FEL_FRAME);
     controls++;
+    if (initialization_ns) {
+        struct vo_frame *frame = data;
+        unsigned char *state = frame->current->android_fel_staging->data;
+        // The actual mapper publishes these monotonic phase bits while the
+        // VO callback is still running. Poll from the producer in that window,
+        // not after the fake mapper has already returned a ready texture.
+        __atomic_fetch_or(state, 4, __ATOMIC_RELEASE);
+        int64_t end = fake_now + initialization_ns;
+        while (fake_now < end) {
+            fake_now += end - fake_now < MP_TIME_MS_TO_NS(50)
+                ? end - fake_now : MP_TIME_MS_TO_NS(50);
+            CHECK(vo_prepare_fel_frame(v, initializing_client) == VO_FALSE);
+        }
+        __atomic_fetch_or(state, 8, __ATOMIC_RELEASE);
+    }
     if (reset_during_control) {
         mp_mutex_lock(&v->in->lock);
         cancel_fel_prepare(v);
@@ -276,8 +303,10 @@ static void reset_test(void)
     total = 40;
     codec_capacity = 1;
     fake_now = 1000000000LL;
+    initialization_ns = 0;
+    initializing_client = NULL;
     control_result = VO_TRUE;
-    reset_during_control = software = unexpected = has_frame = false;
+    reset_during_control = software = unexpected = has_frame = defer_completion = false;
     in = (struct vo_internal){.fel_prepare_generation = 1};
     vo_opts = (struct mp_vo_opts){true};
     opts = (struct MPOpts){.vo = &vo_opts};
@@ -400,6 +429,110 @@ static void test_async_lifecycle(void)
     talloc_free(a);
     cleanup();
 }
+static void test_deferred_handoff(void)
+{
+    reset_test();
+    struct mp_image *a = new_image(1), *b = new_image(2);
+    defer_completion = true;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    // A valid texture is not permission to publish an unreturned codec image.
+    // This is the >100 ms copy case from log41, without real-time sleeps.
+    CHECK(process_fel_prepare(&vo) == fake_now + MP_TIME_MS_TO_NS(5));
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    CHECK(!a->android_fel_prepared && !a->pixels->released && !wakes);
+    fake_now += MP_TIME_MS_TO_NS(5);
+    defer_completion = false;
+    CHECK(process_fel_prepare(&vo) == 0);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_TRUE);
+    CHECK(!in.fel_prepare_image && a->pixels->released);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE && b->android_fel_staging);
+    // A cached older frame must not consume B's outstanding request.
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_TRUE);
+    CHECK(in.fel_prepare_image->pixels == b->pixels);
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_TRUE && !in.fel_prepare_image);
+    talloc_free(a); talloc_free(b);
+    cleanup();
+
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    a->android_fel_prepared = in.fel_prepare_generation;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    process_fel_prepare(&vo);
+    // A ready fast path must still acknowledge its own in-flight request.
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_TRUE && !in.fel_prepare_image);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE && b->android_fel_staging);
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_TRUE);
+    talloc_free(a); talloc_free(b);
+    cleanup();
+}
+
+static void test_cold_initialization(void)
+{
+    reset_test();
+    struct mp_image *a = new_image(1);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    initializing_client = a;
+    initialization_ns = MP_TIME_MS_TO_NS(2130); // log42 measured cold map cost
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_TRUE);
+    CHECK(!in.fel_prepare_image && a->pixels->released);
+    CHECK(atomic_load(&vo.fel_trace.core_prepare_errors) == 0);
+    CHECK(atomic_load(&vo.fel_trace.core_prepare_completed) == 1);
+    talloc_free(a);
+    cleanup();
+}
+
+static void test_initialization_deadlines_and_cancel(void)
+{
+    reset_test();
+    struct mp_image *a = new_image(1), *b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_begin_init(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_ANDROID_FEL_INIT_TIMEOUT_NS - 1;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    // Same phase / repeated polling cannot extend a hung initialization.
+    mp_android_fel_staging_begin_init(a->android_fel_staging->data);
+    fake_now++;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_ERROR);
+    CHECK(!in.fel_prepare_image && !a->pixels->released);
+    CHECK(!mp_android_fel_staging_ready(a->android_fel_staging->data));
+    talloc_free(a); talloc_free(b);
+    cleanup();
+
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_begin_init(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(2130);
+    mp_android_fel_staging_end_init(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_ANDROID_FEL_FRAME_TIMEOUT_NS - 1;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_end_init(a->android_fel_staging->data);
+    fake_now++;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_ERROR); // steady state still 750ms
+    talloc_free(a); talloc_free(b);
+    cleanup();
+
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    vo_cancel_fel_frame(&vo, b); // another frame must not cancel A
+    CHECK(in.fel_prepare_image && !b->android_fel_staging);
+    uint64_t generation = in.fel_prepare_generation;
+    vo_cancel_fel_frame(&vo, a);
+    CHECK(!in.fel_prepare_image && in.fel_prepare_generation != generation);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_TRUE);
+    talloc_free(a); talloc_free(b);
+    cleanup();
+}
+
 static void test_seek_and_errors(void)
 {
     reset_test();
@@ -501,6 +634,8 @@ static void test_leases_and_crop(void)
 }
 int main(void)
 {
+    test_cold_initialization();
+    test_initialization_deadlines_and_cancel();
     test_lookahead(false, 2, false);
     test_lookahead(true, 2, false);
     test_lookahead(true, 6, false);
@@ -508,6 +643,7 @@ int main(void)
     test_lookahead(false, 2, true);
     test_lookahead(true, 2, true);
     test_async_lifecycle();
+    test_deferred_handoff();
     test_seek_and_errors();
     test_leases_and_crop();
     puts("PASS: actual FEL core/VO functions: limited-output progress, 2/6/10-frame "
