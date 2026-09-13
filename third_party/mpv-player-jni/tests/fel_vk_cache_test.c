@@ -66,7 +66,7 @@ enum fel_api_op {
     FEL_API_BIND, FEL_API_VIEW, FEL_API_DESCRIPTOR, FEL_API_RESET,
     FEL_API_BEGIN, FEL_API_RECORD, FEL_API_END, FEL_API_BARRIER_IN,
     FEL_API_PIPELINE, FEL_API_DESCRIPTORS, FEL_API_PUSH, FEL_API_DISPATCH,
-    FEL_API_BARRIER_OUT, FEL_API_COUNT,
+    FEL_API_BARRIER_OUT, FEL_API_PUSH_DESCRIPTORS, FEL_API_COUNT,
 };
 struct fel_api_clock { int64_t wall, cpu; };
 struct fel_order_event {
@@ -75,10 +75,20 @@ struct fel_order_event {
     int output, input;
     char action;
 };
+typedef const struct test_vulkan {
+    VkInstance instance;
+    VkPhysicalDevice phys_device;
+    PFN_vkGetInstanceProcAddr get_proc_addr;
+    const char *const *extensions;
+    int num_extensions;
+} *pl_vulkan;
 struct aimagereader_vk_stable {
     void *log;
     bool android_fel, fel_profile, fel_profile_warm, fel_query_failed;
     VkDevice device;
+    pl_vulkan vk;
+    bool push_descriptors;
+    PFN_vkCmdPushDescriptorSetKHR CmdPushDescriptorSetKHR;
     uint32_t queue_family, sampler_descriptors;
     VkPipeline pipeline;
     VkPipelineLayout pipeline_layout;
@@ -122,7 +132,10 @@ static struct vk_recording *select_recording(struct aimagereader_vk_stable *, st
                                              struct vk_input *, const AHardwareBuffer_Desc *,
                                              const AImageCropRect *, bool *);
 static bool allocate_recording(struct aimagereader_vk_stable *, struct vk_recording *);
-static void update_conversion_descriptor(struct aimagereader_vk_stable *, VkDescriptorSet,
+static bool has_extension(pl_vulkan, const char *);
+static bool create_conversion_descriptor_layout(struct aimagereader_vk_stable *,
+    const VkDescriptorSetLayoutCreateInfo *, uint32_t);
+static void update_conversion_descriptor(struct aimagereader_vk_stable *, VkCommandBuffer, VkDescriptorSet,
                                          struct vk_input *, struct vk_output *, bool);
 static bool record_conversion(struct aimagereader_vk_stable *, struct vk_output *, struct vk_input *,
                               const AHardwareBuffer_Desc *, const AImageCropRect *, struct vk_recording *);
@@ -134,6 +147,8 @@ struct command_state {
     bool pending, executable, freed, allocated;
     VkCommandBufferUsageFlags flags;
     VkDescriptorSet descriptor;
+    bool pushed;
+    VkImageView pushed_views[2];
     unsigned barriers, dispatch[3], timestamps, resets;
     VkImageMemoryBarrier acquire[2], release[2];
     struct conversion_push_constants push;
@@ -148,6 +163,12 @@ static int fail_allocation, fail_record;
 static int64_t wall_clock;
 static unsigned info_logs;
 static char last_info[512];
+static unsigned push_calls, bind_calls, layout_calls, property_calls;
+static uint32_t max_push;
+static int missing_entry;
+static bool fail_push_layout, fail_set_layout;
+static VkDescriptorSetLayoutCreateFlags last_layout_flags;
+static struct test_vulkan test_vk;
 
 static void mp_info(void *log, const char *format, ...)
 {
@@ -164,6 +185,61 @@ static bool vk_success(struct aimagereader_vk_stable *p, VkResult result, const 
 { (void)p; (void)action; return result == VK_SUCCESS; }
 static struct command_state *command(VkCommandBuffer cmd)
 { assert(ID(cmd) > 0 && ID(cmd) < MP_ARRAY_SIZE(cmds)); return &cmds[ID(cmd)]; }
+
+static void VKAPI_CALL fake_push_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint point,
+    VkPipelineLayout layout, uint32_t set, uint32_t count, const VkWriteDescriptorSet *writes)
+{
+    assert(point == VK_PIPELINE_BIND_POINT_COMPUTE && set == 0 && count == 2);
+    struct command_state *c = command(cmd);
+    assert(!c->pending && !c->descriptor && !c->executable && !c->pushed);
+    for (unsigned n = 0; n < count; n++) {
+        assert(writes[n].dstSet == VK_NULL_HANDLE && writes[n].dstBinding == n);
+        assert(writes[n].descriptorCount == 1 && writes[n].dstArrayElement == 0);
+        assert(writes[n].descriptorType == (n ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                             : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER));
+        assert(writes[n].pImageInfo->imageLayout == (n ? VK_IMAGE_LAYOUT_GENERAL
+                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        assert(!writes[n].pImageInfo->sampler); // immutable sampler comes from layout
+        c->pushed_views[n] = writes[n].pImageInfo->imageView;
+    }
+    c->pushed = true;
+    push_calls++;
+}
+static void VKAPI_CALL fake_properties(VkPhysicalDevice device, VkPhysicalDeviceProperties2 *props)
+{
+    VkPhysicalDevicePushDescriptorPropertiesKHR *push = props->pNext;
+    assert(push->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR);
+    push->maxPushDescriptors = max_push;
+    property_calls++;
+}
+static PFN_vkVoidFunction VKAPI_CALL fake_device_proc(VkDevice device, const char *name)
+{
+    assert(!strcmp(name, "vkCmdPushDescriptorSetKHR"));
+    return missing_entry == 1 ? NULL : (PFN_vkVoidFunction)fake_push_descriptors;
+}
+static PFN_vkVoidFunction VKAPI_CALL fake_instance_proc(VkInstance instance, const char *name)
+{
+    if (!strcmp(name, "vkGetDeviceProcAddr"))
+        return missing_entry == 2 ? NULL : (PFN_vkVoidFunction)fake_device_proc;
+    assert(!strcmp(name, "vkGetPhysicalDeviceProperties2") ||
+           !strcmp(name, "vkGetPhysicalDeviceProperties2KHR"));
+    return missing_entry == 3 ? NULL : (PFN_vkVoidFunction)fake_properties;
+}
+static VkResult vkCreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayoutCreateInfo *info,
+    const VkAllocationCallbacks *alloc, VkDescriptorSetLayout *layout)
+{
+    layout_calls++;
+    last_layout_flags = info->flags;
+    assert(info->bindingCount == 2 && info->pBindings[0].pImmutableSamplers);
+    assert(info->pBindings[0].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    bool push = info->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    if ((push && fail_push_layout) || (!push && fail_set_layout)) {
+        *layout = HANDLE(VkDescriptorSetLayout, 511); // invalid on failure; never publish it
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    *layout = HANDLE(VkDescriptorSetLayout, 2);
+    return VK_SUCCESS;
+}
 
 static VkResult vkCreateDescriptorPool(VkDevice device, const VkDescriptorPoolCreateInfo *info,
                                       const VkAllocationCallbacks *alloc, VkDescriptorPool *pool)
@@ -252,7 +328,7 @@ static void vkCmdBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint point, Vk
 static void vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint point,
                                     VkPipelineLayout layout, uint32_t first, uint32_t count,
                                     const VkDescriptorSet *sets, uint32_t offsets, const uint32_t *values)
-{ assert(count == 1 && !offsets); command(cmd)->descriptor = *sets; }
+{ assert(count == 1 && !offsets && *sets); command(cmd)->descriptor = *sets; bind_calls++; }
 static void vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout,
                                VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void *data)
 { assert(size == sizeof(command(cmd)->push)); memcpy(&command(cmd)->push, data, size); }
@@ -274,7 +350,8 @@ static void vkDestroyImageView(VkDevice device, VkImageView view, const VkAlloca
 {
     for (unsigned i = 1; i < MP_ARRAY_SIZE(cmds); i++) {
         unsigned ds = ID(cmds[i].descriptor);
-        if (bindings[ds][0] != view && bindings[ds][1] != view) continue;
+        VkImageView *views = cmds[i].pushed ? cmds[i].pushed_views : bindings[ds];
+        if (views[0] != view && views[1] != view) continue;
         assert(!cmds[i].pending);
         cmds[i].executable = false;
     }
@@ -293,6 +370,13 @@ static void reset(struct aimagereader_vk_stable *p, bool fel)
     update_calls = reset_calls = begin_calls = end_calls = 0;
     pool_calls = descriptor_calls = command_calls = command_frees = pool_frees = 0;
     imports = removed_views = 0; fail_allocation = fail_record = 0;
+    push_calls = bind_calls = layout_calls = property_calls = 0;
+    max_push = 32; missing_entry = 0; fail_push_layout = fail_set_layout = false;
+    last_layout_flags = 0;
+    static const char *const extensions[] = {VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    test_vk = (struct test_vulkan){.get_proc_addr = fake_instance_proc,
+        .extensions = extensions, .num_extensions = 1};
+    p->vk = &test_vk;
     command_next = descriptor_next = 100;
     p->android_fel = fel; p->sampler_descriptors = 4;
     p->width = 3840; p->height = 2160; p->queue_family = 2;
@@ -330,8 +414,9 @@ static void complete_frame(struct vk_output *output, struct vk_input *input)
     assert(c->release[0].dstQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT);
     assert(c->acquire[0].dstAccessMask == VK_ACCESS_SHADER_READ_BIT);
     assert(c->release[1].oldLayout == VK_IMAGE_LAYOUT_GENERAL);
-    assert(bindings[ID(c->descriptor)][0] == input->view);
-    assert(bindings[ID(c->descriptor)][1] == output->view);
+    VkImageView *views = c->pushed ? c->pushed_views : bindings[ID(c->descriptor)];
+    assert(views[0] == input->view);
+    assert(views[1] == output->view);
     input->initialized = output->written = true;
 }
 
@@ -486,8 +571,9 @@ static void test_api_measurements(void)
     assert(p.fel_api_wall[FEL_API_DESCRIPTOR].count == 1 && p.fel_api_wall[FEL_API_END].count == 1);
     assert(prepare_conversion(&p, output, input, &desc, &crop));
     assert(p.fel_api_wall[FEL_API_DESCRIPTOR].count == 2 && p.fel_api_wall[FEL_API_RESET].count == 2);
-    for (int op = FEL_API_BARRIER_IN; op < FEL_API_COUNT; op++)
+    for (int op = FEL_API_BARRIER_IN; op < FEL_API_PUSH_DESCRIPTORS; op++)
         assert(p.fel_api_wall[op].count == 2);
+    assert(!p.fel_api_wall[FEL_API_PUSH_DESCRIPTORS].count);
     destroy_recording_cache(&p);
     puts("PASS: API diagnostics exclude cold initialization; slot hits refresh bindings/commands with six measured sub-stages");
 }
@@ -538,6 +624,89 @@ static void test_bounded_diagnostics(void)
     puts("PASS: bounded chronological frame-identity ring, safe truncation, diagnostic gating and slow-API rate limit");
 }
 
+static bool create_test_layout(struct aimagereader_vk_stable *p)
+{
+    VkSampler immutable = HANDLE(VkSampler, 1);
+    VkDescriptorSetLayoutBinding bindings[] = {
+        {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+         .pImmutableSamplers = &immutable},
+        {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+         .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+    };
+    VkDescriptorSetLayoutCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2, .pBindings = bindings,
+    };
+    return create_conversion_descriptor_layout(p, &info, p->sampler_descriptors);
+}
+
+static void test_push_capabilities_and_frames(void)
+{
+    struct aimagereader_vk_stable p;
+    reset(&p, false);
+    assert(create_test_layout(&p) && !p.push_descriptors && !property_calls && !last_layout_flags);
+    reset(&p, true);
+    test_vk.num_extensions = 0; // A callable symbol alone is not enabled support.
+    assert(create_test_layout(&p) && !p.push_descriptors && !property_calls);
+    assert(strstr(last_info, "extension-not-enabled"));
+    for (int absent = 1; absent <= 3; absent++) {
+        reset(&p, true); missing_entry = absent;
+        assert(create_test_layout(&p) && !p.push_descriptors && !property_calls);
+        assert(strstr(last_info, "entrypoint-unavailable"));
+    }
+    reset(&p, true); max_push = 4;
+    assert(create_test_layout(&p) && !p.push_descriptors && !last_layout_flags);
+    assert(strstr(last_info, "descriptor-limit"));
+    reset(&p, true); fail_push_layout = true;
+    assert(create_test_layout(&p) && !p.push_descriptors && layout_calls == 2 && !last_layout_flags);
+    assert(strstr(last_info, "push-layout-failed"));
+    reset(&p, true); fail_push_layout = fail_set_layout = true;
+    assert(!create_test_layout(&p) && !p.push_descriptors && !p.descriptor_layout);
+
+    reset(&p, true);
+    assert(create_test_layout(&p) && p.push_descriptors);
+    assert(last_layout_flags == VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR);
+    assert(strstr(last_info, "mode=push reason=enabled max-push=32"));
+    p.fel_profile = p.fel_profile_warm = true;
+    for (unsigned n = 0; n < 1200; n++) {
+        struct vk_input *input = get_input(&p, n % 12);
+        struct vk_output *output = &p.outputs[n % 5];
+        assert(prepare_conversion(&p, output, input, &desc, &full));
+        assert(command(active(output))->flags == VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+        complete_frame(output, input);
+    }
+    assert(push_calls == 1200 && end_calls == 1200 && !update_calls && !bind_calls);
+    assert(!pool_calls && !descriptor_calls && command_calls == 60);
+    assert(p.fel_api_wall[FEL_API_PUSH_DESCRIPTORS].count == 1200);
+    assert(!p.fel_api_wall[FEL_API_DESCRIPTORS].count && !p.fel_api_wall[FEL_API_DESCRIPTOR].count);
+    struct vk_input *input = get_input(&p, 0);
+    struct vk_output *output = &p.outputs[0];
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    VkCommandBuffer cmd = active(output);
+    output->pending = command(cmd)->pending = true; input->users = 1;
+    assert(!prepare_conversion(&p, output, input, &desc, &full));
+    aimagereader_vk_stable_buffer_removed(&p, input->buffer);
+    assert(input->view && input->removed && !removed_views);
+    output->pending = command(cmd)->pending = false; input->users = 0;
+    purge_removed_inputs(&p);
+    assert(!command(cmd)->executable && removed_views == 1);
+    destroy_recording_cache(&p);
+    assert(command_frees == 60 && !pool_frees);
+
+    reset(&p, true);
+    assert(create_test_layout(&p) && p.push_descriptors);
+    input = get_input(&p, 0); input->initialized = true;
+    output = &p.outputs[0]; output->written = true;
+    fail_allocation = 3;
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(p.recording_cache_disabled && !output->active_command);
+    complete_frame(output, input);
+    assert(push_calls == 1 && !update_calls && !descriptor_calls && !pool_calls);
+    destroy_recording_cache(&p);
+    puts("PASS: enabled-extension/entry/YCbCr limit gates and layout fallback; 1200 fresh full pushes, no descriptor sets, unchanged barriers/lifetime and command-allocation fallback");
+}
+
 int main(void)
 {
     test_rotation_and_default();
@@ -545,5 +714,6 @@ int main(void)
     test_limits_and_fallback();
     test_api_measurements();
     test_bounded_diagnostics();
+    test_push_capabilities_and_frames();
     return 0;
 }

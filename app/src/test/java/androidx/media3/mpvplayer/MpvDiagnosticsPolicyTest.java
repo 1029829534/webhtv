@@ -25,6 +25,8 @@ public class MpvDiagnosticsPolicyTest {
                 {"vo/gpu-next/aimagereader", "WebHTV FEL api perf:"},
                 {"vo/gpu-next/aimagereader", "WebHTV FEL frame order:"},
                 {"vo/gpu-next/aimagereader", "WebHTV FEL api slow:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL descriptors:"},
+                {"vo/gpu-next", "WebHTV FEL renderer init:"},
         };
         assertEquals(MpvDiagnosticsPolicy.FEL_PERFORMANCE_KINDS, measurements.length);
         for (int kind = 0; kind < measurements.length; kind++) {

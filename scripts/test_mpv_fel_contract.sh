@@ -16,6 +16,7 @@ if [[ ! -f "$vulkan_headers/vulkan/vulkan.h" ]]; then
 fi
 awk '
   /^static const char \*const fel_api_names\[/ ||
+  /^static bool has_extension\(/ || /^static bool create_conversion_descriptor_layout\(/ ||
   /^static void trace_fel_frame_order\(/ || /^static void format_fel_frame_order\(/ ||
   /^static struct fel_api_clock fel_api_begin\(/ || /^static void fel_api_end\(/ ||
   /^static void invalidate_input_recordings\(/ || /^static void destroy_input\(/ ||
@@ -53,7 +54,8 @@ awk '
     -x c++ - -o "$test_output/fel-decoder-control-test"
 "$test_output/fel-decoder-control-test"
 awk '
-  /^static int preload_dropped_fel_frame\(/ || /^static bool render_frame\(/ { copying = 1 }
+  /^static int preload_dropped_fel_frame\(/ || /^static bool render_frame\(/ ||
+  /^static bool begin_fel_render_init\(/ || /^static void end_fel_render_init\(/ { copying = 1 }
   copying { print }
   copying && /^}/ { copying = 0 }
 ' "$mpv_source/video/out/vo_gpu_next.c" "$mpv_source/video/out/vo.c" | \
@@ -64,6 +66,7 @@ awk '
 "$test_output/fel-vo-drop-test"
 awk '
   /^static void cancel_fel_prepare\(/ || /^void vo_cancel_fel_frame\(/ ||
+  /^static bool begin_fel_render_init\(/ || /^static void end_fel_render_init\(/ ||
   /^static bool fel_prepare_timed_out\(/ || /^int vo_prepare_fel_frame\(/ ||
   /^static int64_t process_fel_prepare\(/ || /^static bool use_video_lookahead\(/ ||
   /^static int get_req_frames\(/ || /^static bool needs_new_frame\(/ ||

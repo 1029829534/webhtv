@@ -14,11 +14,13 @@
 #define mp_assert CHECK
 #define MP_ARRAY_SIZE(a) ((int)(sizeof(a) / sizeof((a)[0])))
 #define MPCLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+#define MPMAX(a, b) ((a) > (b) ? (a) : (b))
 #define MP_TIME_MS_TO_NS(ms) ((ms) * 1000000LL)
 #define MP_NOPTS_VALUE (-1e20)
 #define MP_INFO(...) ((void)0)
 #define MP_ERR(...) ((void)0)
-#define MP_WARN(...) ((void)0)
+static void test_warn(const char *format, ...) { (void)format; }
+#define MP_WARN(ctx, ...) test_warn(__VA_ARGS__)
 enum { VO_TRUE = 1, VO_FALSE = 0, VO_ERROR = -1, VO_NOTIMPL = -3 };
 enum { IMGFMT_MEDIACODEC = 1, IMGFMT_YUV420P10 = 2 };
 enum { PL_COLOR_SYSTEM_DOLBYVISION = 7 };
@@ -58,6 +60,8 @@ struct vo_internal {
     int64_t fel_prepare_started, fel_prepare_retry;
     int64_t fel_prepare_phase_started;
     unsigned char fel_prepare_phase;
+    bool fel_render_init_attempted, fel_render_initializing;
+    int64_t fel_render_init_started;
     bool send_reset;
 };
 struct vo {
@@ -120,6 +124,15 @@ static void cancel_fel_prepare(struct vo *);
 void vo_cancel_fel_frame(struct vo *, struct mp_image *);
 int vo_prepare_fel_frame(struct vo *, struct mp_image *);
 static int64_t process_fel_prepare(struct vo *);
+#ifdef FEL_RENDER_WARMUP_BASELINE
+// Old VO has no renderer phase: emulate only entering/leaving draw_frame.
+static bool begin_fel_render_init(struct vo *v, const struct vo_frame *f)
+{ (void)v; (void)f; return true; }
+static void end_fel_render_init(struct vo *v) { (void)v; }
+#else
+static bool begin_fel_render_init(struct vo *, const struct vo_frame *);
+static void end_fel_render_init(struct vo *);
+#endif
 static int video_output_image(struct MPContext *, bool *);
 static int get_req_frames(struct MPContext *, bool);
 static bool hwdec_reconfig(struct priv *, struct ra_hwdec_mapper **,
@@ -533,6 +546,124 @@ static void test_initialization_deadlines_and_cancel(void)
     cleanup();
 }
 
+static bool render_begin(struct mp_image *image)
+{
+    struct vo_frame frame = {.current = image};
+    mp_mutex_lock(&in.lock);
+    bool result = begin_fel_render_init(&vo, &frame);
+    mp_mutex_unlock(&in.lock);
+    return result;
+}
+
+static void render_end(void)
+{
+    mp_mutex_lock(&in.lock);
+    end_fel_render_init(&vo);
+    mp_mutex_unlock(&in.lock);
+}
+
+static void test_render_initialization(void)
+{
+    reset_test();
+    struct mp_image *a = new_image(1), *b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(100); // spent before first draw, not forgiven
+    CHECK(render_begin(a));
+    fake_now += MP_TIME_MS_TO_NS(900);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE); // old VO times out here
+    render_end();
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    CHECK(!render_begin(a)); // subsequent draws cannot extend the deadline
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_TRUE);
+    CHECK(!atomic_load(&vo.fel_trace.core_prepare_errors));
+    talloc_free(a); talloc_free(b); cleanup();
+
+    // Entire initialization between producer polls; preserve time spent before
+    // it and do not grant another full frame deadline when it finishes.
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(100);
+    CHECK(render_begin(a));
+    fake_now += MP_TIME_MS_TO_NS(1200);
+    render_end();
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(650) - 1;
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now++;
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_ERROR);
+    talloc_free(a); talloc_free(b); cleanup();
+
+    // A request first arriving during draw receives only its actual wait time.
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(render_begin(a));
+    fake_now += MP_TIME_MS_TO_NS(200);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(900);
+    render_end();
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_ANDROID_FEL_FRAME_TIMEOUT_NS;
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_ERROR);
+    talloc_free(a); talloc_free(b); cleanup();
+
+    // The renderer's hard limit starts at draw, not at each request/poll.
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(render_begin(a));
+    fake_now += MP_TIME_MS_TO_NS(200);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_ANDROID_FEL_INIT_TIMEOUT_NS - MP_TIME_MS_TO_NS(200) - 1;
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    CHECK(!render_begin(a));
+    fake_now++;
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_ERROR);
+    render_end();
+    talloc_free(a); talloc_free(b); cleanup();
+
+    // Even a delayed producer cannot miss a >10s warmup failure.
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    CHECK(render_begin(a));
+    fake_now += MP_ANDROID_FEL_INIT_TIMEOUT_NS;
+    render_end();
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_ERROR);
+    CHECK(atomic_load(&vo.fel_trace.core_prepare_errors) == 1);
+    talloc_free(a); talloc_free(b); cleanup();
+
+    reset_test();
+    a = new_image(1); b = new_image(2);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    CHECK(render_begin(a));
+    vo_cancel_fel_frame(&vo, a);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(900);
+    render_end();
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_FALSE);
+    process_fel_prepare(&vo);
+    CHECK(vo_prepare_fel_frame(&vo, b) == VO_TRUE);
+    CHECK(!render_begin(a)); // cancel/ordinary seek does not repeat cold draw
+    talloc_free(a); talloc_free(b); cleanup();
+
+    reset_test();
+    a = new_image(1);
+    vo_opts.android_dovi_fel = false;
+    CHECK(!render_begin(a));
+    vo_opts.android_dovi_fel = true;
+    driver.caps = 0;
+    CHECK(!render_begin(a));
+    driver.caps = VO_CAP_GPU_DOVI_EL_SW;
+    a->imgfmt = IMGFMT_YUV420P10;
+    CHECK(!render_begin(a));
+    a->imgfmt = IMGFMT_MEDIACODEC;
+    CHECK(!in.fel_render_init_attempted);
+    CHECK(render_begin(a));
+    render_end();
+    talloc_free(a); cleanup();
+}
+
 static void test_seek_and_errors(void)
 {
     reset_test();
@@ -634,6 +765,7 @@ static void test_leases_and_crop(void)
 }
 int main(void)
 {
+    test_render_initialization();
     test_cold_initialization();
     test_initialization_deadlines_and_cancel();
     test_lookahead(false, 2, false);

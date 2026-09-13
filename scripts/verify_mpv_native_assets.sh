@@ -225,6 +225,8 @@ verify_abi() {
   contains_string "$directory/libmpv.so" "WebHTV FEL api perf:"
   contains_string "$directory/libmpv.so" "WebHTV FEL frame order:"
   contains_string "$directory/libmpv.so" "command-mode=fresh-bind-record replay=0."
+  contains_string "$directory/libmpv.so" "WebHTV FEL descriptors:"
+  contains_string "$directory/libmpv.so" "WebHTV FEL renderer init:"
   contains_string "$directory/libmpv.so" "WebHTV FEL render perf:"
   contains_string "$directory/libmpv.so" "WebHTV FEL decoder threads:"
   contains_string "$directory/libmpv.so" "WebHTV FEL handoff timeout: phase="

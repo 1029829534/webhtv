@@ -3,6 +3,7 @@
 // that output until GPU staging returns it; retaining it after a VO drop must
 // not make the core's two-frame lookahead wait for itself.
 #include "filters/f_android_fel_trace.h"
+#include "filters/f_android_fel.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,10 @@ struct vo_internal {
     int64_t prev_vsync, flip_queue_offset, drop_count;
     int64_t drop_late_total, drop_late_max;
     uint64_t drop_diag_frames;
+    struct mp_image *fel_prepare_image;
+    int fel_prepare_result;
+    int64_t fel_prepare_phase_started, fel_render_init_started;
+    bool fel_render_init_attempted, fel_render_initializing;
     void *stats;
 };
 struct vo;
@@ -136,6 +141,8 @@ static int preload_hwdec_image(struct priv *p, struct ra_hwdec_mapper **mapper,
 }
 
 static int preload_dropped_fel_frame(struct vo *vo, struct vo_frame *frame);
+static bool begin_fel_render_init(struct vo *vo, const struct vo_frame *frame);
+static void end_fel_render_init(struct vo *vo);
 static bool render_frame(struct vo *vo);
 #ifdef FEL_VO_OLD_PATH
 // Only used when compiling the unmodified scheduler to demonstrate failure.
@@ -151,7 +158,15 @@ static int fake_control(struct vo *vo, uint32_t command, void *data)
     return preload_dropped_fel_frame(vo, data);
 }
 static bool fake_draw(struct vo *vo, struct vo_frame *frame)
-{ (void)frame; CHECK(!vo->in->lock); draws++; return true; }
+{
+    CHECK(!vo->in->lock);
+    bool fel = vo->opts->android_dovi_fel &&
+        (vo->driver->caps & VO_CAP_GPU_DOVI_EL_SW) &&
+        frame->current->imgfmt == IMGFMT_MEDIACODEC;
+    if (!draws) CHECK(vo->in->fel_render_initializing == fel);
+    draws++;
+    return true;
+}
 static void fake_flip(struct vo *vo) { (void)vo; flips++; }
 
 struct fixture {
@@ -197,7 +212,7 @@ static void init_fixture(struct fixture *f)
 }
 static void finish_fixture(struct fixture *f)
 {
-    CHECK(!f->in.lock && !f->in.rendering);
+    CHECK(!f->in.lock && !f->in.rendering && !f->in.fel_render_initializing);
     free(f->in.current_frame);
     free(f->in.frame_queued);
 }
@@ -238,6 +253,7 @@ int main(void)
     f.in.frame_queued->pts = fake_now; // On-time frames keep the usual draw path.
     render_frame(&f.vo);
     CHECK(!f.in.drop_count && controls == 0 && draws == 1 && flips == 1);
+    CHECK(f.in.fel_render_init_attempted && !f.in.fel_render_initializing);
     finish_fixture(&f);
 
     init_fixture(&f);

@@ -1,6 +1,73 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.16）
+## Recovery anchor（当前：9.17）
+
+- 目标：继续修复显式FEL的首次起播失败与持续掉帧，保留BL硬解/EL软解、真实FEL重建、10bit、同步、可取消退出和其他模式。电视画面/实时性能仍未验收，不能以host或构建成功宣称完成整体需求。
+- 当前分支`feature/mpv-dv7-fel`，HEAD/回滚基线`ce10d5c15ef36fa83e27c6195182717a334a1036`，tag `recovery/P2-4-fel-vk-reuse/20260913225443-ce10d5c15ef3`；guard `P2-4-fel-warmup-push` / upstream。原有`app/.cxx/`70个文件全部保护，不移动/修改；同四仓锁、无依赖升级、无推送授权。
+- 新日志31（22:59–23:01）已冻结/分析：首轮首渲染725.890ms与第8帧838ms交接失败重叠；持续轮descriptor bind均值29.496–36.207ms，update仅微秒。新逐帧录制标志已生效，PTS差异计数均0不等于像素正确；用户尚未确认画面回跳消失。证据见9.17。
+- 本轮代码与定向host测试已完成：VO首次实际draw独立10s界限、精确排除等待且不续期；stable仅实际启用扩展/入口/数量合规时push当前双binding，布局创建失败回原路径；保持每帧ONE_TIME录制及同步。新增renderer init/descriptors日志按严格来源独立限流写入App存储。授权为用户当前持续修复要求，未扩展FEL以外行为。
+- 2026-09-14本机候选验证完成：旧VO负例已复现，新实际函数ASan/UBSan、1200帧push/普通路径、240帧交接、并发/取消/失败/默认隔离、源patch契约、双ABI/ELF/导出及两APK各10库/签名/紧凑包通过；18其他库（含JNI）逐字节不变，13项Java测试通过。EL/RPU实样因无本地样片明确SKIP，无目标电视实播。70保护文件未动，guard原子提交/tag收尾，不推送；精确提交/tag由guard记录，不另建仅为回填自身ID的提交。
+- 最终APK生成于00:37，原00:15–00:35目标略超；Gradle第一次被沙箱阻止写已有wrapper缓存，获得权限后实际构建1m17s，仅一次有效构建。旧APK和两份精确debug打包缓存保存在本轮证据目录，CMake仍使用隔离温缓存。证据目录`/private/tmp/webhtv-fel-warmup-push.22C7vl/`。唯一下一步：目标电视安装TV32 SHA256=`4b79ec5aecdb81764cec92fa3b6d3b6f2cf0c9816027849804561ab0eab3a0b8`，同GIJoe设置三次起播、完整57秒及seek/退出，取新App日志裁决能力、帧顺序和实时性能。
+
+## 9.17 日志31：首次渲染初始化与descriptor绑定热点
+
+### 证据与可证伪问题
+
+- 原始`/Users/macbookpro/Downloads/webhtv-debug-log (31).txt`；冻结副本`/private/tmp/webhtv-fel-log31.uK6oSM/device-log31.txt`，5113行、1384543字节，SHA256=`58bcaa55373d2287259836bbb4be3113bb7bc3996101daeb1002f7725d8745fe`。同本地GIJoe 4K23.976、Android14、Mali-G57；`command-mode=fresh-bind-record replay=0`证明9.16候选生效。
+- 首轮`p-yeyf8r-1`第8帧pts39.164、staged7、elapsed838ms后4003；首个`pl_render_image_mix`耗时725.890ms wall/587.604ms thread CPU，两个新AHB分配221/252ms。前7帧acquire/map成功且AImage错误/超时/过期为0。后3轮首次渲染67/8/12ms，没有相同fatal。现有初始化阶段只覆盖stable mapper创建，不覆盖实际首draw；源码证明保护存在缺口，时间重叠支持此假设，但不是厂商驱动内部根因的完整证明。
+- 持续3轮mapper均值32.849/44.494/43.037ms，其中`vkCmdBindDescriptorSets`29.496/36.165/36.207ms、线程CPU约1ms、峰173ms；descriptor update只有微秒。GPU copy约20.6–20.8ms与后续GPU渲染异步重叠，不能直接求和。无中途seek段约13fps，EL常积压8帧，不支持盲加软件解码线程。
+- 所有已记录`pts-different=0`；M/R/A事件包含预取/重选，交错不等于显示回跳，亦不能证明像素正确。电视是否支持push descriptors未知，原扩展列表被旧日志限流丢弃；新路径必须明确记录能力/回退原因。
+
+### 有界研究与当前调用链（访问2026-09-13）
+
+固定依赖不变：mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`、mpv-android `99a60ad2141d5ace94453590903c2c6b9a0a2443`；均为已覆盖基线，只读参考，无新合并候选。
+
+| 来源/固定身份 | 等级、支持结论、适用性与限制 |
+| --- | --- |
+| 当前mpv补丁`vo.c::vo_prepare_fel_frame/fel_prepare_timed_out/process_fel_prepare/render_frame`、`vo_gpu_next.c::draw_frame` | A；VO循环在实际draw后才处理下一暂存，首draw编译可阻塞消费者；现有staging init state只含mapper阶段。应分离一次性的渲染初始化，不能统一放宽正常帧期限 |
+| 锁定libplacebo `src/vulkan/gpu_pass.c::vk_pass_create/set_ds`、`context.c`、`gpu.c`、公开`vulkan.h` | A/B；实际启用KHR扩展、数量合规时创建push layout，不建descriptor pool，逐次`CmdPushDescriptorSetKHR`；公开extensions表示实际启用，不能只看函数地址。成熟同栈方式可窄用，不升级libplacebo、不复制整个渲染器 |
+| [Khronos descriptor规范](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/descriptorsets.adoc)，`f84d432d5b8912362f96f581f29bbc4f3c8c7843` | A；每次begin后push状态未定义，所有静态使用binding须逐次写入，包括immutable sampler；`dstSet`被忽略，YCbCr/数量及layout约束必须保持。只改变descriptor提供方法，不能省掉当前帧资源或同步 |
+| [Khronos push sample/说明](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/extensions/push_descriptors/push_descriptors.cpp)，`ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1` | A/B；示例每帧push当前descriptor并避免普通pool/set绑定；README解释CPU管理成本。独立API用法旁证，不代表当前电视支持或一定更快 |
+| 定向GitHub issues/PR检索`vkCmdBindDescriptorSets Mali`、`push descriptors Mali`；原响应在本轮证据目录 | C/D；未找到证明当前Mali问题的可直接移植修复。已读Godot PR92611实际针对Adreno5xx draw/uniform问题，不适用、不采纳；不把相似关键词当同根因 |
+| 技术文章/benchmark | 沿用9.15已固定的Arm/Khronos descriptor管理基准，加上述官方sample README；本次热点是bind不是update，因此不直接套用其百分比收益 |
+| 论文 | 本窄单元不适用：不改FEL/NLQ或并行算法；API合法性与一次性状态机由规范、源码和负例裁决，不能由画质/编码论文解决，也不继续泛搜 |
+
+相关原始材料位于`/private/tmp/webhtv-fel-warmup-push.22C7vl/`，规范沿用`/private/tmp/webhtv-fel-vk-reuse.e7UiUB/`。联网使用用户127.0.0.1:7897代理。剩余不确定性需设备对照，不再扩大检索。
+
+### 比较、决定、验收与回滚
+
+- 不改：保留已证实首次初始化保护缺口及bind热点；不满足本轮目标。
+- 原上游：libplacebo已有push实现，但不管理本地stable mapper的layout/外部YCbCr图像；原样升级/复制不能自动修复。增加CPU线程、重启跨帧命令重放或CPU回读不能对准现有证据，不采用。
+- 窄适配：只在FEL+GPU_EL_SW+MediaCodec的首次实际draw进入独立10s初始化阶段，开始/结束主动维护pending期限，即使producer没有采样到阶段变化也正确；结束恢复750ms正常帧期限。初始化不可被轮询、每帧或普通seek无限延续；保持取消/代际/退出保护，不让GPU调用持有VO锁。
+- 同单元对已定位的bind热点：仅设备实际启用push扩展、入口可用且YCbCr/descriptor数量合法时创建push layout，每帧push完整当前input/output，仍ONE_TIME录制、保留barrier/fence/lease与原shader。能力不足或初始化失败保留普通descriptor方式，新增有界能力、模式和API耗时日志进入现有App调试存储。没有默认模式、公开API/ABI、许可证、依赖或二进制所有权变更。
+- 最便宜决定性检查：真实VO函数旧逻辑负例（首draw跨750ms但未达10s），新逻辑覆盖启动/期间新请求/两次轮询间完整warmup、10s真挂死、结束后750ms、取消与非FEL隔离。实际mapper函数host测试覆盖push完整写入/当前帧身份/能力不足fallback/资源销毁，保留已有pending/缓存/帧顺序/源归还契约。
+- 构建验收：权威补丁与固定前FEL源码一致；同锁双ABI libmpv/ELF/公开导出、其他18库不变；必要诊断Java测试；TV32/Mobile64 APK逐库身份/签名/紧凑包。现有`app/.cxx/`70文件不触碰，复用隔离CMake温缓存。
+- 设备验收：同电视同样片重复起播3次，完整57秒并seek/退出；记录是否push、bind/push/map耗时、FPS/掉帧/A-V、无4003/花屏/前后帧回跳。目标接近23.976fps且A-V偏差不持续增长。设备不支持时不承诺加速，不以host计数替代像素/性能。
+- 用户已明确批准继续实现本FEL可靠性/性能任务；本单元先完成可恢复的本机候选，整体需求仍待电视验收。回滚至`ce10d5c15ef36fa83e27c6195182717a334a1036`对应源/补丁/诊断/两libmpv整套，不移动已有tag、不推送、不触碰保护缓存。
+
+### 00:12实施与host验证
+
+- 实际源码只改`vo.c`、`hwdec_aimagereader_vk_stable.c`，权威补丁由固定前FEL树和当前HEAD机械生成这两个section，其余section原样保留；正向/反向应用及静态契约通过。VO不在GPU调用期间持锁，不在普通seek/reconfig重置一次性初始化；结束只扣本次draw实际占用、保留此前已花的帧等待。
+- push门控按实际启用KHR扩展、两个入口及保守的`sampler_descriptors + 1 <= maxPushDescriptors`决定；immutable YCbCr sampler不变。push模式不建pool/分配set、不对新增output调用普通update；每次新record完整push两个binding。仅push布局创建失败重试普通布局，不掩盖两条路径共同的OOM/设备故障。
+- `warmup-negative.log`：旧VO在900ms首draw的producer检查稳定失败。`native-contract.log`前9组通过（含1200帧push/普通模式及实际draw接线）；随后core测试的无操作日志stub触发`phase_name`未使用编译警告，已只修测试stub使参数被消费，未改生产逻辑或弱化-Werror。
+- 辅助remaining脚本首次process substitution没有实际执行测试、无输出，不算通过；改用检查抽取结果再执行的方式。最终`native-contract-remaining.log`覆盖真实VO/wrapper、120+120帧归还、计时/查询、lease/并发、bitstream与继承及最终源/patch全部通过，不重复已成功的前9组。畸形NAL的错误输出为负例预期，EL/RPU样片解码仍SKIP。host不加载目标Vulkan驱动，不验证电视像素/FPS。
+
+### 最终本机产物（2026-09-14 00:37，待电视实测）
+
+- `arm64-build.log`/`armv7l-build.log`实际编译VO及stable mapper并重新链接；`native-assets.log`、`native-boundary.log`确认同锁双ABI/ELF/命名空间/公开导出不变，只2份libmpv变化、其余18库（含JNI）相同。仅既有局部变量shadow/locale警告，不扩展修理。
+- `apk-build-sandbox-denied.log`记录首次wrapper缓存权限限制，未执行Gradle任务；获准访问已有缓存后的`apk-build.log`一次有效构建1m17s、181任务。JDK21/SDK37/NDK29/Gradle9.5.1，离线温缓存。`MpvDiagnosticsPolicyTest`13项0失败0跳过，包含两类新日志来源/级别/限流路由。
+- `apk-artifacts.log`：两包各10项MPV native assets逐字节匹配；v2签名通过；ZIP额外开销Mobile751608/TV792208字节。未安装/操作目标电视，不能用这些结果声称push在该设备启用、性能达标或画面回跳消失。
+
+| 产物 | SHA-256 | 字节 |
+| --- | --- | ---: |
+| arm64-v8a libmpv | `93d948e9518207f3f14e4e7e827f7dcf48f6698e29f5d9ab5ac8d4ba7a0c933d` | 17801680 |
+| armeabi-v7a libmpv | `b53a44e19af8c4337f1afe420ce2b1ce25ddb135308b208b3fbeb6a065d527a6` | 14612900 |
+| Mobile64 debug APK（00:37:48） | `63521091a1a533bcd8c236c81cf89bbbc5e3886b3201cfa740a09266bf6bdc53` | 151604740 |
+| TV32 debug APK（00:37:31） | `4b79ec5aecdb81764cec92fa3b6d3b6f2cf0c9816027849804561ab0eab3a0b8` | 130473287 |
+
+最终FEL patch SHA256=`ef8e2cf166c7f35e7a02d18d4c561d2629244815d24543ab2f3bb08b72345f88`；host脚本=`8adc75545012c390eef4e20200180776f9d47061b6c3c2106f2929e38bf22fd2`；native验证脚本=`196e9003d3cb1f6354375ef86e340052bbe9ca482e12399239bc49a08347846f`；lock仍为`a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159`。无依赖/许可证/公开API变化，旧模式保留。整体FEL可靠性/实时性能仍是待设备验收状态。
+
+## 历史恢复记录（9.16）
 
 - 目标/验收：手动FEL双层重建正常顺序播放、seek/退出可靠且改善持续性能，保护画质/同步及其他模式。14:52 TV32候选在新日志29（15:46–15:48）被用户否决画面验收；3轮warm map均值15.924/12.733/18.170ms但仍掉帧/A-V滞后，另一次751ms交接失败发生于command-hit=0。尚无像素级根因证明，整体电视需求仍未验收。
 - 分支`feature/mpv-dv7-fel`；原子单元`P2-4-fel-vk-reuse` / upstream；回滚基线`dc1401638532840a8362b869b3220cb952ca7b35`，tag `recovery/P2-4-fel-steady-perf/20260913130843-dc1401638532`。沿用同锁/同scope，无新上游提交、依赖升级或推送。该候选精确提交/tag由guard收尾记录，不额外创建仅为回填自身提交ID的代码提交。

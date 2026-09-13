@@ -96,6 +96,22 @@ def main():
                 and ".flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT" in stable
                 and "command-mode=fresh-bind-record replay=0" in stable,
                 "FEL metadata reuse stays bounded; every frame uses a fresh one-shot recording")
+        descriptor_layout = stable[stable.index("static bool create_conversion_descriptor_layout("):
+                                   stable.index("static bool create_pipeline(")]
+        pipeline = stable[stable.index("static bool create_pipeline("):
+                          stable.index("static int output_sample_depth(VkFormat format)\n{")]
+        require("if (p->android_fel)" in descriptor_layout
+                and "has_extension(p->vk, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)" in descriptor_layout
+                and "sampler_descriptors < max_push" in descriptor_layout
+                and "push-layout-failed" in descriptor_layout
+                and pipeline.index("if (p->push_descriptors)") < pipeline.index("vkCreateDescriptorPool("),
+                "push descriptors require enabled capabilities and a set-layout fallback without pool allocation")
+        require("p->CmdPushDescriptorSetKHR(command, VK_PIPELINE_BIND_POINT_COMPUTE" in stable
+                and "FEL_API_PUSH_DESCRIPTORS" in stable
+                and "if (!p->push_descriptors && !p->recording_pool)" in stable
+                and "if (!p->push_descriptors && !record->descriptor)" in stable
+                and "if (!p->push_descriptors)\n            vkUpdateDescriptorSets" in stable,
+                "push layouts cannot allocate/update ordinary descriptor sets, including extra output slots")
         destroy = stable[stable.index("static void destroy_conversion_resources("):
                          stable.index("static int ycbcr_format_depth(")]
         require(destroy.index("finish_output(p, &p->outputs[n], UINT64_MAX)")
@@ -145,7 +161,14 @@ def main():
                     < stable_map.index("mp_android_fel_staging_end_init(")
                 and "MP_ANDROID_FEL_INIT_TIMEOUT_NS" in vo
                 and "MP_ANDROID_FEL_FRAME_TIMEOUT_NS" in vo,
-                "only mapper-declared cold initialization can use the separate deadline")
+                "mapper cold initialization must retain its separate bounded deadline")
+        draw = vo[vo.index("static bool render_frame("):]
+        require("in->fel_render_init_attempted" in vo
+                and "MPMAX(in->fel_prepare_phase_started, in->fel_render_init_started)" in vo
+                and draw.index("begin_fel_render_init(vo, frame)")
+                    < draw.index("in->visible = vo->driver->draw_frame(vo, frame)")
+                    < draw.index("end_fel_render_init(vo)"),
+                "first actual draw needs bounded renderer warmup independent of producer polling")
         require(vo.index("if (same_request)") < vo.index("} else if (image->android_fel_prepared"),
                 "the prepared fast path must acknowledge its own single-slot request")
         require(re.search(r"if \(result == VO_TRUE &&\s*"

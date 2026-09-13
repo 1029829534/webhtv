@@ -2,7 +2,7 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
-2026-09-13 P2-4最新候选（18:39 APK）：仅FEL保留32槽AHB导入/最多128条按需command与descriptor对象槽，但每个新帧重新绑定并录制ONE_TIME命令，停止14:52候选的跨帧命令重放；`WebHTV FEL reuse`须显示`command-mode=fresh-bind-record replay=0`。增加有界`frame order`与`api slow`调试日志，保留每帧同步、10bit/NLQ及原模式。两ABI已按同锁实际重编，18项其他库不变，最终APK与SHA-256见[任务第9.16节](../docs/P2-4-mpv-android-fel.md)。host缓存/生命周期测试需给`test_mpv_fel_contract.sh`提供`ANDROID_NDK_HOME`或`VULKAN_HEADERS_INCLUDE`（NDK sysroot include），只用Vulkan声明，不加载GPU驱动。电视画面正确性及实时性能仍待候选实测验收。
+2026-09-14 P2-4第9.17节续修：首次实际FEL硬件draw另设有界10s初始化，结束只排除占用时间、普通帧仍750ms，seek/轮询不续期。FEL stable按实际启用的KHR扩展/入口/YCbCr数量门控push descriptors，布局创建失败回普通set；每帧仍完整绑定当前图像并ONE_TIME录制，不重放旧命令，不改10bit/NLQ与同步。新增`WebHTV FEL renderer init`、`WebHTV FEL descriptors`（mode/reason/max-push）和`push-descriptors`耗时进入有界App日志。两ABI/产物及实际SHA-256以[任务第9.17节](../docs/P2-4-mpv-android-fel.md)为准；本单元仅重编两份libmpv、其余18库不变。host缓存/生命周期测试需给`test_mpv_fel_contract.sh`提供`ANDROID_NDK_HOME`或`VULKAN_HEADERS_INCLUDE`，只用Vulkan声明，不加载GPU驱动。电视实际扩展能力、画面正确性及实时性能仍须实测验收。
 
 ## 两种构建必须分开
 
