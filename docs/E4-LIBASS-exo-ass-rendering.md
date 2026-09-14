@@ -1,21 +1,21 @@
-# E4-LIBASS：Exo ASS 特效字幕独立实现研究
+# E4-LIBASS：Exo ASS 特效字幕方案与最佳实践评审
 
 ## Recovery anchor
 
 - 目标：回答 WebHTV 能否独立接入完整 ASS/SSA 特效渲染，并给出成熟开源参考、推荐设计、可验证边界、分阶段实施与回滚方案。
-- 授权：2026-09-14 用户要求跨 Android、桌面播放器、浏览器及其他相关项目深度研究；本轮仅评估，不改生产代码、依赖、补丁或二进制。
-- Lane/scope：assessment；仅本文件和 `docs/upstream-player-dependency-merge-assessment-2026-08-20.md`。检索原始证据存放 `/private/tmp/webhtv-libass-research-20260914/`。
-- 分支/基线：`feature/mpv-dv7-fel` / `4a447f26e5fa488cb0c1c661398e374b10a56b6e`。
+- 授权：2026-09-14 用户要求复评本方案、参考成熟开源实现并结合实际代码完善；本轮仅评估和改文档，不改生产代码、依赖、补丁或二进制。
+- Lane/scope：assessment；仅本文件和 `docs/upstream-player-dependency-merge-assessment-2026-08-20.md`。首轮证据在 `/private/tmp/webhtv-libass-research-20260914/`，复评新增证据在 `/private/tmp/webhtv-libass-review-20260914/`。
+- 分支/复评基线：`feature/mpv-dv7-fel` / `bc2b3b284de87ada937b4ba3564f6fb12aa8a956`，即首轮方案归档提交。首轮代码基线为 `4a447f26e5fa488cb0c1c661398e374b10a56b6e`。
 - 保护：开始时仅 `app/.cxx/` 未跟踪，70 个文件由 guard 保护，不纳入本任务。
 - 稳定 ID：`E4-LIBASS`；历史 `E4-2` 是 Cue layer/collision/margin 适配，不重编号、不将其冒充 libass 接入。
-- 进度：研究与方案比较完成。已核实 Jellyfin Android TV 实际接入 `ass-media` 并选择 `OVERLAY_OPEN_GL`；用户补充现有 MPV 字幕 SurfaceView 后，进一步确认本地已有透明 SurfaceView 和 native EGL/GLES OSD 合成代码。推荐优先复用显示承载契约、评估合成代码抽取，为 Exo 增加独立 libass 输入/时钟适配；未批准任何实施阶段。
+- 进度：复评方案已落盘。以实际发布的 Media3 sources JAR 补核了外挂输入、Matroska 封装、字幕延迟、RendererHolder 和宿主生命周期。推荐保留真实 TextRenderer，增加默认无操作的窄观察接口，复用 SurfaceView 承载契约，独立持有 Exo libass/GL 会话；不在首阶段抽取 MPV 公共 native 模块。所有实施阶段仍未批准。
 - 最便宜的决定性验证：逐项核对原始源码/测试、官方契约、维护者 issue 与独立实现；不把 README 宣传、编译或 MPV 行为当作 WebHTV Exo 的运行证据。
-- 时间目标：上海时间 2026-09-14 16:23–16:53；检索 12 分钟、源码/本地链路 8 分钟、综合及核验 10 分钟。16:55 因 GitHub 限流后的证据补读超时，停止扩展检索，剩余契约核对、综合和归档目标 17:07。17:06 起按用户新问题补核 MPV SurfaceView/native OSD 的复用边界，最终归档目标 17:15。
+- 本次时间目标：上海时间 2026-09-14 17:38–18:13；本地复核 8 分钟、开源证据 15 分钟、文档 10 分钟、校验归档 2 分钟。复用了同日已固定的研究快照，只补查能改变设计的事实。
 - 网络：系统 HTTP/HTTPS 代理为 `http://127.0.0.1:7897`；后续网络取证显式使用该代理。初次 GitHub 发现查询在代理识别前直连成功，单独记录。
-- 回滚：本轮只新增研究文档与索引项；代码基线保持上述提交。
-- 当前变更：本研究文档及索引的一行登记；无生产代码修改。文档核验结果与归档提交/tag 由本次 guard 的 `Verification` 和 `Task-Guard: E4-LIBASS-research` 记录定位。
+- 回滚：撤销本次文档提交即可恢复首轮方案；生产代码保持复评基线。
+- 当前变更：本方案及索引的一行状态；无生产代码修改。文档校验和归档结果由 `Task-Guard: E4-LIBASS-review` 提交的 `Verification` 与 `recovery/E4-LIBASS-review/` 本地 tag 记录，不把方案建议标记为运行验证。
 - 未决风险：WebHTV 双 ABI 实机性能、HDR/DV 合成、复杂字体附件及连续 seek 的行为仍需将来经批准的原型验证；未执行构建、安装或性能测试。
-- 唯一下一步：归档研究；只有用户明确批准阶段 1 后，才建立原型实施 scope 并开始编码。
+- 唯一下一步：用户决定是否批准第 8 节修订后的阶段 1；批准后按该阶段建立包含 Media3 窄接口、独立 JNI 和 App 接线的实施 scope。
 
 ## 研究问题与证据标准
 
@@ -35,7 +35,22 @@
 
 最直接的开源起点是 **peerless2012/libass-android**；最有价值的实际消费者是 **Jellyfin Android TV**；跨平台设计参照是 **GStreamer、VLC、Kodi、JASSUB**。这组证据能支撑可行性和设计选择，不能代替 WebHTV 的性能及 HDR/DV 实机验收。
 
-建议批准时只先实施阶段 1：默认关闭的外挂 ASS 原型，验证 libass、字体、复用既有承载方式的透明层和播放器时钟。对于视频为 SurfaceView 的路线，优先评估现有字幕 SurfaceView；不因 Jellyfin 使用 TextureView 就默认重新做一套。其余阶段继续留在本任务文档，逐阶段批准，不自动进入 MKV 提取器或生产默认行为修改。
+建议批准时只先实施阶段 1：默认关闭的外挂 ASS 原型，验证 libass、字体、复用既有承载方式的透明层、准确时钟及兼容字幕回退。复评将接入方式收敛为“保留真实 TextRenderer + 本地窄观察接口”，见 6.1；代价是首阶段需要重建受影响的 Media3 Java 产物，而不只是加 App 类。对于视频为 SurfaceView 的路线，优先复用现有字幕 SurfaceView 的承载契约。其余阶段逐阶段批准，不自动进入 MKV 提取器或生产默认行为修改。
+
+### 1.1 复评发现及决策变化
+
+原方案的 libass 内核、独立叠加层和分阶段方向成立，但以下缺口必须补齐，才能据此实施。
+
+| 优先级 | 已核实的缺口 | 本次决定 |
+| --- | --- | --- |
+| P1，编码前 | 实际 Media3 默认不在提取阶段解析外挂字幕；只注入 parser factory 可能完全不走预期路径 | 从当前选中的 TextRenderer 输入接入；不全局翻转字幕解析模式，见 2.2、6.1 |
+| P1，编码前 | raw ASS 带合成 Dialogue 前缀；原始 BlockDuration 已被写成百分之一秒，不能冒充原始 MKV chunk | 外挂完整文件、Media3 封装事件、原生 MKV 事件三种输入显式区分；精确 MKV 输入留给阶段 2 |
+| P1，编码前 | NoSampleRenderer 不接收文本延迟消息；包装 TextRenderer 会绕开 RendererHolder 的类型特判 | 保留 TextRenderer 实例及其原状态机，在实际 offset/延迟已知的位置输出观察数据 |
+| P1，原型验收 | 无操作 parser、隐藏 Cue 和“异常时回退”之间缺少可执行的恢复路径 | 保留兼容 Cue、保存当前有效输出，成功接管才抑制重复显示；输入超限或原生层可返回失败时恢复，见 6.4 |
+| P1，MKV 验收 | “seek 后重放长事件”不是缓存自然能保证的能力，尤其首次跳到未读区间 | 明确已缓存/未缓存两类；缺少覆盖证明时不声称完整支持，见 6.2 |
+| P2，产品化前 | 色彩矩阵、晚到字体、API 24 与现有 CMake API 26 差异、实际图像基准还不够具体 | 补 libass 官方契约和回归语料；基础 native 门槛前移至首次构建，见 6.3、9、11 |
+
+这些是对方案和接口的审查结论，不是已复现的 WebHTV 故障，也不是对开源项目整体质量的评价。
 
 ## 2. 当前 WebHTV 的实际基础
 
@@ -49,7 +64,7 @@
 | 锁定的 Media3 `SsaParser` 及 `SsaParserTest` 已有样式、位置、layer、重叠与字体样式测试；历史 E4-2 为 layer/collision/margin 适配 | 当前不是“完全不支持 ASS 样式”；缺口是完整运行时特效、字体与帧呈现。不能把 E4-2 重新包装成新任务 |
 | MPV 的独立 native 链已经带 libass 与字体库 | 可用作视觉参考；不能从 `libmpv.so` 内部借私有符号/JNI 给 Exo，不能把 MPV 播放成功当作 Exo 验证 |
 
-本地版本依据：[media-lock.json](../third_party/media-lock.json) 的 Media3 `1.11.0-alpha01-fongmi`，源码提交 `e3e922d5c01bc0b564849940fe589daf37360d15`；nextlib `1.10.0-0.12.1-fongmi-softload-av3a-ffmpeg901-r3`，提交 `6ff6cf9d0820382b3c233d018c52e4163b09d345`。本轮通过当前仓库 Git 对象读取了锁定 Media3 的 `NoSampleRenderer`、`SsaParser` 及相关测试。
+本地版本依据：[media-lock.json](../third_party/media-lock.json) 的 Media3 `1.11.0-alpha01-fongmi`，源码提交 `e3e922d5c01bc0b564849940fe589daf37360d15`；nextlib `1.10.0-0.12.1-fongmi-softload-av3a-ffmpeg901-r3`，提交 `6ff6cf9d0820382b3c233d018c52e4163b09d345`。**Media3 实际产物还叠加 lock 中的补丁和 artifact overrides，不能仅凭裸提交判断发布行为。** 首轮读 Git 对象；复评进一步读取本地 Maven sources JAR，核得 exoplayer SHA-256 `83f4f83b4f44e621d52002c161f63fbcb77be6856af4b1e4a4cb0982b04549e1`、extractor SHA-256 `ec22c28c9fef1f4fdb54b495da919a706d4a28b781ac6701790a259beee6dedd`，均与 lock 一致。此处是源码身份核验，没有重新编译或验证二进制运行行为。
 
 `/Users/macbookpro/Desktop/github/media` 的当前 checkout 是 `3c2cbe8ac742c2fe15eff52f03eeb3b1b648848d`，不能与锁定产物混为一谈。锁定源码也确认存在 `NoSampleRenderer.onRendererOffsetChanged(offsetUs)` 和 `onPositionReset(...)`；前者契约明确规定从 renderer position 减去 offset 得到媒体位置。实现时仍需对实际依赖进行编译验证。
 
@@ -85,11 +100,29 @@ flowchart LR
     EG --> H
 ```
 
-图中两条路径按当前播放器择一连接。最小原型先复用 SurfaceView 的承载契约和必要代码，不为了“完全共享”重构两条 native 播放链；是否把 GLES 部分抽成公共模块，由实际耦合/许可证/性能证据决定。
+图中两条路径按当前播放器择一连接。最小原型先复用 SurfaceView 的承载契约和必要代码；Exo 使用自己的 GL 生产者，首阶段不修改 MPV Java/JNI/native、不共享 EGL context、不抽取公共合成模块。优先参考 libass-android 的 mask 合成；MPV packed BGRA 合成器作为对照。后续只有维护或性能证据支持时，才另行决定公共代码抽取。
 
 成熟方案与本地方案的对应：Jellyfin/libass-android 是“Exo 提取输入 + 独立 libass + 独立 EGL/GLES + 透明 TextureView”；现有 MPV direct-output 是“MPV 的字幕/OSD + 独立 EGL/GLES + 透明 SurfaceView”。共同点是字幕单独产生图像并合成，SurfaceView 与 TextureView 只是输出承载的不同选择。
 
 AOSP 文档确认 SurfaceView 可直接作为 EGL/GLES 输出，单独交给 SurfaceFlinger 合成；TextureView 内容先进入应用 UI 合成，更方便 View 变换。额外图层是否使用硬件 overlay 取决于设备，不能保证新增 SurfaceView 总是更快。现有代码仅处理底层视频为 SurfaceView：若 Exo 选择 TextureView，必须另验 Z-order/UI 遮挡，必要时选透明 TextureView 字幕宿主；也不能承诺两个独立 Surface 严格原子同帧呈现。
+
+### 2.2 复评补核：实际发布代码决定接入位置
+
+以下 Media3 文件指 2 节核对 SHA-256 的 sources JAR 内相应类，不是外部 checkout 的 HEAD。
+
+| 实际调用链/符号 | 核实结果与实施约束 |
+| --- | --- |
+| `ExoUtil.getMediaItem/buildSubtitleConfigs` → `DefaultMediaSourceFactory.createMediaSource` | 默认 `parseSubtitlesDuringExtraction=false`，外挂走 `SingleSampleMediaSource`，合并成文本轨道后由 TextRenderer 解码。不能只调用 `setSubtitleParserFactory` 就认为完成接线，也不应为 ASS 全局改变其他格式的解析时机 |
+| `DefaultRenderersFactory.buildTextRenderers` → `new TextRenderer(output, looper)` | TextRenderer 是 `final`；具有接收 `SubtitleDecoderFactory` 的公开构造函数，且本地 `legacyDecodingEnabled=true`。这是最小解码扩展点，但它单独不提供完整呈现时钟/period 生命周期 |
+| `RendererHolder.setCurrentStreamFinalInternal` / `hasReachedServerSideInsertedAdsTransition` | 对真实 `TextRenderer` 做 `instanceof` 判断，处理 final stream end 和流切换。通用 Renderer 包装器会改变这些语义；“委托了所有接口”仍不等于无回归 |
+| `ExoPlayerImplInternal` → `RendererHolder.setTextOffsetMs` → `TextRenderer.handleMessage` | 延迟消息只发给 `TRACK_TYPE_TEXT`；`NoSampleRenderer` 的类型是 NONE。正值延后，渲染查询时间为 `positionUs - textOffsetUs`；不能从 UI 线程轮询或漏接该设置 |
+| `MatroskaExtractor.writeSubtitleSampleData/commitSampleToOutput` | `FLAG_EMIT_RAW_SUBTITLE_DATA` 只表示未转成 Cue，仍输出 `Dialogue: 0:00:00:00,<duration>,<原始 chunk>`；初始化数据为 `[合成 Format 行, CodecPrivate]`，duration 被量化至 10 ms。原始 ReadOrder 还在，但需要识别封装；直接喂整包 libass 或将 initData[0] 当 CodecPrivate 都不对 |
+| 同一 MatroskaExtractor 的 ContentEncoding 分支 | 本地已接受文本 zlib，处理解压并在提交时裁切 NUL；还保留 header stripping 相关路径。第三方 #85 的再次探测解压不能直接移植；阶段 2 钩子应取得明确编码处理后的有效字节和原始 duration，对不支持的组合明示失败 |
+| [PlaybackActivity.java](../app/src/main/java/com/fongmi/android/tv/ui/activity/PlaybackActivity.java) `attachSurface/detachSurface/resetVideoSurfaceForDecoderSwitch/syncVideoSurfaceSize` | 公共 Activity 负责手机/电视宿主挂接；`setRender` 会更换底层 View，Surface buffer 尺寸也可能与 View 布局不同。这里接 host 生命周期，不能只在 `ExoUtil.setPlayerView` 一次性创建层 |
+| [ExoPlayerEngine.java](../app/src/main/java/com/fongmi/android/tv/player/engine/ExoPlayerEngine.java) `rebuild/release` | 播放器重建和 Activity 配置变化不是同一生命周期。会话属于 engine/player，Surface 属于当前 Activity；detach 只释放显示资源，engine release 才关闭会话；rebuild 必须失效旧回调 |
+| [PlayerManager.java](../app/src/main/java/com/fongmi/android/tv/player/PlayerManager.java) `setTextOffsetMs`，`PlayerEngine.supportsSecondarySubtitle` | 复用当前延迟设置。Exo 目前没有声明原生双字幕能力，本任务不把 MPV 双字幕扩展成 Exo 新需求；只保证现有选轨及各播放器原有能力 |
+
+选轨身份必须包含 player/session、`MediaPeriodId`、轨道标识及 stream generation；不能只用 `Format.id`，也不能仿照候选实现截取冒号后的 ID 来做全局匹配。拼接播放、外挂合并源、后台预加载和旧 decoder 回调都可能重用局部 ID。网络读取仍使用当前播放支路的 DataSource/OkHttp/headers/cache；不另开 native HTTP，也不把预加载优先级的 helper 当作前台字幕数据源。
 
 ## 3. 核验过的开源实现与成熟度
 
@@ -158,7 +191,8 @@ Matroska 的 ASS 规范规定：header/styles 在 CodecPrivate；事件 Block �
 | --- | --- | --- | --- | --- |
 | 不改，沿用 SsaParser/Cue | 保留现有普通字幕；完整动画等缺口仍在 | 无新增 native/GL 成本 | 最低 | 保留为默认及回退基线，不能满足本需求 |
 | 原样采用 libass-android 便捷 builder | 内核成熟，但本地工厂、时钟与布局可能错配 | Media3 1.8.0 参考源码与本地 1.11.0 fork 不同；旧 GPU、预算需验证 | 初次接入低，后续隐性成本高 | 拒绝原样套用 |
-| **libass + WebHTV 窄适配 + 复用字幕承载层** | 保留 raw ASS/字体，由 libass 解释；自行掌控时钟/生命周期 | 优先复用已有 SurfaceView/EGL 设计；保留视频路径，仍有合成开销和设备风险 | 中等，先复用窄契约，避免整体重构 MPV | **推荐，分阶段原型** |
+| **libass + TextRenderer 窄观察接口 + 独立字幕层** | 保留真实 TextRenderer 与兼容 Cue，从选中轨道取得输入/offset/延迟；libass 解释原始内容 | 复用 SurfaceView 承载方式，独立 native/GL；双路解析的额外成本须测 | 中等，需维护一个受控 Media3 补丁和对应 Java 产物，不重构 MPV | **推荐，分阶段原型** |
+| 仅 App 的自定义 SubtitleDecoderFactory + NoSampleRenderer | 可截获选中 ASS，避免提取器反射 | 仍须额外解决 period 绑定、延迟消息、动态调度和回退；无样本 renderer 本身不能消费字幕 | 少一次 Media3 产物修改，但生命周期桥接更多 | 作为对照方案；不把固定 offset 或 UI currentPosition 轮询作为最终设计 |
 | 视频 effects 内合成 | 更容易围绕视频帧生成字幕画面 | 介入 video pipeline；HDR/DV、tunneling、附加处理和延迟需单独验证 | 中高 | 独立层达不到明确时序目标时再评估 |
 | WebView + JASSUB/WASM | 复用 libass，可参考已有浏览器产品 | WebView/worker/WebGL 版本、JS/JNI 时钟、内存与故障面增加 | 中高 | 借鉴设计，不作为 Android TV 首选 |
 | FFmpeg filter 烧录 | 成熟 libass 输出，可生成参考片段 | 改变视频帧处理和硬件路径；可能引入下载/上传，不能宣称零成本 | 高 | 离线对照；不作默认播放架构 |
@@ -170,10 +204,11 @@ Matroska 的 ASS 规范规定：header/styles 在 CodecPrivate；事件 Block �
 
 ```mermaid
 flowchart LR
-    A[现有数据源与提取器] --> B[ASS 原始头部 事件 字体]
+    A[现有数据源与提取器] --> B[真实 TextRenderer 的选中字幕输入]
     B --> C[有界事件队列]
     C --> D[字幕工作线程中的 libass]
-    E[Exo 时钟 offset seek generation] --> D
+    B --> Q[保留兼容 Cue 与单一显示仲裁]
+    E[TextRenderer 时钟 offset 延迟 generation] --> D
     F[视频 viewport 与帧时间] --> D
     D --> G[有所有权的 alpha mask 与颜色]
     G --> H[独立透明 GL 字幕层]
@@ -183,33 +218,66 @@ flowchart LR
     J --> K
 ```
 
-### 输入与字体
+### 6.1 接入方案：保留 TextRenderer，增加可选观察接口
+
+**这是待实施的 WebHTV 适配设计，并非 Media3 已存在的 API。** 在本地 `TextRenderer` 增加默认 null/no-op 的观察接口，由 `ExoUtil.buildRenderersFactory` 的既有 Ffmpeg 工厂接线；保持真实类型、解码器、Cue 解析、选轨、final stream、原有构造函数及非 ASS 行为。观察接口只接收以下数据，不允许回调阻塞播放器线程：
+
+| 观察数据 | 触发位置及约束 |
+| --- | --- |
+| stream/format/reset/end | `onStreamChanged`、`onPositionReset`、disabled/release 与最终流边界；带真实 `MediaPeriodId`、stream offset 和 generation。读取中的下一个 period 与正在显示的 period 分开记录 |
+| 选中 ASS 样本 | 成功的实际 sample read，跳过 peek/omit-data、EOS 和不支持的加密输入；有界复制有效 offset/length，保留时间、格式、初始化数据及输入类型。不得在样本已经转成 Cue 后还声称得到原始 ASS |
+| clock/config | 在 TextRenderer 已知实际 stream offset、字幕延迟和播放状态的位置生成快照；包括暂停/缓冲、倍速、文本延迟变化。回调只发布轻量数据，不执行 native parse/render/GL |
+| 兼容 Cue | 保留原输出，记录当前 generation 的最新 CueGroup；由一个显示仲裁点决定当前显示兼容 Cue 或 ASS 层，具体见 6.4 |
+
+可在公开 `SubtitleDecoderFactory` 扩展点做 decoder 侧复制，以减轻播放线程工作，但必须使用上述同一 stream 身份和时钟契约，保留委托 decoder 的 flush/release、charset 与队列规则。是否需要 decoder 钩子由一次最小实现决定，不并行维护两套输入路径。禁止使用全局 AssHandler 收集所有 extractor 的事件；预加载和未选中轨道不应创建 libass 会话。
+
+观察接口补丁只作用于受影响的 `media3-exoplayer` Java 产物及必要接线；不改变音视频 renderer、LoadControl 或默认字幕解析开关。测试必须覆盖观察接口关闭时的既有行为，以及 stream 切换/flush/最终结束。编译成功不能代替这些契约测试。
+
+### 6.2 输入、时间与 seek
 
 - 外挂完整 ASS：经现有授权数据源读取有界字节，确定编码后交给 `ass_read_memory`/对应完整文件接口。无需把本地 URI 当任意文件路径开放给 native。
+- 外挂保留 BOM/UTF-8/UTF-16/GB18030 等当前字节安全补丁已有行为；编码转换只做一次，先在有效长度内规范化到 UTF-8，再处理字符串边界，不能在 UTF-16 原始字节上遇零截断。新增 libass 副本/解析有大小限制，不把这个限制误说成已经解决旧 SingleSample loader 自身的峰值内存问题。
 - MKV：原始 CodecPrivate 走 `ass_process_codec_private`，每个解压后的完整事件走 `ass_process_chunk`，使用真实 PTS/duration（微秒到毫秒明确转换）。保持 ReadOrder、Layer、Style、覆盖标签及逗号正文；不能同时混用手动 event 修改破坏 libass 的 chunk 去重契约。
+- 适配类型明确区分 `FULL_SCRIPT`、`MEDIA3_SSA_SAMPLE` 和 `MATROSKA_ASS_CHUNK`。阶段 1 只接管 FULL_SCRIPT；阶段 2 在当前 Matroska 源码增加默认关闭的明确输出契约，携带真实 `blockDurationUs`、CodecPrivate 和附件归属，经过 SampleQueue/选轨或等价受控通道再进入会话。若仅剥离现有 SSA_PREFIX，只能得到量化后的 duration，必须标为兼容桥，不能通过“精确 MKV 事件”验收。
 - 原始数据钩子应在 Cue 扁平化之前，且在容器 ContentEncodings 正确处理之后。NUL、zlib、buffer offset/limit 都有实际缺陷报告；不把 backing array capacity 当有效样本长度，不靠探测两个 zlib 字节替代完整容器语义。
 - 字体附件可能早于或晚于轨道/样式到达。按会话登记、内容哈希去重，字体集变化后触发正确的 font lookup/cache 更新；限制数量、单体/总字节，区分缺字、缺字体和未选中轨道。
 - 不把“字体文件名”当唯一字体 family 身份，不假定系统一定有某个字体路径；配置可验证的 fallback，覆盖 CJK、阿拉伯/RTL、组合字符。默认不联网下载字体；新增本地/在线字体来源需单独定义授权、缓存和隐私行为。
 
-### 时间与呈现
-
-- 以 `NoSampleRenderer.onRendererOffsetChanged` 的真实 offset 归一化 `positionUs`；明确 renderer time、period/media time、用户字幕延迟和系统单调时钟的转换。字幕延迟只应用一次，并用可观察用例固定正负语义。
+- 推荐观察接口直接采用 TextRenderer 当前 offset：`t_ass_ms = floor((rendererPositionUs - streamOffsetUs - textOffsetUs) / 1000)`；`textOffsetUs > 0` 表示晚显示。同样本绑定的时间已被 `BaseRenderer.readSource` 加过 stream offset，归一化时只减一次；原始提取器的 period 时间不能再减一次。未知时间、溢出和已失效 period 不参与计算。若使用 NoSampleRenderer 对照实现，须显式补齐延迟传递；不能假设它会收到文本消息。
 - onPositionReset、媒体切换、选轨、关轨、release 都推进 generation；重建必要事件状态并清除旧帧。外挂完整轨道与流式 MKV 的 seek 策略不同：前者已有完整事件，后者必须保证落点前开始、落点后仍活跃的长事件可以重放。
 - `ass_flush_events`/prune 不能机械地在每次 seek 都调用；要与样本重新投递、ReadOrder 去重及回看缓存一起设计。无界保留所有直播事件也不可接受。
-- 普通时间同步可用 Exo 媒体时钟驱动；贴画面招牌需要研究 `presentationTimeUs + releaseTimeNs` 的帧调度。复用现有帧监听分发，回调内只发布时间信息；不要同步解析、渲染或等待 native。
+- 外挂完整轨道在 seek 时保留事件并重新查询时间；只清除过期显示/调度结果。流式 MKV 按“period + track + header 身份”保留有界原始事件缓存；重建 track 时重放尚覆盖目标时间的事件，保持 ReadOrder 去重。缓存未覆盖的首次远跳，不能靠固定几秒回看保证任意长事件：阶段 2 必须证明容器索引/受控预读可找回这些事件，或将该输入明确留在兼容路径，不能宣称 A08 已通过。回退到旧路径也不等于补齐了旧路径本来缺失的事件。
+- 普通时间同步可用 Exo 媒体时钟驱动；贴画面招牌使用 `presentationTimeUs` 与 `releaseTimeNs` 的配对关系研究帧调度。复用现有帧监听分发，回调内只发布时间信息；不要同步解析、渲染或等待 native。
+- 上述 PTS 与 releaseTimeNs 是一组映射，**不能直接相加**。以对应视频帧 PTS 查询字幕，按 releaseTimeNs 安排提交；后者与 `System.nanoTime()` 同时间域，不与 elapsedRealtime 微秒直接混算。seek/速度变化/Surface 更换使旧映射失效；没有可信帧回调的路径回到媒体时钟，仍需报告呈现精度等级。
 - 暂停/缓冲应冻结字幕时间，倍速跟随媒体时钟；暂停时 resize/字体更新仍可重绘。不能把“回调刚发生”当作视频或字幕已经被用户看见。
 - 独立 Surface/TextureView 之间并不天然原子呈现。即使取得视频 PTS，也不能承诺字幕与硬件视频扫描输出严格同帧；这一点必须用实际显示结果验证。
 
-### 渲染、线程与资源
+### 6.3 渲染、字体、几何与资源
 
 - 一个字幕会话拥有 libass library/renderer/track；parse/render/font mutation/release 串行化或使用明确共同锁。JNI/GL/UI 的所有权、销毁顺序和 generation 校验必须写清，不能只依赖 GC/finalize。
 - 待渲染时间最多保留最新请求；正在运行的一帧不能靠清空 Java 队列强制中断 native。超时仅丢弃过期结果并禁止继续积压；如一次 native 调用可长时间卡死，进程内 timeout 不能保证安全取消，需作为独立风险处理。
+- “保留最新请求”只适用于时钟/重绘，不适用于头部、字幕事件和字体。数据队列须有序且按字节计费，满时退出本轨特效模式并恢复 Cue，不能丢掉中间事件继续标为正常。reset/release 是可靠控制消息；结果至少校验 session/stream generation、Surface epoch、layout epoch 和 font epoch。
 - `ASS_Image` 是按顺序合成的一组 8-bit alpha mask、RGBA 颜色和位置，不是完整 RGBA 视频帧。图像可能宽/高为零，末行只保证 `stride*(h-1)+w` 可读；跨线程输出要复制到有界自有缓冲，或在明确锁定生命周期内完成上传，不能悬挂引用 renderer 管理的内存。
 - 合成需正确处理 ASS 颜色低字节的透明度约定、mask coverage、预乘 alpha 和图层顺序。不能给已预乘结果再乘一次 alpha；色彩矩阵与 HDR 字幕亮度另测。
 - 使用 `detect_change` 区分位置/内容变化，静态字幕不重复上传；空帧、关轨和 Surface 重建均要正确清屏。
+- `detect_change` 只描述同一 libass renderer 的上次结果；GL context 丢失、新 Surface、viewport/字体变化都须强制重传或重绘。不能拿“内容未变”跳过新 Surface 首帧。空画面是有效结果，解析/GL 失败是另一种状态。
 - GLES2/旧 Mali 不保证 `GL_EXT_unpack_subimage`；可使用有界紧密行拷贝/可用上传路径，并测试 alpha bitmap 回退。不能仅因主流手机支持某扩展就调用它。
 - 用真实显示 viewport 对齐脚本坐标，包括 PlayRes、视频 storage size、SAR/DAR、黑边、缩放裁切、旋转和 UI 布局。ASS 原样模式中强制居中或一刀切缩放字号都会改变特效。
+- 具体配置是 `ass_set_storage_size` 使用未作像素拉伸的视频存储尺寸，`ass_set_frame_size` 使用字幕目标尺寸，`ass_set_margins`/pixel aspect 对应真实显示矩形和裁剪；脚本 LayoutRes 会覆盖部分推导。不能把 `SurfaceHolder.setFixedSize` 的 buffer 大小当成屏幕 Viewport。宽高为 0 时等待布局，尺寸/旋转变化推进 layout epoch。
+- 字体按“脚本指定 family + 本媒体附件 → 明确配置的系统 provider/fallback”解析，保留字体内部名称与 TTC face 信息。初始字体先装入再配置 renderer；晚到字体在串行线程重建字体选择/必要的 renderer 并使旧图块失效。`ass_fonts_update()` 在已读 API 中已弃用且是 no-op，不能用它宣称完成更新；`ass_clear_fonts()` 仅在关联 track/renderer 全释放后安全。
+- 原样模式不擅自打开 `ASS_FEATURE_WRAP_UNICODE` 或 WHOLE_TEXT_LAYOUT，不改写事件/样式数组；这些扩展可能改变 VSFilter 的换行/RTL 布局。字幕字号/位置设置继续在兼容模式生效；原样模式保留脚本排版和通用时间延迟。若以后增加“只覆盖普通对白”，可借鉴 MPV selective override，但须单独验收其启发式误判。
+- libass 不自动处理 `YCbCr Matrix` 色彩兼容。SDR 合成需按 `ass_types.h` 的 header matrix 与视频 matrix/range 处理 RGB，`None` 不转换；不能对 mask 或预乘后的颜色重复转换。HDR/DV 将字幕视为独立 SDR 图层，亮度/色域由呈现路径验证，不套用 SDR 视频矩阵去变换 HDR 视频，也不宣称 Android 各设备一致。
 - 普通 Cue 仍交给原 SubtitleView。只有当前已成功接管的 ASS 轨道隐藏其重复文字；不能隐藏整个包含字幕/交互的容器而让 SRT、图形字幕或控件失效。
+
+### 6.4 显示仲裁与可恢复失败
+
+会话状态为 `COMPAT → PREPARING → ACTIVE`；可检测失败转 `FALLBACK`，关轨/释放转 `DISABLED`。PREPARING 继续显示兼容 Cue；只有当前 generation 的 native 结果有效、宿主可用并已完成首次有效提交后，才由单一仲裁点切换。字幕当前恰为空时也要有明确 READY/空帧确认，不能把没有图像误认为加载失败。
+
+首阶段保留原 SsaParser/Cue 的工作结果，保存当前有效 CueGroup；切换回退时先清除新图层，再恢复与当前时间一致的 Cue，并继续原输出。这样避免为回退重建播放器、重新请求媒体或 seek。代价是选中 ASS 时存在兼容解析和 libass 解析的额外工作，必须计入性能对照；未经证据不删除这条恢复路径。该方式回到的是现有部分 ASS 能力，不保留完整动画效果。
+
+加载失败、输入/队列超限、字体配置失败、GL 初始化失败等可返回错误只降级本轨、本会话，不自动切 MPV、软解、视频 Surface 或 tunneling。原生 SIGSEGV、严重 OOM 和无法返回的 native 调用不能靠 Java 异常处理保证恢复；发布前靠选版、边界检查、目标语料及 native 检测降低风险，不宣称进程内完全隔离。
+
+宿主 detach 时清屏并串行拆除 EGL/ANativeWindow 连接，保留仍由 PlaybackService 持有的会话输入；重新 attach 按新 Surface epoch 重绘。engine rebuild/release 先失效 token、停止新任务，在所有者线程依次处理在途结果、GL、track/renderer/library 与 JNI 引用；不在 UI 或播放器线程等待 native 完成。释放的最终完成须可观察，不能只 post 一个任务就宣称资源已释放。
 
 ## 7. 性能预算：目前是设计目标，不是测试结果
 
@@ -228,7 +296,11 @@ flowchart LR
 | 播放影响 | 同设备、同文件、同播放设置对照关闭/开启 ASS，比较首开、seek、视频丢帧、音频 underrun、PSS/native/GL 内存与热状态 |
 | 生命周期 | 连续 seek/换轨/换集后内存应进入有界平台，不随操作持续增长；缓存可保留，泄漏不可用“有缓存”解释 |
 
+预算还要区分 libass bitmap cache、glyph、字体字节及解析结构、事件、JNI 自有副本、GL atlas/纹理和在途上传；`ass_set_cache_limits` 不限制全部会话内存。实现前冻结单样本、外挂文件、队列总字节、图块数量/面积及纹理池上限，分配前检查乘法/长度溢出。调度必须保留当前 dynamic scheduling：不能按“每三次 renderer 回调一帧”推断视频帧率，也不能为无字幕会话增加常驻 10 ms 唤醒。GPU 合成前的 libass 栅格化仍是 CPU 工作。
+
 选择一个 64 位设备和一个代表性的 32 位/旧 GLES2 电视覆盖 ABI 与 GPU 差异；阶段 1 先验证一个可用 ABI。性能差异需要稳定配对样本和多次短测，不能用一次均值保证无回归。没有达到预算时，应明确拒绝该语料的特效模式或让用户选择降级，不能拖垮音视频后继续显示“正常”。
+
+性能验收分两组：关闭功能/非 ASS 的路径不得加载新 native、创建 GL 会话或新增周期唤醒；开启 ASS 的路径在同设备/样片/设置下至少做三次配对短测，保留首开/seek 的中位数与范围、逐帧 render/upload 的 p95、视频丢帧和音频 underrun。先记录基线波动并冻结可接受阈值，新增音频 underrun、稳定可复现的视频/seek 回退、持续内存增长直接否决。不能把 CPU/GPU/内存增加一概叫“零开销”，也不能用自动降低分辨率或关特效来取得原样模式的通过结果。
 
 ## 8. 最小分阶段实施与回滚
 
@@ -236,12 +308,16 @@ flowchart LR
 
 | 阶段 | 独立交付 | 最便宜的决定性验证 | 回滚 |
 | --- | --- | --- | --- |
-| 1：外挂 ASS 原型 | 默认关闭；固定 libass/依赖来源；一个 ABI；外部 ASS、fallback 字体、正确时钟；优先复用现有 SurfaceView 承载契约并接独立 GL 生产者；关轨/release | 固定时间点图像与同版本 libass 比较；动画/暂停/seek；与关闭字幕的播放基线配对；若提取共享宿主则运行已有相关 MPV 策略测试 | 关闭会话开关，回到既有 SsaParser/Cue；原型提交独立可回退 |
-| 2：MKV 与字体 | 在当前提取器体系补最小 raw ASS/附件接口，保留 DV/seek/网络行为；字节限制、选轨、ReadOrder 与长事件重放 | CodecPrivate/chunk 原始字节契约测试；字体前后到达；NUL/压缩/乱序与长字幕 seek 用例 | 撤回该输入适配；外挂原型可独立保留 |
-| 3：电视兼容与性能 | 双 ABI、旧 GPU fallback、4K/HDR/DV、Surface 切换、同步与资源预算 | 两类代表设备、目标媒体配对测试；真实显示对齐；新 native 包 ABI/16 KiB page/依赖符号检查 | 按设备/会话停用新字幕层；必要时原子回退同阶段二进制与锁 |
+| 1：外挂 ASS 原型 | 默认关闭；保留真实 TextRenderer，增加可选观察接口并重建受影响 Java 产物；一个 ABI 的独立 JNI/libass/GL；外挂输入、fallback 字体、准确 offset/延迟、显示仲裁和生命周期；先限 SDR + 视频 SurfaceView | observer 关闭/选轨/seek/流结束契约测试；官方语料固定时间点对照；动画/暂停/延迟/字体/Surface 重建；主动注入可恢复失败；与关闭字幕基线配对；该 ABI 的 ELF/API/16 KiB/加载检查 | 会话开关关闭立即恢复原路径；代码/补丁/Java 产物/JNI/锁作为同一兼容单元回退；MPV 未改 |
+| 2：MKV 与字体 | 当前 Matroska 源码内补受控 raw ASS/附件契约，明确到选中 SampleStream 的传递方式；原始 duration、字节边界、ReadOrder、附件和 seek 覆盖；保留 DV/deferred Cues/网络行为 | CodecPrivate/chunk 字节与时间、zlib/header stripping、NUL、非零 buffer offset、乱序附件、未缓存长事件 seek；未选轨/预加载不得创建会话；existing Matroska DV/seek 定向回归 | 关闭 MKV 接管并撤回该输入契约的源/Java 产物；外挂原型可独立保留 |
+| 3：电视兼容与性能 | 扩至双 ABI、旧 GPU、4K/HDR/DV、视频 TextureView/LUT、tunneling/安全 Surface 能力判定及性能预算；保持已有解码和视频输出选择 | 两类代表设备配对；真实显示对齐；无 row-length 扩展路径；新增 ABI 重复其基础 ELF/API/16 KiB/加载检查；不以 arm64 结果代表电视 32 位 | 不满足能力或验收的组合保持兼容字幕；按会话停用新层，必要时原子回退该阶段产物与锁 |
 | 4：产品化 | 清晰的 ASS 原样/兼容选择、异常回退、诊断导出、可灰度开关；完善字幕偏好规则 | 字幕与现有播放设置回归、恢复流程、素材质量报告；用户可见结果验收 | 关闭新功能并保留旧设置/旧路径；不能静默切 MPV 或改变解码器 |
 
 依赖源码、NDK、构建参数、每 ABI `.so`/AAR SHA-256 与许可证必须随实现锁定。本轮下载的研究源码不是已批准的生产依赖；不修改 MPV/FFmpeg/libplacebo 锁来“顺便升级”。
+
+阶段 1 的拟议落点是 `ExoUtil`/独立 Exo ASS 会话、`ExoPlayerEngine`、公共 `PlaybackActivity`，新增独立 native 构建/锁/JNI，以及 TextRenderer 观察接口的 Media3 补丁、受影响本地 Maven 产物和定向测试；这些是未来 scope，当前 guard 仍只允许两份文档。先做 observer 的选择/时钟/关闭行为 fixture，再接 libass 和 Surface。原样模式暂不接管 MKV、视频 TextureView/HDR 等未验收组合；不能自动修改视频设置来满足字幕原型条件。
+
+阶段 2 开始前必须冻结原始 duration/附件如何穿过当前 SampleQueue/选轨的具体接口及测试样本，并解决 A08 的未读长事件覆盖问题。它们是明确的后续设计/验收门槛，不能用阶段 1 成功跳过；没有这些证据时建议暂缓阶段 2 的完整能力承诺。阶段 3 只扩大已验收范围，基本内存安全和 native 包装检查不推迟到该阶段。
 
 ## 9. 验收清单与故障证据
 
@@ -256,7 +332,7 @@ flowchart LR
 | A07 非零起播/拼接 | 正确使用 stream/period offset；连续换集、拼接媒体无固定偏移错误 |
 | A08 seek | 前后 seek、连续 seek、落在长事件中间、不重新读到旧 block 的回看场景无漏字/重复/旧帧 |
 | A09 暂停/缓冲/倍速 | 字幕媒体时间正确冻结/推进；暂停时 resize、字体完成加载仍能重绘 |
-| A10 轨道切换与关闭 | ASS↔SRT/WebVTT/图形字幕、关字幕、双语言轨道选择无双重渲染或残留 |
+| A10 轨道切换与关闭 | ASS↔SRT/WebVTT/图形字幕、关字幕、不同语言轨道切换无双重渲染或残留；不额外要求 Exo 同时显示双字幕，MPV 既有能力保持 |
 | A11 显示几何 | 黑边、非方形像素、裁剪/缩放、窗口变化、电视 overscan 布局下字幕映射正确 |
 | A12 生命周期 | 快速 add/remove、Surface 重建、后台/前台、释放期间回调不访问已销毁 native/GL 对象 |
 | A13 旧 GPU / ABI | armeabi-v7a 与 arm64-v8a；缺少 row-length 扩展的 GLES2 上传路径和输出正确 |
@@ -265,6 +341,20 @@ flowchart LR
 | A16 呈现时间 | 普通字幕统计延迟/抖动；贴画面招牌对照视频帧和实际屏幕，单独报告不能做到严格同帧的设备 |
 | A17 回退 | 选中 ASS 但初始化/字体/GL 失败时明确回退原因；不自动换播放器或悄悄关闭当前音视频能力 |
 | A18 无字幕及普通字幕 | 功能关闭时无 native/GL 常驻成本；现有字幕字号/位置、网络、选轨、DV、软硬解和诊断链不回归 |
+
+### 可直接采用的成熟测试基座
+
+新增核验 **libass/libass-tests** `10edd9ecd8054f2c4678d36b379d8372d0e573c6`。其 regression 使用 `compare`、固定字体和参考 PNG，禁用系统字体 provider；另有 crash 语料，建议 ASan/UBSan。已读顶层/回归 README、`regression/blurs/blur+t.ass` 和 `regression/karaoke/357-k-and-kf-desynced.ass`：前者在一条字幕内组合不同强度 blur 与 transform，后者组合 k/kf/fade，适合检验“只有首帧正确”的假实现。参考图、字体与字体许可随选定测试版本固定，不能只复制 ASS 文本。
+
+| 验证层 | 最小决定性用例与失败判据 |
+| --- | --- |
+| Media3 接线 | 真实 TextRenderer + fake SampleStream/clock：默认 observer 关闭、只选中轨道、正负延迟、非零 offset/period、peek 不重复输入、旧 decoder flush 后结果被拒绝、final stream 结束；不写只检查方法被调用的镜像测试 |
+| 原始输入 | 同一脚本的完整 ASS、Media3 封装和 MKV 原始事件独立 fixture；精确检查 header/ReadOrder/正文逗号/PTS/duration；同一库对照无法发现两边都喂错数据，所以不能只做截图 |
+| 布局/像素 | 先跑官方 blur/karaoke 小组，再以固定字体/viewport/时间生成独立参考，比较自有 GL 合成；ARM 浮点/SIMD 允许预先定义的容差，不能要求不同架构所有像素哈希一致，也不能事后再生成“正确答案”掩盖差异 |
+| 时钟/屏幕 | 标签位于视频帧边界前后的样片、暂停 resize、倍速和字幕延迟；分别记录媒体时钟、提交时刻和实际屏幕。独立层不能严格同帧的组合不得标为帧级贴合通过 |
+| 恢复/释放 | 注入字体/GL/队列失败，确认原 Cue 恢复、音视频不停；detach 后 attach、engine rebuild、关轨期间在途帧均不可复活旧内容； native 复制/边界逻辑用选定小语料做 ASan/UBSan |
+
+本轮只读取上述语料与说明，**未运行 libass-tests 或新接口 fixture**；实施时从相关小组开始，不无差别运行全库或全 ABI 矩阵。
 
 画质比较必须固定 libass 版本、字体文件、字体解析日志、脚本/样本、播放时间及 viewport；只拿不明字体配置的 MPV 截图作“正确答案”会误判。可用离线 FFmpeg/libass 生成参考，差异需要区分文字排版、栅格化、色彩和实际呈现时刻。
 
@@ -289,6 +379,7 @@ flowchart LR
 | [VLC](https://github.com/videolan/vlc/tree/c666634229ca28354fd4fc1bdf8c43a8a232644b) | `c666634229ca28354fd4fc1bdf8c43a8a232644b` | 时间/字体/区域缓存参考 |
 | [Kodi](https://github.com/xbmc/xbmc/tree/334195075cd7183f6787aecd6a74ea377dd8f731) | `334195075cd7183f6787aecd6a74ea377dd8f731` | seek/锁/事件参考 |
 | [本地锁定的 FongMi/mpv](https://github.com/FongMi/mpv/tree/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42) | `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42` | 已有 OSD Surface/EGL 复用评估；不修改原 MPV native 链 |
+| [libass/libass-tests](https://github.com/libass/libass-tests/tree/10edd9ecd8054f2c4678d36b379d8372d0e573c6) | `10edd9ecd8054f2c4678d36b379d8372d0e573c6` | 官方图像/异常语料参考；本次未执行，不引入生产依赖 |
 | 本地 `/Users/macbookpro/Desktop/github/FFmpeg` | `85c0e1a333444cfe2f5491a0c4262bbc7c92f719` | 只读 `libavfilter/vf_subtitles.c`；不视为本地已发布依赖版本 |
 | 本仓库锁定的 Media3 源码 | `e3e922d5c01bc0b564849940fe589daf37360d15` | 本地契约；保留且不升级 |
 | 本仓库锁定的 nextlib | `6ff6cf9d0820382b3c233d018c52e4163b09d345` | 依赖边界；本轮无新修改候选 |
@@ -324,6 +415,11 @@ flowchart LR
 | S20 本地固定 FFmpeg `libavfilter/vf_subtitles.c`，`filter_frame` / `overlay_ass_image` | A：按视频 PTS 调 libass 后混入 AVFrame | 离线参考与 burn-in 代价判断；未构建或烧录测试 |
 | S21 本地 `MpvPlayer.createOsdSurfaceView`、JNI `enqueueOsdSurface`、`MpvOsdSurfacePolicyTest`；[固定 native OSD 实现](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/video/out/android_osd_overlay.c) 与 `vo_mediacodec_embed.c` | A：已有透明 SurfaceView、独立 EGL/GLES、BGRA 图块和 MPV OSD 耦合 | 改变本地实施优先级为复用承载/评估合成抽取；不把已有层等同于通用 ASS 服务 |
 | S22 AOSP [SurfaceView/GLSurfaceView](https://source.android.com/docs/core/graphics/arch-sv-glsv)、[TextureView](https://source.android.com/docs/core/graphics/arch-tv) | A：两类宿主的合成与生命周期机制，SurfaceView 可接 EGL | 支持原型优先使用已有 SurfaceView 设计；Z-order、硬件 overlay 数量和实际收益仍需设备验证 |
+| S23 本地 `third_party/maven/androidx/media3/{media3-exoplayer,media3-extractor}/1.11.0-alpha01-fongmi/*-sources.jar`，SHA-256 见第 2 节；`DefaultMediaSourceFactory`、`TextRenderer`、`RendererHolder`、`BaseRenderer`、`NoSampleRenderer`、`MatroskaExtractor` | A：实际发布源码包含本地默认解析模式、类型特判、文本延迟及 SSA_PREFIX/10 ms duration 语义 | 决定保留真实 TextRenderer 和窄观察接口；源码身份已核对，不代表新增接口存在或已编译 |
+| S24 [libass `ass_types.h`](https://github.com/libass/libass/blob/b2fe9d8770678a7b5271387d38c20657ebf3429a/libass/ass_types.h)，结合 S01 | A：YCbCr Matrix 由调用方处理、HDR 字幕按 SDR 考虑、LayoutRes、font update no-op、扩展换行兼容边界 | 补齐色彩/字体/布局策略；Android HDR 的最终显示仍需设备验证 |
+| S25 [固定 MPV `sub/sd_ass.c`](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/sub/sd_ass.c)，`assobjects_init`、`filter_and_add`、`reset`、`configure_ass`、`mangle_colors` | A/B：先登记字体、chunk 时间/去重、条件 flush、样式覆盖和色彩处理 | 成熟原生实现补强生命周期/字体/seek 取舍；只参考设计，不复制 MPV 会话或 GPL 代码 |
+| S26 [libass-tests README](https://github.com/libass/libass-tests/blob/10edd9ecd8054f2c4678d36b379d8372d0e573c6/README.md)、[回归说明](https://github.com/libass/libass-tests/blob/10edd9ecd8054f2c4678d36b379d8372d0e573c6/regression/README.md)、[blur+t](https://github.com/libass/libass-tests/blob/10edd9ecd8054f2c4678d36b379d8372d0e573c6/regression/blurs/blur%2Bt.ass)、[karaoke](https://github.com/libass/libass-tests/blob/10edd9ecd8054f2c4678d36b379d8372d0e573c6/regression/karaoke/357-k-and-kf-desynced.ass) | A：固定字体、图像容差、异常语料及实际动态标签 | 用成熟语料取代仅列 A01–A18 的泛化清单；无本轮运行结果，字体许可要随引入核验 |
+| S27 本地 `PlaybackActivity.attachSurface/detachSurface/syncVideoSurfaceSize`、`ExoPlayerEngine.rebuild/release`、`ExoUtil.buildRenderersFactory`、`app/build.gradle`，复评基线 `bc2b3b284de87ada937b4ba3564f6fb12aa8a956` | A：服务/宿主生命周期分离、公共双端接线、固定 buffer 与 View 尺寸差异、现有 native API 26 参数 | 明确 App 改动位置、epoch 和独立 API 24 构建要求，不改动原视频 native 目标 |
 
 证据类覆盖：官方规格/API、确切源码/现有测试、PR/issue/维护者讨论、成熟相关项目、技术论文/博文/现场报告均已覆盖。本任务不是挑选具体上游 revert，未发现需要把某个 revert 作为方案前提；也未把尚未阅读正文的搜索结果、HN 模糊匹配或 404 的 libass wiki 页面列为证据。
 
@@ -331,12 +427,14 @@ flowchart LR
 
 - libass 主库 ISC 不等于整个字幕包都是 ISC。FreeType、HarfBuzz、FriBidi、fontconfig 等需要逐项记录许可证与版本，确认 LGPL 相关发布义务和静态链接策略。
 - libass-android 包装 MIT、assrender 包装 Apache-2.0；JASSUB 顶层 LICENSE 为 MIT，而 package 元数据明确列出 WASM/native 依赖的多种许可证。VLC/Kodi 优先借设计和语料思路，复制文件前审核其具体许可。
-- 不复用不明来源 prebuilt，不让 Exo 新库意外解析到 MPV/FFmpeg 的同名依赖符号；新 JNI 库名称、导出可见性、C++ runtime、ABI 与 16 KiB page 支持属于阶段 3 包装验收。
-- 下载归档只用于阅读，没有执行外部项目脚本或 native 文件。代理取证使用 `http://127.0.0.1:7897`。匿名 API 限流后，经用户授权的认证只用于 GitHub GET；凭据未写入仓库/证据文件，认证进程已退出。
+- 新字幕 native 使用独立构建入口和独立 lock，不从 MPV 运行实例或私有符号获取 libass。可参考已有 MPV 的字体依赖源码版本，但 Exo 必须显式固定自己的 libass、FreeType、HarfBuzz、FriBidi、fontconfig/XML、libunibreak 输入与许可证，不能随 MPV lock 更新而隐式改变。新增依赖不包含 FFmpeg、mpv 或 libplacebo；选择性代码复用不等于整包引入 libass-android 的预编译库。
+- 不复用不明来源 prebuilt，不让新库解析到 MPV/nextlib 同名依赖；独立 JNI 名称、隐藏非必要导出、C++ runtime 去重、ABI/API 与 16 KiB ELF/ZIP 对齐从**阶段 1 首个 ABI**开始检查。`app/build.gradle` 当前 NDK 为 r29，但现有 CMake 参数为 API 26；新 ASS 库需按 App minSdk 24 独立构建，不能盲目挂到 API 26 目标，也不因此修改既有视频目标。其余 ABI 未构建时只能是受门控原型，不能作为完整发布包。
+- 包体报告分别记录每 ABI 新增压缩/未压缩库大小、APK 增量及字体/provider/cache 开销；字体和每个静态依赖分别保留许可/来源，不能用 MIT 包装许可覆盖 LGPL 等义务。实施前冻结依赖清单，选版仍是原型准备动作，本次没有升级或生成任何依赖。
+- 下载归档只用于阅读，没有执行外部项目脚本或 native 文件。取证显式使用 `http://127.0.0.1:7897`；复评的新增请求均为公开 GET。首轮记录的认证取证属于此前会话，不作为本轮新授权使用。
 - 三份源码归档 SHA-256：peerless `538984edf6480bef0c7605292e913f39e96d967ad69fc8802e5aad05c7c5f490`；assrender `918fefb558c4acf48ee271ac34beb7897e4cfb7c9df9890f4d718aba8c388532`；JASSUB `fe101651b866f746c799fe9820ea8def46bfd4a8e5ffc6ba5155eb547904cbfa`。原始快照位于 Recovery anchor 的临时目录；长期依据是本文件的固定 commit URL 与访问日期。
 
 ## 12. 本轮完成边界
 
-已完成可行性判断、跨平台来源核对、本地调用链分析、候选方案比较、分阶段验收和回滚设计。文档归档进行一次范围内的结构、链接、完整 revision 与保密边界核验，结果记录于归档提交的 `Verification` 字段；guard 同时检查保护路径与原子提交/tag。
+首轮已完成可行性与跨平台研究。复评补齐实际发布源码证据，修订输入/时钟接线、显示回退、seek 边界、字体/色彩/几何、生命周期、native 基础门槛及成熟测试语料。采用窄 TextRenderer 观察接口是结合当前 fork 的设计建议，其开销和完整性仍由阶段 1 证明；阶段 2 的精确输入传递和未缓存长事件恢复保持显式门槛。文档归档进行一次范围内的结构、链接、完整 revision 与索引核验，结果记录于提交的 `Verification` 字段；guard 检查保护路径、原子提交及 tag。
 
-本轮没有构建 APK/AAR/so，没有安装设备，没有运行上述 A01–A18，也没有测得 WebHTV 性能改善。推荐是“实施可回退原型并按证据扩大”，不是“已实现”或“所有电视验证通过”。首次归档提交可用 `Task-Guard: E4-LIBASS-research` 定位，其本地恢复 tag 使用 `recovery/E4-LIBASS-research/` 前缀；不推送远端。
+本轮没有构建 APK/AAR/so，没有安装设备，没有运行 A01–A18 或 libass-tests，也没有测得 WebHTV 性能改善。建议仅实施可回退的阶段 1 原型；完整产品准入仍需后续阶段证据。首轮归档为 `bc2b3b284de87ada937b4ba3564f6fb12aa8a956`；本次文档提交用 `Task-Guard: E4-LIBASS-review` 定位，本地恢复 tag 使用同名任务前缀，不推送远端。
