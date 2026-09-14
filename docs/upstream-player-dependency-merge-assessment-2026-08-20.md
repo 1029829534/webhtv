@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-14 插入需求：用户批准按 [AV-DIAG-01 音视频全链路诊断方案](AV-DIAG-01-playback-diagnostics.md) 从 D0 分阶段实施。基线 `2ec5afd8cc3f21bf1693b198f87018488775c660`，guard `AV-DIAG-01-D0`；原 `app/.cxx/` 70 文件保护。D0 公共日志底座代码及37项不同用例、双端 Java 编译、网页执行和三轮 exporter fixture 通过，D1–D5 未开始；设备未连接，FEL 原任务与待设备验收状态保留。唯一下一步：连接目标设备完成 D0 用户端导出及开关性能验收。此需求不合入上游提交，不改写 E/P/C 编号。
+
 - 2026-09-14 00:37新候选：P2-4第9.17节已完成首draw独立有界初始化、能力门控push descriptors及无能力/布局失败fallback，保留逐帧录制、原同步/画质/默认行为。基线`ce10d5c15ef36fa83e27c6195182717a334a1036`，guard `P2-4-fel-warmup-push`原子收尾、不推送；原`app/.cxx/`70文件全部保护。旧VO负例、新真实函数ASan/UBSan、1200帧push、240帧交接、双ABI/ELF/导出、13项Java及两包各10库/签名/ZIP通过，18依赖不变。唯一下一步：电视安装TV32 SHA256=`4b79ec5aecdb81764cec92fa3b6d3b6f2cf0c9816027849804561ab0eab3a0b8`，同样片三轮完整播放/seek/退出，取新App日志；实际扩展能力、流畅度/回跳仍未验收。以下为历史状态。
 
 - 2026-09-13最新候选（18:39包）：P2-4第9.16节已完成逐帧重新绑定/录制及有界帧关联/慢API日志，保留AHB缓存/同步/画质/默认行为。真实函数ASan/UBSan、源/补丁、双ABI/ELF/导出、13项Java及两APK内容/签名/ZIP通过；1200帧1200次新录制、1128次对象槽命中、不重放，18项其他库不变。guard原子收尾并归还临时隔离的Release缓存，不推送。唯一下一步：目标电视安装TV32 SHA256=`4971498a956a723cf348592dc4b228f595efdda56a77a884afb51fec05645722`，同样片三轮完整播放和seek/退出，取新增App调试日志裁决。14:52候选的实机回跳、持续掉帧及独立751ms失败仍未取得新设备验收。以下为历史状态。
@@ -30,6 +32,7 @@
 
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
+| 插入需求 | `AV-DIAG-01` | 通用/App，后续 Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D0 代码及主机验证完成；D1–D5 未实施，设备验收待进行 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
 | P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 新日志31首draw误超时/bind热点；9.17有界初始化与能力门控push候选本机验证通过，整体电视画面/实时性能未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |

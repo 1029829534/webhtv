@@ -1,167 +1,128 @@
 package com.github.catvod.crawler;
 
-import android.text.TextUtils;
+import android.os.SystemClock;
 
 import com.github.catvod.Init;
+import com.github.catvod.crawler.diagnostics.DiagnosticEvent;
+import com.github.catvod.crawler.diagnostics.DiagnosticLogBuffer;
+import com.github.catvod.crawler.diagnostics.RollingDiagnosticFile;
 import com.github.catvod.utils.Prefers;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 public class DebugLogStore {
-
-    private static final Object LOCK = new Object();
-    private static final ArrayDeque<String> LINES = new ArrayDeque<>();
-    private static final ThreadLocal<SimpleDateFormat> FORMAT = ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US));
-    private static final String FILE_NAME = "webhtv-debug-log.txt";
     private static final String PREF_ENABLED = "debug_log";
-    private static final int MAX_MESSAGE_CHARS = 12000;
-    private static long version;
     private static volatile boolean enabled;
+    private static volatile DiagnosticLogBuffer buffer;
 
-    public static boolean isEnabled() {
-        return enabled;
+    public static boolean isEnabled() { return enabled; }
+
+    private static synchronized DiagnosticLogBuffer create() {
+        if (buffer == null) {
+            DiagnosticLogBuffer.Limits limits = DiagnosticLogBuffer.Limits.standard();
+            buffer = new DiagnosticLogBuffer(limits, new RollingDiagnosticFile(Init.context().getCacheDir(), limits),
+                    new DiagnosticLogBuffer.Clock() {
+                        @Override public long wallMillis() { return System.currentTimeMillis(); }
+                        @Override public long monotonicNanos() { return SystemClock.elapsedRealtimeNanos(); }
+                        @Override public int processId() { return android.os.Process.myPid(); }
+                    });
+        }
+        return buffer;
     }
 
-    public static void setEnabled(boolean enabled) {
-        DebugLogStore.enabled = enabled;
-        Prefers.put(PREF_ENABLED, enabled);
-        if (enabled) add("debug", "调试日志已开启");
-        else clear();
+    public static synchronized void setEnabled(boolean value) {
+        if (value) create().start(false);
+        enabled = value;
+        Prefers.put(PREF_ENABLED, value);
+        if (value) beginCollection("enable");
+        else if (buffer != null) buffer.disable();
     }
 
-    public static void restoreEnabled() {
+    public static synchronized void restoreEnabled() {
         enabled = Prefers.getBoolean(PREF_ENABLED);
         if (!enabled) return;
-        synchronized (LOCK) {
-            loadLocked();
-        }
-        add("debug", "调试日志已恢复");
+        create().start(true);
+        beginCollection("restore");
     }
 
-    public static void add(String tag, String msg) {
-        if (!isEnabled()) return;
-        if (TextUtils.isEmpty(msg)) return;
-        String line = FORMAT.get().format(new Date()) + " [" + Thread.currentThread().getName() + "] " + safe(tag) + ": " + limit(msg);
-        synchronized (LOCK) {
-            LINES.addLast(line);
-            version++;
-            writeLocked(line);
-        }
+    private static void beginCollection(String reason) {
+        event(new DiagnosticEvent("diag.session.begin", "none", "process", 0, 0)
+                .observed("mode", "standard").observed("reason", reason)
+                .unknown("captureStartedLate", DiagnosticEvent.Status.UNKNOWN)
+                .coverage("session", DiagnosticEvent.Status.KNOWN)
+                .coverage("health", DiagnosticEvent.Status.KNOWN)
+                .coverage("decoder", DiagnosticEvent.Status.NOT_COLLECTED)
+                .coverage("surface", DiagnosticEvent.Status.NOT_COLLECTED)
+                .coverage("audioOutput", DiagnosticEvent.Status.NOT_COLLECTED)
+                .pin("process-session"));
+    }
+
+    public static void add(String tag, String message) { add(tag, message, false); }
+
+    static void add(String tag, String message, boolean critical) {
+        DiagnosticLogBuffer current = buffer;
+        if (!enabled || current == null) return;
+        current.add(tag, message, critical);
+    }
+
+    public static void event(DiagnosticEvent event) {
+        DiagnosticLogBuffer current = buffer;
+        if (enabled && current != null) current.event(event);
+    }
+
+    public static void collectorFailure() {
+        DiagnosticLogBuffer current = buffer;
+        if (enabled && current != null) current.collectorFailure();
     }
 
     public static String text() {
-        if (!isEnabled()) return "调试日志未开启";
-        List<String> copy;
-        synchronized (LOCK) {
-            if (LINES.isEmpty()) loadLocked();
-            copy = new ArrayList<>(LINES);
-        }
-        if (copy.isEmpty()) return "暂无调试日志";
-        StringBuilder builder = new StringBuilder();
-        for (String line : copy) builder.append(line).append('\n');
-        return builder.toString();
+        if (!enabled) return "调试日志未开启";
+        DiagnosticLogBuffer.Snapshot snapshot = incremental(-1, "", -1);
+        if (snapshot == null) return "暂无调试日志";
+        return DiagnosticLogBuffer.header(snapshot.health()) + snapshot.text();
     }
 
     public static List<String> snapshot() {
-        synchronized (LOCK) {
-            return new ArrayList<>(LINES);
-        }
+        DiagnosticLogBuffer.Snapshot snapshot = incremental(-1, "", -1);
+        return snapshot == null ? List.of() : snapshot.lines();
+    }
+
+    public static List<String> observedOrigins() {
+        DiagnosticLogBuffer current = buffer;
+        return !enabled || current == null ? List.of() : current.origins();
+    }
+
+    public static DiagnosticLogBuffer.Snapshot incremental(long afterSeq, String runId, long generation) {
+        DiagnosticLogBuffer current = buffer;
+        return current == null ? null : current.snapshot(afterSeq, runId, generation);
+    }
+
+    public static DiagnosticLogBuffer.Export export() {
+        DiagnosticLogBuffer current = buffer;
+        if (enabled && current != null) return current.export(750);
+        byte[] bytes = "调试日志未开启".getBytes(StandardCharsets.UTF_8);
+        return new DiagnosticLogBuffer.Export(new ByteArrayInputStream(bytes), bytes.length, true);
     }
 
     public static int size() {
-        synchronized (LOCK) {
-            if (enabled && LINES.isEmpty()) loadLocked();
-            return LINES.size();
-        }
+        DiagnosticLogBuffer.Snapshot snapshot = incremental(-1, "", -1);
+        return snapshot == null ? 0 : snapshot.lines().size();
     }
 
     public static long bytes() {
-        try {
-            File file = file();
-            return file != null && file.exists() ? file.length() : 0;
-        } catch (Throwable e) {
-            return 0;
-        }
+        DiagnosticLogBuffer current = buffer;
+        return current == null ? 0 : current.health().get("diskBytes").getAsLong();
     }
 
-    public static long version() {
-        return version;
-    }
+    public static long version() { return buffer == null ? 0 : buffer.version(); }
+    public static long captureGeneration() { return buffer == null ? 0 : buffer.generation(); }
 
-    public static void clear() {
-        synchronized (LOCK) {
-            LINES.clear();
-            version++;
-            delete();
-        }
-    }
-
-    private static String safe(String tag) {
-        return TextUtils.isEmpty(tag) ? "Debug" : tag;
-    }
-
-    private static String limit(String msg) {
-        if (msg.length() <= MAX_MESSAGE_CHARS) return msg;
-        return msg.substring(0, MAX_MESSAGE_CHARS) + " ...(truncated " + (msg.length() - MAX_MESSAGE_CHARS) + " chars)";
-    }
-
-    private static File file() {
-        try {
-            return new File(Init.context().getCacheDir(), FILE_NAME);
-        } catch (Throwable e) {
-            return null;
-        }
-    }
-
-    private static void writeLocked(String line) {
-        try {
-            File file = file();
-            if (file == null) return;
-            try (FileOutputStream stream = new FileOutputStream(file, true)) {
-                stream.write((line + "\n").getBytes(StandardCharsets.UTF_8));
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static void loadLocked() {
-        try {
-            File file = file();
-            if (file == null || !file.exists()) return;
-            String text = readAll(file);
-            if (TextUtils.isEmpty(text)) return;
-            LINES.clear();
-            for (String line : text.split("\\r?\\n")) {
-                if (!TextUtils.isEmpty(line)) LINES.addLast(line);
-            }
-        } catch (Throwable e) {
-        }
-    }
-
-    private static String readAll(File file) throws Exception {
-        try (FileInputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
-            return output.toString(StandardCharsets.UTF_8.name());
-        }
-    }
-
-    private static void delete() {
-        try {
-            File file = file();
-            if (file != null && file.exists()) file.delete();
-        } catch (Throwable ignored) {
-        }
+    public static synchronized void clear() {
+        DiagnosticLogBuffer current = buffer;
+        if (current == null) return;
+        current.clear();
+        if (enabled) beginCollection("clear");
     }
 }

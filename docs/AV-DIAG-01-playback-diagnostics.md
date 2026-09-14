@@ -1,0 +1,641 @@
+# AV-DIAG-01：音视频全链路调试日志改造方案
+
+> 状态：2026-09-14 用户明确批准“开始分阶段实施”；**D0 公共底座代码与主机验证已完成，设备验收待进行；D1–D5 未实施**。本文件是此需求的唯一任务记录，以下设计目标不等于已实现能力，实际交付范围见14.4。
+>
+> 目标：没有 ADB 的手机、电视、盒子、模拟器，仅通过 App「调试日志」及其导出文件，重建一次播放的输入、选轨、解码、视频输出、音频输出、策略变化和故障恢复链路，得到有证据的根因或明确的剩余观测边界。
+
+## 0. 范围、基线与交付位置
+
+- 编写日期：2026-09-13，Asia/Shanghai，UTC+08:00。
+- 代码审阅基线：WebHTV `feature/mpv-dv7-fel`，HEAD `0a82dc13e255524d7c0e4e04c2f51ec9119aec88`；文中本仓库位置均相对此工作区。
+- 本地 Media3 源码基线：`e3e922d5c01bc0b564849940fe589daf37360d15`，来自 `third_party/media-lock.json`；该锁另有补丁和 artifact overrides，**不能把基线源码等同于每个最终 AAR**。
+- 原设计时 FEL guard 为 `P2-4-fel-vo-handoff`；2026-09-14 实施前核实最新 `P2-4-fel-warmup-push` 已 finished。D0 基线为 `feature/mpv-dv7-fel` / `2ec5afd8cc3f21bf1693b198f87018488775c660`，独立 guard `AV-DIAG-01-D0`，保护已有 `app/.cxx/` 全部 70 个未跟踪文件。
+- 原设计交付：`/private/tmp/webhtv-av-diagnostics-2026-09-13/AV-DIAG-01-音视频全链路调试日志改造方案.md`。相关已读取资料保存于同目录 `evidence/`，实施验证也保存在该临时目录；当前任务文档位于仓库 `docs/AV-DIAG-01-playback-diagnostics.md`。
+- 已归档为 `docs/AV-DIAG-01-playback-diagnostics.md`，原临时文档及证据快照保留。`AV-DIAG-01` 是用户插入需求标识，不占用、改写既有上游 E/P/C 任务编号；D0–D5 的后续工作均续写本文件。
+- 范围：Exo/Media3、其 FFmpeg/nextlib 扩展、MPV、仍可用的 IJK，以及公共播放/Surface/AudioManager/日志导出层。网络、代理、DRM、字幕/LUT、生命周期作为解码和输出故障的必要上下文，不扩展成全量抓包或系统监控。
+- 非目标：本轮修复模拟器黑屏、改默认硬解/软解策略、自动切播放器、自动更改直通、升级依赖、重新构建 native、读取其他 App 日志或要求用户打开 ADB。
+
+### 0.1 验收承诺的正确边界
+
+**不能诚实承诺“任何视频不显示/任何无声，仅凭 App 日志一定定位到最终根因”。** Android 不向普通 App 开放全部厂商解码器、SurfaceFlinger、AudioFlinger、HDMI/功放及物理屏幕/扬声器内部状态。硬解回调、AudioTrack 写入成功甚至时间戳前进，都不等于用户一定看见/听见。
+
+本方案承诺的可验收目标是：
+
+1. App 能观测的各层都有输入、输出、失败、生命周期和关联标识；不是只有最终一行错误。
+2. 明确区分事实、配置、推断、能力声明和用户观察；未采集/不支持/过期/权限受限不伪装为正常。
+3. 可定位的故障提供具体失败操作、实际参数、原始错误与前后状态；不可定位的故障提供最后一个已证实正常的边界、缺失证据，以及**一个**最小区分步骤。
+4. 单一音频或视频失败不会被另一条正常链路、`READY`、进度前进或封面图片掩盖。
+5. 导出包自身能够说明信息是否完整。日志被截断、限流、丢失、尚未落盘时，不输出“已排除某层故障”的假结论。
+
+## 1. 问题样本与需要避免的误判
+
+### 1.1 已有用户样本
+
+2026-09-12，两份 `webhtv-debug-log` 对应同一模拟器、同一网盘原画 MP4。媒体为 HEVC Main10、1920×1080、24fps、SDR、AC3 5.1。敏感网盘链接和 Token 不复制到本文。
+
+| 已观察到的事实 | 能说明什么 | 不能说明什么 |
+| --- | --- | --- |
+| Exo 使用 `OMX.qcom.video.decoder.hevc`，收到首帧回调，`READY`、进度持续前进 | 解码/播放接口至少进入了对应状态 | 屏幕真实画面正确；名字含 qcom 不证明模拟器使用真实高通硬件 |
+| Exo `renderedFps=24` 来自呈现时间戳间隔估算 | 媒体/提交帧的时间戳节奏 | 实际屏幕刷新了 24 张不同的正确画面 |
+| 首帧附近有 `syncVideoSurfaceSize fixed=1280x720` | App 实际请求过固定 Surface 尺寸 | 黑屏一定由该操作导致；请求值也不等于下一次 callback 的实际尺寸 |
+| MPV `Failed to initialize a decoder for codec 'hevc'`，之后 `vid=no aid=1` | 视频初始化失败，音频仍选中 | 设备根本不能硬解；也不能只因音频继续而认为整次播放正常 |
+| MPV 存在视频轨元数据，仍打印 `source=mpv-playback-restart` 的 `first-frame` | 当前上层把就绪信号当作首帧标记 | 原生层已经输出有效视频帧 |
+| 画面是“夸父”静态标识 | 可能是无视频时的 artwork/封面 | 不能称为“视频卡在第一帧”，必须记录画面来源 |
+| 用户补充原版影视 TV 同设备同视频能硬解 | 应优先做 App/内核/配置差异对照 | 尚未拿到原版准确版本、内核、实际 decoder/VO/AO，不能假定两条执行链完全相同 |
+
+此案例必须成为后续诊断验收 fixture；**它不是本文已经完成的修复或可复现设备测试**。
+
+### 1.2 要覆盖的问题族
+
+- 完全黑屏、有声无画、封面占位、首帧后冻结、seek/切集/横竖屏后黑屏、绿屏/紫屏/花屏、HDR/DV 输出错误。
+- 无声、有画无声、音轨未选中、音量/焦点导致静音、PCM 全零、声道映射错、爆音/断续/缓冲不足、直通和 offload 失败、蓝牙/HDMI/eARC/USB 路由切换后无声。
+- 硬解创建/配置/启动失败、运行中失效、资源耗尽、厂商能力误报、软解扩展未加载、ABI/库组合不匹配、用户选项未生效。
+- 资源不是预期视频、清晰度/转码变化、代理/Range 错误、音视频某一轨无数据、DRM/key 不可用、PTS/DTS/同步问题。
+- 日志开启过晚、应用卡主线程、native 卡住/崩溃、进程被杀、日志洪泛、导出丢上下文。
+
+## 2. 现有实现盘点：复用什么、补什么
+
+以下是审阅到的事实；“缺口”指尚不能形成完整可导出证据链，不意味着整个仓库没有任何同类零散日志。
+
+| 现有落点 | 已有能力 | 本次设计确认的缺口 |
+| --- | --- | --- |
+| `catvod/src/main/java/com/github/catvod/crawler/SpiderDebug.java:15` | 开关门控；字符串/Throwable 进入 DebugLogStore；同时可进入平台日志 | 没有公共结构化 envelope、字段级隐私白名单和会话完整性协议 |
+| `catvod/src/main/java/com/github/catvod/crawler/DebugLogStore.java:20` | 内存列表、cache 文件、恢复、下载文本；单消息限制 12000 字符 | 当前列表和文件没有总量上限；持锁同步逐条开文件写入；失败被吞；关日志即 clear；长日志全文读回 |
+| `app/src/main/java/com/fongmi/android/tv/server/process/DebugLogs.java:24` | `/debug/logs`、`/debug/logs.txt`、`/debug/stream`、启停和清空 | stream 在 version 变化时返回全文；缺游标/缺口标识、会话快照、诊断包完整性、故障标记操作 |
+| `app/src/main/java/com/fongmi/android/tv/setting/Setting.java:587` | App/Android/机型/ABI 环境日志 | 缺实际加载库集合与构建标识、GPU/音频路由、配置来源、诊断能力清单 |
+| `app/src/main/java/com/fongmi/android/tv/player/PlaybackTrace.java:13` | trace 和 request/prepare/tracks/ready/first-frame 阶段 | 跨进程/播放器实例、重试、预载和新资源 generation 的关联不充分；缺独立音视频终态 |
+| `app/src/main/java/com/fongmi/android/tv/player/PlaybackTelemetryCoordinator.java`、`PlaybackTelemetryMapper.java` | 聚合播放/内存/网络等状态，部分字段已有来源和置信度 | 不能把估算 FPS/未知值当最终渲染证据；需与新证据事件统一语义，而非再建冲突仪表盘 |
+| `app/src/main/java/com/fongmi/android/tv/player/exo/PlaybackAnalyticsListener.java:390` | decoder 名称、输入 Format、VideoSize、AudioTrackConfig、掉帧、sink error、seek、最终 error | 缺候选及剔除原因、配置/输出格式、完整 fallback 链、实际写入/呈现分层；`onAudioPositionAdvancing` 目前主要服务 seek 跟踪 |
+| `app/src/main/java/com/fongmi/android/tv/player/exo/PlaybackAnalyticsListener.java:963` | 主要 decoder init 的 diagnosticInfo、最多 8 层异常类型名 | 没有同等完整的异常 message/stack/suppressed/fallback 证据；记录全部候选不能反向增加黑名单计数 |
+| `app/src/main/java/com/fongmi/android/tv/player/exo/ObservedVideoFrameRateEstimator.java:11` | 由 PTS 估算源帧节奏 | 必须改进日志字段命名或标注，不能宣称物理显示 FPS |
+| `app/src/main/java/com/fongmi/android/tv/ui/activity/PlaybackActivity.java:420` | attach、render 切换、尺寸、Surface valid；固定尺寸请求 | 缺 Surface 生命周期 generation、actual holder 回读、窗口可见性/遮罩及解码输出绑定关系 |
+| `app/src/mobile/java/com/fongmi/android/tv/ui/activity/VideoActivity.java:4244` | 设置默认 artwork | 缺“当前展示的是封面/视频/遮罩”的明确日志，TV 也需等价采集 |
+| `app/src/main/java/com/fongmi/android/tv/player/AudioPlaybackDiagnostics.java:98` | 原轨/当前轨、decode/output mode、降级原因、失败阶段模型 | 需自动输出到调试日志，不依赖用户打开某个 OSD/能力面板 |
+| `app/src/main/java/com/fongmi/android/tv/player/engine/ExoPlayerEngine.java:631` | 从 decoder 和 AudioTrack config 区分 PCM/直通/offload | 缺具体 AudioTrack 的 route/write/head/timestamp 与有效音量链 |
+| `app/src/main/java/com/fongmi/android/tv/player/PlayerManager.java:5335` | native 音频焦点请求失败、noisy、焦点变化的部分日志 | 需贯通 Exo/native 两种 owner，记录成功、duck/resume、音量和发生顺序 |
+| `app/src/main/java/com/fongmi/android/tv/player/codec/CodecCapabilityInspector.java:42` | 设备与当前媒体能力报告 | 需自动保存本次媒体相关能力摘要；面板能力声明不替代实际创建/configure 结果 |
+| `app/src/main/java/androidx/media3/mpvplayer/MpvPlayer.java:1276` | native warn/error 等可直接进日志；generation 检查；主线程队列延迟；错误窗口 | 现有 5 秒 32 条窗口可能压制关键上下文；需结构化尝试链、分级保留和明确丢失统计，不全开逐帧 verbose |
+| `app/src/main/java/androidx/media3/mpvplayer/MpvPropertySnapshot.java`、`MpvDiagnosticsPolicy.java` | observer 缓存、部分过期/新文件处理、限制同步查询、部分敏感信息脱敏 | 缺统一字段 age/status 与跨属性快照一致性；不能恢复为 UI 线程大量同步 JNI 查询 |
+| `third_party/mpv-player-jni/src/event.cpp`、`app/src/main/java/is/xyz/mpv/MPVLib.java` | native event/property/log 回调及库加载 | 需 event queue overflow、command reply/error、native attempt/generation 和库实际来源的明确证据 |
+| `app/src/main/java/com/fongmi/android/tv/player/PlayerManager.java:7176` | 根据 MPV ready/轨道存在标记启动完成 | 诊断需独立记录 `videoAvailable` 与 `videoSelected/videoOutputActive`，不能继续只认该 FIRST_FRAME |
+| `app/src/main/java/com/fongmi/android/tv/player/engine/IjkSimplePlayer.java:532`、`IjkPlayerEngine.java:219` | onPrepared/onError/onInfo、音视频快照 | 不把 IJK 当盲区；能取的属性写出，取不到的原生输出信息明确 unknown |
+| `app/src/main/java/com/fongmi/android/tv/player/mpv/PlaybackRecoveryMonitor.java:145` | 卡死恢复请求、上次用户退出结果持久记录 | 不等于系统崩溃/ANR 完整记录；需公共会话 journal 与按 API 获取的退出原因 |
+
+## 3. 设计决策与最佳实践选择
+
+### 3.1 三种方案比较
+
+| 方案 | 优点 | 无法满足的部分/风险 | 决策 |
+| --- | --- | --- | --- |
+| 不改，只让用户换软解/抓 ADB | 无代码成本 | 无 ADB 设备无法定位；丢失真正硬解差异；只缓解不解释 | 不满足需求 |
+| 原样启用 Media3 EventLogger、MPV `all=v`、FFmpeg debug | 上游现成；起步快 | EventLogger 默认面向 Logcat；缺 UI/音频实际路由；可能泄露 URL/请求头；大量日志可拖慢 native/UI，仍可能把 READY 当成功 | 只借鉴事件覆盖，不整套照搬 |
+| 扩展现有日志通路，分层结构化事件＋定时聚合＋异常前后快照＋可选深度探针 | 用户不需 ADB；保持现有入口；可判定“失败发生在哪层”；能控制开销 | 需统一 schema、owner/thread、隐私与完整性；部分底层采集需独立依赖阶段 | **推荐：WebHTV 适配方案** |
+
+### 3.2 不改变播放决策的原则
+
+- 采集器默认只读；不能为了诊断主动 flush/recreate decoder、seek、改格式/直通/音量/硬解或重启播放器。
+- 记录“发生了 fallback”和“为什么发生”，不增加 fallback、不修改黑名单、不可让诊断错误触发恢复策略。
+- 保留已有首帧/启动行为接口；先新增语义正确的证据字段并将旧 `firstFrameMs` 标为兼容/就绪信号。修改 UI 或启动状态机属于另外的经审批行为改动。
+- Media3/MPV/IJK、前台播放/预载、音频/视频、主 Surface/OSD Surface 不能共用不带 owner 的计数器。
+- 最大化复用上游 public/UnstableApi 扩展点。当前 Media3 有 `ForwardingAudioSink`、`ForwardingAudioOutputProvider`、`ForwardingAudioOutput`；`AudioTrackAudioOutput.getAudioTrack()` 可取得其实际对象。先验证最终 AAR 的签名再接入，**不反射私有字段、不替换底层默认实现来凑日志**。
+- 只有 public hooks 无法提供必要字段时，才设计窄的 Media3/native 诊断扩展；它是单独审批、单独构建验证的阶段，不混入公共日志改造。
+
+## 4. 统一事件模型与关联规则
+
+### 4.1 同一个日志通路
+
+```text
+用户/遥控器动作、站源解析、媒体和策略
+          │
+          ├─ Exo Analytics + codec adapter + AudioSink/AudioOutput
+          ├─ MPV event/property/log + JNI + 必要 native 诊断点
+          ├─ IJK info/error/property
+          └─ Surface/窗口 + AudioManager/route + 系统/生命周期
+          │
+          ▼
+结构化事件 → 隐私白名单/长度限制 → 有界优先级队列
+          │                         │
+          ├─ 按会话快照/环形前序窗口 └─ 独立日志写线程/落盘进度
+          ▼
+现有 SpiderDebug / DebugLogStore 的兼容日志视图
+          ├─ App 调试日志/电视诊断入口
+          ├─ /debug/logs 与 /debug/logs.txt（仍可直接下载完整可读文本）
+          └─ 诊断包：timeline + snapshots + manifest + summary
+```
+
+**不能只新增 Logcat、OSD、内部对象或一张截图。** 每个验收事件必须出现在用户能导出的调试日志中。native 尚未 bridge 的错误必须写明 unavailable，不得靠用户去 adb 找补。
+
+### 4.2 每条事件的公共字段
+
+文本兼容外壳建议：`日期 [线程] av-diag: {单行 JSON}`。保留现有分类，网页另增加「音视频诊断」过滤。JSON 转义换行，禁止把外部文本伪造成下一条日志。
+
+| 字段 | 必须满足的语义 |
+| --- | --- |
+| `schemaVersion`, `event`, `level` | 版本化字段定义；事件名稳定；severity 不从自由文本猜 |
+| `wallTime`, `timezone`, `elapsedRealtimeNs` | wall 用于用户对照；耗时用单调时钟；不混合 wall 与 media time |
+| `processRunId`, `processRole`, `pid`, `thread` | 每次进程启动随机 run id；主进程/native恢复辅助进程分开；不使用设备永久标识 |
+| `seq`, `sourceSeq`, `capturedAtNs`, `enqueuedAtNs` | 全局写入顺序与源头捕获顺序分开；晚到事件保留原时间；不能把导出顺序冒充因果 |
+| `trace`, `playerInstanceId`, `engine`, `engineVersion` | 复用现有 trace，补播放器实例；切内核明确 parentTrace/parentAttempt |
+| `mediaGeneration`, `attemptId`, `operationId`, `parentEventId` | 新文件、重试、seek、flush、track switch 可分辨；旧 generation 的事件记 late/orphan，不能污染新会话 |
+| `role`, `eventMediaId`, `currentMediaId` | foreground/preload；Media3 EventTime 的事件媒体与当前媒体可能不同；不使用单个可变全局 trace 给回调补身份 |
+| `videoTrackId`, `audioTrackId`, `decoderId`, `surfaceId`, `audioOutputId` | 只在适用时填写；同名 codec 重新创建仍是新的 decoderId；对象 ID 为本进程不透明序号，不导出地址 |
+| `positionUs`, `durationUs`, `seekEpoch`, `clockDomain` | 不把未知时长、TIME_UNSET、无效浮点当 0；写清 media/system/audio clock |
+| `requested`, `effective`, `observed`, `origin` | 用户值/策略结果/底层读回；origin 为 default/user/profile/mpv.conf/per-file/runtime-fallback 等 |
+| `status`, `source`, `evidenceClass`, `ageMs` | evidenceClass为observed/configured/inferred/user-reported；status固定为known/unknown/not-collected/not-supported/not-applicable/permission-denied/stale/read-error/timed-out/pending-callback/unavailable/not-observable |
+| `snapshotId`, `fieldsChanged`, `suppressedCount`, `truncated` | 周期输出增量；完整基线/终态另保留；任何省略可追踪 |
+
+规则：数值 `0`、布尔 `false`、空列表只有真实查询/事件支持时才写；没有 `hwdec-current` 的 MPV 不能回退到 `config.hwdec` 再宣称“实际硬解”。`available`、`selected`、`initialized`、`producingOutput` 独立建模。`unavailable`表示接口存在但当前没有值，`not-supported`表示该API/构建不支持，`not-observable`表示App无合法观测手段，`unknown`表示证据尚不足；禁止混用。
+
+### 4.3 音视频成功证据分层
+
+| 视频层 | 音频层 | 证据强度与边界 |
+| --- | --- | --- |
+| V0 媒体声明视频轨 | A0 媒体声明音频轨 | 只有元数据 |
+| V1 轨道已选且收到 sample | A1 轨道已选且收到 sample | 不证明 decoder 可工作 |
+| V2 decoder 输出 buffer/frame | A2 decoder 输出 PCM，或已选择直通的压缩帧 | 直通不应强求软件/硬件 audio decoder；压缩帧不是 PCM |
+| V3 frame release/render submission | A3 sink/AudioOutput 实际接收/写入 | 提交不等于呈现；写入不等于声压 |
+| V4 MediaCodec output-surface callback / GPU present 成功等 | A4 播放头/有效时间戳前进、实际路由存在 | 命名注明具体 API；不能跨内核把 V4 定义成同一强度 |
+| V5 可选像素统计 + 用户确认 | A5 可选 PCM 统计 + 用户确认/外部链路检查 | PixelCopy 仍不是面板出光；PCM 非零仍不是扬声器发声 |
+
+每次 report 同时输出 `videoEvidenceLevel`、`audioEvidenceLevel`、`lastGoodBoundary`、`failedBoundary`、`missingEvidence`。`READY` 仅是状态，不出现在“最终音画正常”的判定条件中。
+
+## 5. 触发、留存与用户操作
+
+### 5.1 无 ADB 的最短使用流程
+
+1. App 设置或局域网调试页开启「音视频诊断」，展示隐私、时间/空间上限和实际采集能力。
+2. 用户原样复现，不先切软解/直通，避免破坏原故障现场。
+3. 遥控器可选择「黑屏」「画面不动」「无声」「断音」「音画不同步」「其他」，或网页点「标记此刻故障」。先保存快照，再允许深度捕获。
+4. 一次点击下载 `webhtv-debug-log.txt`；可选下载完整诊断包。下载不能依赖播放线程响应，也不能触发重新查询所有 native 属性。
+5. 如需 A/B，使用“记录对照步骤”：原内核/硬解保持，单独改一个参数；日志自动记录 old/new/request/effective/restartAttempt。系统/原版 App 的未知参数由用户填写并标为 user-reported。
+
+未提前开启时无法恢复此前没有采集的事实；此时输出 `captureStartedLate=true`、现有基线和能得到的历史记录，再请求一次复现。不开日志时不暗中常驻采集媒体/设备隐私。
+
+### 5.2 必须触发的快照
+
+- 打开调试、process start、player create、play request、解析返回、prepare、轨道变化、decoder configured/output-format changed。
+- 首个 sample、首个解码输出、首个提交/回调、首个音频写入、audio-position advancing；这些分别触发而不是共用 `first-frame`。
+- 用户故障标记、明确 decoder/sink/native 错误、长时间无输出的观察告警、route/focus/volume 变化。
+- seek/flush/reinit、切音轨/视频轨、切源/切内核、Surface 重建/尺寸变更、进后台/前台/PiP/投屏。
+- stop/release、end-file、进程恢复、导出开始/完成；记录会话终态或为何没有终态。
+
+启动无帧观察建议默认 5 秒、持续无进展观察建议 3 秒/连续 3 个采样，**仅为候选阈值**，必须与 ready/playWhenReady、pause、buffering、seek、suppression、音频-only、封面轨、低帧率、静止图等门控一起判断。超时只生成“未观测到输出”事件，不直接认定 decoder 故障或切换播放器。
+
+### 5.3 模式和预算（设计目标，尚未测量）
+
+| 模式 | 捕获内容 | 限制 |
+| --- | --- | --- |
+| 关闭 | 不做新增详细诊断，不保留新的媒体内容统计 | 既有业务错误机制不因诊断关闭而失效 |
+| 标准诊断 | 状态事件即时记录；计数器每 1 秒内聚合、通常每 5 秒输出；异常时输出完整快照 | 不逐包/逐帧字符串化，不强制获取 GPU/PCM 样本 |
+| 深度复现 | 指定 trace/attempt 的 decoder/native 部分日志、有限时间戳/像素/PCM统计 | 用户确认；默认 60 秒，最多 120 秒；自动恢复原日志级别 |
+| 异常冻结 | 最少目标前 30 秒、后 15 秒的有界上下文＋当前/起始快照 | 留存窗口受预算影响时显式 partial，不承诺所有洪泛情况下都不丢 |
+
+初始预算建议：内存诊断队列约 1 MiB、每事件通常 ≤4 KiB（长异常分片总计 ≤16 KiB）、单 trace pinned 基线 ≤256 KiB；运行日志 16 MiB、4 个轮转段，异常包最多 3 份/合计 24 MiB，两者总磁盘上限 40 MiB，临时导出也计入预算。低内存设备预算可减半并记录配置。它们是容量设计值，实施测试后再固定，不能随意无上限扩张。
+
+## 6. 公共链路：必须增加的事件与字段
+
+每行“字段”均叠加第 4 节 envelope；下表中的 ID 同时用于验收和阶段交付，不代表现有类已经实现。
+
+| ID / 事件 | 字段与触发点 | 要排除/定位的问题 |
+| --- | --- | --- |
+| C01 `diag.session.begin` | 诊断模式、开关来源、captureStartedLate、用户问题标记、所有 collector 版本和 available/status；开日志/起播各一次 | 为什么某类字段缺失 |
+| C02 `env.device` | App/version/buildId/git（构建注入）、product/flavor/ABI、进程位数、OS/API/targetSDK/build fingerprint摘要、厂商/型号、低 RAM/内存、设备类别；声明的 ABI 与实际库 ABI分开 | 同名版本不同包、ARM 转译/系统差异；模拟器仅是线索 |
+| C03 `env.native` | 每条播放器链实际加载的库名、相对来源、ABI、build-id/version、加载成功/失败、期望 manifest 与读取值是否一致；编译期开关 | “库在包里但没加载”、分离 FFmpeg 命名空间、用户 APK 与测试 APK 不同 |
+| C04 `env.display` | 当前 displayId/mode/尺寸/刷新率/HDR types、preferred 与 applied display mode；GPU vendor/renderer/version/backend capability已有值 | HDR/display/GPU 不匹配；不要为采集另建 GL/Vulkan context |
+| C05 `config.snapshot` | 当前内核、视频/音频 decode 独立策略、fallback、渲染、fixed-size、队列、tunneling、LUT/shader、音效/倍率/offset、passthrough/offload及来源 | “菜单硬解”不等于实际 decoder 或音频直通 |
+| C06 `config.change` | 用户/自动原因、old/requested/effective/observed、apply返回码、需不需要重建及实际重建 attempt；mpv.conf各层覆盖次序 | 用户改了设置但旧播放器没生效 |
+| C07 `play.request` / `resolve.result` | 本地匿名 mediaId、站源/解析组件版本标识、资源类型、scheme、route owner、解析耗时、返回container hints、headers名称（非值）、候选数量 | 网盘链接解析和播放器失败分界 |
+| C08 `input.open` / `input.read.summary` | requestId、trace/attempt、range起止、响应码、Content-Type/Length/Content-Range、首字节/读取字节/速率、超时/重试、cache命中/读取来源 | 200/206错配、缓存/代理返回HTML、单轨数据不足 |
+| C09 `input.route` | direct/App proxy/外部loopback、可见网络段、owner、upstream visibility、native/App cache归属 | 6677等外部代理不能假装看见其网盘上游状态 |
+| C10 `media.container` | 实际 extractor/demuxer、容器/时长/seekable/live、variant/rendition/edition、ID映射；来源与 declared MIME分开 | 播放的不是预期原画/同名不同转码 |
+| C11 `media.tracks` | 各轨 id/type/flags/language/role/default/forced/attached-picture、available/support/selected、Format、禁选/超能力/手选原因 | 没视频轨、误选封面、静音音轨、未选轨却READY |
+| C12 `drm.state` | scheme UUID、session状态、secure-required、key状态/过期、license结果码/耗时、平台错误；仅结构摘要 | 等key/secure surface被误诊为硬解；不得记录key/license正文 |
+| C13 `play.lifecycle` | Activity/service/controller owner、绑定/解绑定、playWhenReady/isPlaying/state/suppression及reason、前后台/窗口、播放重建原因 | 控制器暂停、旧回调、后台限制导致无音画 |
+| C14 `play.clock` | master clock、position来源、audio/video PTS摘要、seekEpoch、speed/offset/sync correction、sample窗口 | 进度是音频/估算时钟而视频停滞；时钟不同步 |
+| C15 `play.resources` | Java/native内存摘要、低内存/trim、温控/省电、电量状态、线程队列延迟、已有buffer压力 | 资源耗尽/线程饿死；不高频读取全进程/proc |
+| C16 `play.attempt.end` | video/audio各自终态、成功证据层级、首个错误/最后错误、fallback链、release结果和耗时 | 不能用一条“播放成功”遮盖半失败 |
+| C17 `diag.health` | 采集器注册结果、queue size/high watermark/dropped、写盘error/lastFlushedSeq、限流/截断数量、native event overflow、时间窗口缺口 | 区分“没有错误”与“错误日志没采到” |
+
+对端不受控的网盘/Spider仅可传播不含凭证的诊断 requestId（协议明确允许时）；不能为了串 trace 向第三方任意加头、更改缓存 key 或泄露内部 trace。
+
+## 7. 视频链路：Exo、Surface 与画面来源
+
+### 7.1 Exo 解码输入与选择
+
+| ID / 事件 | 必填证据 | 采集落点 |
+| --- | --- | --- |
+| V01 `video.candidates` | mime/codec string/profile/level/tier、bitdepth/chroma、尺寸/fps/bitrate、secure/tunnel；候选名/canonicalName/vendor/hw/sw/alias；系统支持与策略剔除逐项reason；最终候选顺序 | `ExoUtil` factory/selector、`ExoRuntimeAwareVideoRenderer.getDecoderInfos`、能力 inspector；仅本次相关MIME |
+| V02 `video.decoder.attempt` | 每次 create/configure/start begin/end、decoderId、耗时、当前候选序号、返回或异常、fallbackAllowed及下一步；不只最后成功的decoder | MediaCodecAdapter.Factory装饰器/现有renderer路径；仅诊断，不改变排序 |
+| V03 `video.configure` | 配置MediaFormat白名单：mime、width/height/max dims、profile/level、color keys、rotation、max-input-size、operating-rate/priority、低延迟/tunnel/secure相关有效参数；CSD条数/长度/摘要；绑定surfaceId/generation | adapter configure入口，记录输入实际值；不整包 `MediaFormat.toString()` |
+| V04 `video.output.format` | codec实际output format、crop/stride/slice-height/color/pixelFormat/HDR摘要；input-vs-output变化；DecoderReuseEvaluation结果/丢弃原因 | renderer/adapter output-format-changed、AnalyticsListener input format |
+| V05 `video.sample.summary` | 选中轨的sample/bytes/keyframe/EOS/encrypted数量、首末PTS、PTS回退/断裂、input feed age | renderer已有计数/adapter queue聚合；不复制数据，不额外demux |
+| V06 `video.output.summary` | dequeued/decoded/output-skipped、release-to-surface、release-without-render、rendered/drop counters；每项定义、scope及reset epoch | DecoderCounters和adapter；tunneling与软件renderer单独注明可观测项 |
+| V07 `video.first-output` | first sample、first output、first release、Media3 first-frame callback各自时间/PTS/surfaceId；不能合并 | 当前AnalyticsListener/renderer已有回调 |
+| V08 `video.surface-render-callback` | 如果合法可用：MediaCodec回调PTS/nanoTime、收集时间/批量延迟、callback count、对应codec/surface generation | API保护＋复用现有adapter/renderer listener；禁止替换tunneling已有listener |
+| V09 `video.flush-reuse-release` | flush/stop/reset/reinit/release起止、触发原因、最后input/output时间、在途量、结果和复用判断 | codec生命周期；release前保存允许取得的metrics，失败不再无界查询 |
+| V10 `video.error` | error域/stage/codec、errorCode/diagnosticInfo/recoverable/transient、原始异常链和有限堆栈、fallback候选链 | 所有错误回调，不只onPlayerError；错误证据与策略计数隔离 |
+
+特别规则：
+
+- `sourceCadenceFps`（PTS间隔）、`decodedBuffersPerSecond`、`submittedFramesPerSecond`、`codecRenderCallbacksPerSecond`、`displayRefreshHz` 必须分开；不统一命名为 `renderedFps`。
+- MediaCodec frame callback 在旧 Android 可延迟/批量/缺失；Android 14 起也有 executing-state条件，缺回调不独自构成无帧证据。Surface回调不证明物理显示正确。[R04]
+- 通过adapter统计的“output buffer”不是逐张完整画面的通用等价物；对secure/tunnel/软件/特殊codec写明计量范围。
+- `getMetrics()` 按支持情况白名单采集，不假定错误后仍能读取、不调用已release对象。build/API变化统一记采集状态。
+- 原版同设备对照必须取实际 decoder、renderer、queue、Surface、库版本；名字“硬解”只作为 requested 配置。
+
+### 7.2 Surface/窗口/封面链路
+
+| ID / 事件 | 字段与要求 |
+| --- | --- |
+| S01 `surface.created/changed/destroyed` | SurfaceId/generation、类型SurfaceView/TextureView、valid、format、holder尺寸、view尺寸、创建/销毁时间；主视频/OSD用途分开 |
+| S02 `surface.bind` | playerInstance/decoderId ↔ surfaceId，old/new、attach/detach结果、调用线程、是否已release；native ANativeWindow acquire/release在其owner层记录 |
+| S03 `surface.resize` | media原尺寸→能力profile来源→requested fixed/layout→surfaceChanged后actual holder尺寸；带operationId；不可用同一调用栈立即回读当成完成 |
+| S04 `surface.visibility` | attachedToWindow/isShown/windowVisibility/view及祖先alpha/visibility、view/content bounds、clip/rotation/transform、Z-order、当前Activity/window owner |
+| S05 `video.presentation.source` | `video/artwork/shutter/loading/error/unknown`、设置来源和原因、对应selectedVideo状态；artwork只记匿名id；手机和TV同时覆盖 |
+| S06 `video.effects` | 输入色彩/HDR→效果/LUT/shader/tone mapping→输出色彩/渲染后端；程序/滤镜配置摘要和apply/error结果 |
+| S07 `display.change` | requested vs actual mode/refresh、frame-rate hint、HDR/色彩空间、时间和是否发生surface重建 |
+| S08 `video.pixel-probe` | 用户主动触发；source明确指向视频Surface或窗口；有限3次低分辨率统计、返回码、亮度/变化率/blackRatio、间隔/耗时；不默认保存图片 |
+
+S08只是可选证据：PixelCopy取的是最近排队的buffer，不是外部屏幕；Window截图可能只有UI，必须区分主视频Surface和封面。[R06] 保护内容、secure surface、FLAG_SECURE或API不支持时记 `permission-denied/not-supported`，**不绕过保护**。黑场、静止片段、字幕、UI遮罩都会造成假阳性。默认不采集完整截图或帧；如用户另行同意附图，进入单独的受控附件与留存流程。
+
+## 8. 音频链路：必须从“格式”补到“实际输出”
+
+### 8.1 分层路径
+
+```text
+选中音轨/压缩sample
+   ├─ decoder → PCM → 声道映射/重采样/音效/倍速/增益 → AudioOutput
+   └─ passthrough/IEC61937/编码直通（可能无audio decoder） → AudioOutput
+                                                          │
+                AudioTrack / MPV AO / IJK AudioTrack/OpenSL ES
+                                                          │
+                Android路由/焦点/系统音量 → 扬声器/蓝牙/HDMI/AVR
+```
+
+offload、直通和软件/硬件解码是不同维度；日志不能用“硬解开关=音频也硬解”或者“没有decoder=无声”替代它们。
+
+### 8.2 必须增加的音频事件
+
+| ID / 事件 | 必填字段 | 解释目标 |
+| --- | --- | --- |
+| A01 `audio.track` | 原始和当前id/codec/profile、sampleRate、channelCount及layout/mask、bitrate、language/role/selection、encoderDelay/padding、DRM | 误选/禁用音轨、2声道与多声道差异 |
+| A02 `audio.candidates` | decoder/audio-output支持结果、hardware/software/FFmpeg可用性、passthrough/offload能力及查询来源、候选剔除reason | 平台支持声明、App策略和实际路径分界 |
+| A03 `audio.decoder.attempt` | 每次create/configure/start/flush/release及耗时、actual decoder、异常原始码/恢复性质、fallback顺序 | codec失败与音频设备失败分开 |
+| A04 `audio.decoder.output` | PCM/encoded标记、采样格式/位宽/浮点、sampleRate、channel layout、输出帧/sample数、首末PTS | decoder是否真有输出；位深/布局转换 |
+| A05 `audio.processing` | 按顺序列出active processor/AF：mix/resample/map/tempo/skip-silence/EQ/增益/limiter等；输入/输出格式，配置来源，生效结果 | 滤镜把音量乘零、中心声道丢失、采样率错误 |
+| A06 `audio.output.configure` | 实际outputId/sessionId、AO/AudioTrack backend、encoding与PCM/直通/offload、channelMask/indexMask/layout、sampleRate、buffer大小/单位、attributes usage/contentType/flags、tunnel/session关联 | “请求直通”与实际PCM/失败；mask仅bitCount不足以解释映射 |
+| A07 `audio.output.write` | 同一outputId的调用/请求/接受字节、pending、短写/0写/错误数、首末PTS、lastWriteAge、耗时分布；异常保存raw code、阶段和原始异常 | CPU解码有输出但sink阻塞/拒写/失效 |
+| A08 `audio.output.playhead` | playState/state、播放头raw uint32和扩展计数、epoch、单位；timestampValid/framePosition/nanoTime/age、position来源和速度；underrun增量 | 数据接受与音频时钟前进分开 |
+| A09 `audio.route` | discovered/advertised/preferred/actual routed device分开；device类型和会话内匿名id、encodings/channel counts/masks/rates、变更reason/time；HDMI接入状态 | 蓝牙/HDMI/扬声器实际路线；不能由“连接设备列表”断定实际路由 |
+| A10 `audio.focus` | owner=Media3/native/App、请求类型/attributes、结果granted/failed/delayed、gain/loss/transient/duck、pause/resume动作、effective gain来源 | 未取得焦点、被duck/mute、恢复遗漏 |
+| A11 `audio.volume` | player requested/effective、native volume/mute、AudioOutput setVolume实参、已知duck倍率/音效增益、STREAM_MUSIC current/max/min、mute/fixed-volume、外部设备音量可观测性 | 多级静音；App音量1.0不代表外部AVR有声 |
+| A12 `audio.output.lifecycle` | initialize/play/pause/flush/stop/release/route-recreate的起止、错误、pending bytes、旧/新outputId、offload end及延迟填充 | 多声道→立体声、seek后、路由切换后失声 |
+| A13 `audio.error` | AudioSink configuration/init/write、AudioCodec error、MediaCodec diagnostic、FFmpeg/AO错误、AudioTrack raw返回、异常链、事件时route/config | 原始错误不能只剩一个Exception类型 |
+| A14 `audio.pcm-probe` | 用户明确开启，有限窗口，输入/后处理/输出检查点、frameCount、per-channel RMS/peak/zeroRatio/clipping/NaN；PCM格式与归一化 | 区分源静音、解码全零、滤镜输出静音；不是声音录制 |
+| A15 `audio.sync` | clock来源/epoch、audioPTS/videoPTS差、音频延迟/用户offset/tempo/drop补偿、时间戳有效性 | 断续、音画漂移与真正无声分界 |
+
+### 8.3 实施时不能踩的坑
+
+- 在现有 `ExoUtil.buildAudioSink` 的最终 provider 路径接入 forwarding，保留直通/offload、多声道、audio processors、设备能力动态更新等行为。不要为了日志换成“简化 AudioTrack”。
+- `ForwardingAudioSink.handleBuffer` 的消耗量仅说明 sink接收，不等于底层每次 `AudioTrack.write`。利用 `ForwardingAudioOutput` 观察真正输出层；确需底层原始写返回码/头部写入等时再加窄 hook，并标明哪个计数是 payload、哪个是内部头部。
+- 当前基线 `AudioTrackAudioOutput` 暴露实际 `AudioTrack`，可在合法owner线程/API保护下读状态、route、metrics；不能在HTTP/UI线程持锁跨层读、不能调用对象的play/flush/写入来探测。
+- buffer bytes→frames 的换算仅适用于已知线性PCM和正确的每sample字节数；编码直通/offload按其API定义记录，不用 `channels×2` 硬算。
+- `getPlaybackHeadPosition()` 是uint32，会wrap且flush/stop会reset；按outputId/epoch计算，不把回零当倒播或卡死。[R05]
+- `getTimestamp()` 返回false时保留availability状态，不读取旧结构当新样本。route/模式切换后允许短期不稳定；稳定时直接调用约10–60秒一次，复用Media3已有tracker数据，禁止为日志再每帧调用。[R05]
+- 时间戳可代表已呈现或已承诺将呈现的数据；不证明外部AVR实际发声。`getRoutedDevice()` 非播放期可返回null，此时不直接判为路由失效。
+- 系统自动duck、来电静音可能没有完整App焦点回调；只记录App能看到的结果，不能因“没loss日志”排除系统静音。[R03]
+- A14不得申请麦克风权限、录制环境声音或保存原始PCM。只在非保护PCM可观察点算低频聚合；直通流标not-applicable，不能解释为zero amplitude。
+- 声道日志必须有layout/mask和mapping；`channels=6` 无法区分侧环绕/后环绕/中心声道映射。外部扬声器物理接线、AVR模式要由用户观察补充。
+
+## 9. MPV、FFmpeg、JNI 和 IJK
+
+### 9.1 MPV事件与属性
+
+| ID / 事件 | 必须输出到调试日志的内容 |
+| --- | --- |
+| M01 `mpv.init` | libmpv/FFmpeg/libplacebo/JNI版本/ABI/buildId、load/init结果；源revision来自构建manifest，不从App版本猜 |
+| M02 `mpv.option` | 白名单的mpv.conf/per-file/App策略/命令覆盖、requested/effective/readback/status；设置失败的原始返回码与`mpv_error_string` |
+| M03 `mpv.event` | start-file/file-loaded/video-reconfig/audio-reconfig/playback-restart/end-file/shutdown；end reason/error；client/source sequence、generation |
+| M04 `mpv.tracks` | `track-list` 的available/selected/default/attached-picture、实际 `vid/aid/sid` 和current-tracks id、input metadata；区分不存在/暂时未选/失败后禁用 |
+| M05 `mpv.video.path` | `hwdec`配置 vs `hwdec-current`实际、hwdec-interop、video-codec、decoder/FFmpeg具体实现；`current-vo`、gpu API/context/backend；video-dec/params/out-params分层 |
+| M06 `mpv.audio.path` | audio-codec/decoder、`audio-params`、`audio-out-params`、`current-ao`、audio-device、volume/mute、AF配置、delay/speed、SPDIF实际格式/降级reason |
+| M07 `mpv.runtime` | time-pos、video-pts等可用PTS、cache/buffering、pause/idle、avsync、frame-drop-count、decoder-frame-drop-count、mistimed/vo-delayed及各自有效性；不能把estimated-vf-fps当显示FPS |
+| M08 `mpv.decoder.attempt` | 来自native初始化/失败回调或日志解析：codec名/具体hwdec、GL/Surface/native_window关联是否建立、顺序/阶段/错误码、copy/direct/software候选；事实来源是结构化native还是文本推断必须明确 |
+| M09 `mpv.output.failure` | 有video轨但初始化失败后vid=no，audio仍活跃时：保存videoPartialFailure=true、原始错误、最后成功层；不只生成整机READY |
+| M10 `mpv.command.result` | loadfile/seek/track/option/attach等commandId、提交/返回/完成、错误码/耗时、generation；readback缺失不冒充成功 |
+| M11 `mpv.collector.health` | property注册format/result、MPV_FORMAT_NONE/unavailable、freshness、node解析失败、event queue overflow、native→Java→writer各段延迟、drop计数 |
+| M12 `mpv.native.output` | 必要的ANativeWindow/Surface、EGL/Vulkan、hwdec interop/VO present失败，以及AO实际AudioTrack/OpenSL状态；拿不到的字段明确native-hook-required |
+
+`hwdec-current` 的 `no` 在活跃解码时代表软解；**未加载decoder时属性不可用，不等于no**。`audio-params` 是decoder输出、`audio-out-params` 是写给音频API的格式。[R08]
+
+### 9.2 MPV采集的线程与可靠性
+
+- 复用现有 `MpvPropertySnapshot` 和观察器，给每个值增加更新时刻/generation/status；快照不保证跨属性原子一致，记录采样跨度，丢弃跨generation拼接。
+- 优先在事件线程把必要字段复制为有界不可变消息，再交给日志writer；必须及时清空mpv event queue。[R07]
+- native log callback不能同步反查MPV属性、等待主线程、做文件写入/HTTP/复杂JSON；现有直接SpiderDebug写入最终也要进入无阻塞队列，不让持锁文件I/O反压native。
+- 少量需读回的属性仅在安全线程用受控异步请求；总在途数有界，记录request/replyId、generation、超时和unsupported；timeout不调用强杀/销毁decoder来“解除诊断阻塞”。
+- node/字符串必须在mpv event内存失效前复制，限制大小/深度，明确截断；handler/release卸载observer，忽略晚到事件但增加统计。
+- 不开启全局每帧 `all=trace`。标准模式保留错误/警告与初始化/选轨/实际VO/AO关键信息；深度模式限定组件如vd/vo/ao/demux和指定trace，超时恢复。
+- 当前32条/5秒的窗口仅作为现状，不直接沿用为硬性统一丢弃规则：首次新错误/新attempt的边界优先；重复相同错误汇总count/first/last；预算仍不够时保留错误摘要并标partial。
+- MPV `PLAYBACK_RESTART` 是seek/播放重新初始化信号，不是视频frame-present信号。[R07] 新日志必须纠正解释，但不顺手改既有播放状态机。
+
+### 9.3 FFmpeg/nextlib与native扩展
+
+需要记录 `avcodec` implementation、hwdevice/hwframes创建、AVCodecContext输入/实际pix_fmt、sample_fmt/channel layout、thread配置、extradata长度/摘要、open/send/receive失败的数值与可读错误、EAGAIN/EOF统计和flush epoch。EAGAIN是正常背压，不当作解码失败刷屏。
+
+- 保留Exo扩展FFmpeg、MPV FFmpeg、IJK FFmpeg各自的库身份与owner，不共享/替换 `.so`。
+- `av_log_set_callback` 要求线程安全，默认日志到stderr不保证进App调试日志。[R09] 在各播放器已有日志owner处扩展桥接，不随意替换全局callback、级别或其他模块handler。
+- 不将日志中的native对象地址作为公共ID，不解引用外部未知指针获取ctx信息；未能绑定attempt的日志写 `association=unresolved`。
+- 新FFmpeg/MPV/JNI插桩若确有必要，进入独立native阶段，保留源锁/补丁/ABI/SONAME/DT_NEEDED/导出兼容与精确artifact记录；不能用Java日志完成冒称该阶段已完成。
+
+### 9.4 IJK最小同等覆盖
+
+从 `IjkSimplePlayer.onPrepared/onInfo/onError/onVideoSizeChanged`、`IjkPlayerEngine`现有快照获取：what/extra原始值、decoder类别与名字、选中轨、fps/cache/delay等可用属性、first-video-render/first-audio-render info、buffering、Surface和生命周期；与公共route/focus/volume串联。
+
+IJK走OpenSL ES时不能声称有Java AudioTrack对象。没有原生write/head/route证据时明确unknown并分配后续hook；不得伪造与Exo完全相同的字段覆盖率。
+
+## 10. 异常、卡死、进程退出和证据完整性
+
+### 10.1 错误结构
+
+`errorId/domain/stage/nativeCode/javaClass/message/diagnosticInfo/recoverable/transient/operationId/attemptId/firstSeen/lastSeen/count`；一次新错误保留经过脱敏的cause、suppressed、decoder fallback chain和有限堆栈。设置最大深度、循环检测、总长度及chunk编号，长异常不能被旧12000字符上限截掉而无提示。
+
+错误打印不改变策略状态；特别是“遍历fallback异常链做诊断”不能被现有runtime profile当成多次独立故障，导致额外黑名单。
+
+### 10.2 线程卡死时仍可交付
+
+- 诊断/HTTP导出读缓存和已落盘快照，不依赖主线程调度或`getProperty`成功。记录collector last heartbeat/queue delay。
+- 用户标记黑屏/无声时立即固定已有上下文；完整snapshot超时则输出partial和超时component，不整次导出等待native。
+- Java崩溃捕获与既有handler兼容，只做有界最小落盘；不吞异常、不执行网络上报、不阻塞任意线程等待日志锁。
+- native signal handler不能调用JNI/Java/普通锁/复杂格式化；使用已有安全崩溃路径或下一次启动恢复，不为本需求贸然建立新崩溃框架。
+- journal保存last active trace/attempt、各层最后进展、write seq；next boot合并上次unfinished标记、已有PlaybackRecoveryMonitor记录和公开可得的系统退出信息。
+- Android API30+按权限读取自身 `ApplicationExitInfo` 摘要；ANR trace可能存在，API31+native crash tombstone可能存在，但系统环形缓存会丢失。[R10] 返回null/不可读均应记录，不能保证一定获得native stack。
+- `cacheDir`可能被系统清理；故障journal/固定异常包规划在App私有持久目录，容量有界，并有清空/删除策略。移除App/清除数据/突然断电仍存在不可恢复边界。
+
+### 10.3 完整性状态
+
+导出manifest至少包含：`schema/build/processRun/trace范围、collector覆盖、start/end seq、gaps、droppedByPriority、truncatedChunks、nativeOverflow、writeFailures、lastCapturedSeq/lastFlushedSeq、closed/unclosed、captureStartTime、logMode、文件长度与SHA-256`。
+
+`completeness=complete` 只指**声明模式/时间窗/可用collector内的证据完整**，不表示物理世界全部可观测。异常包缺起始配置/轨道/实际decoder/output或存在关键缺口时为partial，并列出具体缺项；不能只报一个绿色“日志导出成功”。
+
+## 11. 存储、UI和隐私安全
+
+### 11.1 日志存储必须先改，不能先无上限加字段
+
+1. 保留SpiderDebug公共兼容入口；新结构化事件和旧文本统一进入非阻塞有界队列，单writer批量写盘，不在codec/native/音频线程逐条打开文件。
+2. 两级优先队列：状态/新错误/配置/终态优先，周期样本与重复文本可合并；“关键永不丢”在有限内存下不可绝对承诺，必须有保底摘要及丢失记录。
+3. ring只放运行窗口，起始环境/配置/选轨/尝试链另做有界pinned快照，避免几分钟后问题只剩末尾几行。
+4. 日志文件轮转，active trace元数据可重建；写盘失败记录独立计数/内存告警，避免记录写盘错误时无限递归写同一失败sink。
+5. 普通flush按批次，异常可请求有界快刷；不在实时线程fsync每条日志。导出记录flush watermark和超时；不保证系统强杀前最后一微秒落盘。
+6. 区分“停止采集”和“清空记录”。目前关闭会clear，后续若改为保留历史，UI必须明确提示、提供删除和到期清理；这是需审批的用户可见语义变化，不能偷偷实施。
+7. HTTP增量改为有界cursor/afterSeq，报告oldest/newest/gap；保留旧TXT入口的一致有界快照，后台流式输出，不在每次网页刷新拼接全文件。
+
+### 11.2 导出内容与界面
+
+建议包结构（示意，非本轮已生成产品功能）：
+
+```text
+webhtv-av-report-<reportId>.zip
+  report.txt                  可直接读：症状、最后正常层、错误链、缺项、下一步
+  webhtv-debug-log.txt         兼容现有调试日志，包含AV结构化事件和必要旧文本
+  av-events.jsonl              与TXT一致的结构化事件
+  session-snapshots.json       环境/初始配置/能力/轨道/错误前后/终态
+  manifest.json               完整性、schema、版本、脱敏级别、各文件校验
+  optional/                   用户另行同意且允许的附件，不默认截图/音频
+```
+
+摘要和结构化附件的核心信息也必须进入TXT，不能要求用户必须解压JSON才知道当前decoder、音频route和失败阶段。面板字段与导出使用同一数据源；不开面板也自动收集。
+
+TV界面支持焦点移动、一次按键标记症状、查看/复制局域网地址或二维码、下载失败提示。网页不只提供关键词过滤，还可按trace/attempt/音视频/优先级查看；过滤不能导致下载丢掉未显示的必要上下文。
+
+### 11.3 隐私与访问控制
+
+- 默认只记URI的scheme/路由类型/会话内匿名标识；URL path/query/fragment、网盘sToken/share token、Cookie、Authorization、Referer可能含凭证，不能原样落盘。
+- config、header、异常/native自由文本都可能含密码；使用字段白名单＋统一敏感值脱敏，不依靠单个“遇到URL替换”的正则当作完整安全边界。
+- 不记录DRM key/license/session私密数据、媒体原始字节、音频/视频原始sample、设备serial/MAC/账号/局域网完整拓扑。必要设备名称/地址用report内盐化标识。
+- CSD/extradata只记录类型/长度及适当摘要；保护内容默认不做内容指纹/PCM/像素probe。可比对的媒体样本hash仅限用户明确提供的测试样本，不自动下载全片求hash。
+- 白名单过的错误字符串仍需长度上限、CR/LF/控制字符转义、HTML/JSON正确编码；不能让站源或媒体metadata伪造结构化event。[R11]
+- 深度模式/附件/远程导出单独提示用户；不自动上传用户日志，不因诊断而扩大现有远程托管授权。
+- 局域网服务不是天然安全；新增mark/deep-capture/export等敏感操作需沿用并审计认证/授权，避免新增匿名操作面。配对或短期token、Origin/CSRF保护、操作限频纳入实现设计；**token只鉴权，不进入日志URL**。
+- 现有启停/清空GET入口及访问控制需在实施安全审查中明确兼容迁移；本文不声称当前已具备认证，也不擅自更改端点行为。
+
+## 12. 根因判定矩阵
+
+“证实”是具体层内事实；跨层推论用likely/unknown。自动摘要必须输出命中的证据ID，而不是一句“设备不支持”。
+
+| 症状与组合证据 | 可作出的判断 | 仍需的最小区分步骤 |
+| --- | --- | --- |
+| open/read失败，没有可识别tracks | 输入/网络/代理/容器层失败，不是已证实的decoder故障 | 对照实际响应与代理owner，不盲目切解码 |
+| videoAvailable=true、selected=false、有禁选reason | 轨道选择/策略未启用视频 | 检查一次手选/限制参数的requested/effective |
+| create/configure/start明确异常，含候选和错误码 | 当前decoder尝试在该操作失败 | 对照下一个候选/原版实际decoder；能力声明不能推翻错误 |
+| 有input无output，未pause/seek/等待key且超过窗口 | decoder/输入数据之间停滞候选 | 看keyframe/CSD/DRM/错误；不能仅超时定厂商bug |
+| 有output/release，surface invalid或绑定到旧generation | 绑定/生命周期异常证据明确 | 对照surface重建操作和decoder绑定事件 |
+| output/release持续、UI shutter/artwork盖住 | UI展示路径候选很强 | 记录遮罩来源/可见性；保持硬解做UI/渲染单变量对照 |
+| fixed-size请求紧邻失画，无后续实际尺寸/回调证据 | Surface尺寸调整是候选，不是根因结论 | 保持硬解，只关固定尺寸并重入；保留A/B report |
+| videoSelected=false但audio active且MPV HEVC init failed | 明确视频局部失败；静态图不是影片首帧 | 检查硬解尝试链，不把audio READY当全成功 |
+| renderer/Surface回调正常、有效像素统计也有变化但用户仍黑屏 | 已到可观测显示边界；可能窗口合成/外部显示/观察差异 | 用户实拍或系统/厂商诊断；不能自动判“用户看错” |
+| 没有选中音轨/aid=no | 选轨问题或音频初始化失败后的结果 | 看禁选原因与audio error先后 |
+| audio decoder明确失败 | 解码层失败 | 逐个candidate错误/扩展库加载状态 |
+| PCM输出有、processor之后全零 | 滤镜/增益或源内容问题候选 | 比对pre/post统计与配置，只改一个滤镜/增益 |
+| source PCM本来全零 | 源轨当前区间静音候选 | 同一PTS另一音轨/已知测试片；静音片段不算故障 |
+| 有音频输出但write错误/0写持续、playhead停 | AudioOutput/设备交互异常候选 | raw返回、route/epoch/重建前后；区分pause/背压 |
+| write/head正常、有效volume为0或明确focus loss/duck | 可证实的App/系统策略静音因素 | 恢复单个已知静音因素再确认，记录请求结果 |
+| write/head正常但路由是蓝牙/HDMI非预期 | 路由差异证据 | 用户确认实际输出设备；preferred不能替代actual |
+| 直通active，PCM probe不存在 | 正常采集边界，不是“无PCM导致无声” | 在用户同意下单独关直通做A/B，检查外部设备支持 |
+| 单次播放正常、换声道/route后无声 | 重配置/设备残留状态候选 | 对照old/new outputId、release、encoding/mask、设备能力变化 |
+| write/head非零、各增益和route正常，用户仍无声 | App证据到音频呈现/路由边界；不能排除系统自动mute或AVR/扬声器 | 用户确认AVR/系统输出或厂商信息；不声称唯一根因 |
+| report有关键seq gap/collector unavailable | 证据不足 | 开启指定缺失collector做一次复现；不能结论性排除未观测层 |
+
+## 13. API与设备兼容策略
+
+| 能力组 | 版本/限制 | 设计要求 |
+| --- | --- | --- |
+| 普通播放器事件/Java异常/日志导出 | App支持的全部Android | 作为基础层，TV/手机同覆盖 |
+| MediaCodec错误详情/Output format | 依具体API与codec模式 | 新字段逐项SDK保护；异常不会因读diagnostic再次崩溃 |
+| MediaCodec frame rendered listener | API23+；旧系统不保证逐帧回调；与tunneling现有listener冲突风险 | 不可默认抢占；缺失标可用性边界 |
+| AudioTrack timestamp/playhead | timestamp为公开API；具体route可能不支持，单位/reset不同 | 正确validity/epoch；不调用hidden getLatency |
+| actual routed device | API23+；播放状态影响null；现代AudioRouting监听按SDK适配 | 已连接与实际路由分开；listener卸载 |
+| underrun/buffer capacity | 多项API24+，buffer相关API需逐项核对 | 旧设备缺字段非0值 |
+| MediaCodec/AudioTrack metrics | API26+相关公开接口，字段因实现/版本而异 | 白名单，release前快照；不依赖vendor键稳定 |
+| codec hw/sw/vendor/alias、performance point | 主要API29+，低版本只可有限推断 | low confidence/claimed与实测结果分开 |
+| PixelCopy | 按具体重载API24+/26+保护，secure/没有buffer可能失败 | 用户主动、有限频率、失败码不是黑屏根因 |
+| ApplicationExitInfo | API30+；native tombstone API31+且不保证保留 | 只自身公开可读信息，缺失明确 |
+| 音频焦点 | API26+请求模式、API31+系统fade/duck、target35+请求前台限制等 | 同时记录runtimeAPI、targetSDK、前台服务状态；不扩大权限 |
+| MPV properties/native能力 | 按实际加载版本/构建探测，不假定同名App相同lib | 注册失败/属性不可用保留；可用列表写manifest |
+| IJK/OpenSL ES | 不一定有Java AudioTrack | 不伪造route/write等字段 |
+
+实施时以项目最终SDK与AAR确认精确方法签名和minAPI，补测试。本文是设计门禁，不能用“源码里有该方法”跳过最终artifact可达性检查。
+
+## 14. 改造位置、分期及回滚
+
+### 14.1 拟修改位置（不是本轮授权修改清单）
+
+| 层 | 现有落点/拟新增小组件 | 边界 |
+| --- | --- | --- |
+| schema/collector | `player/PlaybackTrace.java`、`PlaybackTelemetry*`；拟增`PlaybackDiagnosticEvent/Session/Collector`等小组件 | 一套语义，兼容原日志；不替代播放控制器 |
+| sink/留存 | `catvod/.../SpiderDebug.java`、`DebugLogStore.java` | 支持旧调用，新增结构化事件/有界队列/轮转/健康状态 |
+| 无ADB入口 | `server/process/DebugLogs.java`、`ui/dialog/DebugLogDialog.java`，手机/TV入口 | 单一数据源、遥控器可用、导出不依赖playback线程 |
+| 环境/能力 | `setting/Setting.java`、`player/codec/CodecCapabilityInspector.java`、实际native loader | 只查本次媒体相关项，不每秒枚举所有codec |
+| Exo | `PlaybackAnalyticsListener.java`、`ExoUtil.java`、`ExoRuntimeAwareVideoRenderer.java`、`ExoPlayerEngine.java` | public hooks优先；不重写decoder策略 |
+| 音频公共 | `AudioPlaybackDiagnostics.java`、`PlayerManager.java`、现有AudioOutput/provider路径 | 保持音效/直通/offload/焦点owner，不注册竞争控制器 |
+| UI/Surface | `ui/activity/PlaybackActivity.java`、手机/TV `VideoActivity.java`、PlayerView适配 | 使用生命周期回调采集实际尺寸；不为采集额外resize |
+| MPV | `androidx/media3/mpvplayer/MpvPlayer.java`、`MpvDiagnosticsPolicy.java`、`MpvPropertySnapshot.java`、`is/xyz/mpv/MPVLib.java` | 缓存/异步，不回退到主线程同步大批JNI读取 |
+| JNI/native（有缺口才动） | `third_party/mpv-player-jni/src/event.cpp`及经批准的MPV/FFmpeg/Media3诊断hook | 独立native阶段、独立原子回滚 |
+| IJK | `player/engine/IjkSimplePlayer.java`、`IjkPlayerEngine.java` | 已有属性优先，无能力明确unknown |
+| 崩溃/恢复 | 现有`PlaybackRecoveryMonitor`及App启动路径 | 不改变退出/恢复策略；仅串联上次会话证据 |
+
+### 14.2 分期顺序
+
+| 阶段 | 交付范围 | 退出条件 | 回滚 |
+| --- | --- | --- | --- |
+| D0 公共最小底座 | envelope/隐私/有界sink/关键快照/导出健康、C01–C17必要上下文 | 开/关/洪泛/磁盘失败不阻塞播放；TXT能恢复会话；未知不伪装0 | 独立功能开关与原子commit，保持原导出兼容 |
+| D1 Exo视频与公共Surface | V01–V10、S01–S07，纠正首帧/FPS日志含义 | 黑屏/封面/硬解失败/Surface重建fixture可区分；不改播放策略 | Exo collector独立关闭，撤回对应commit |
+| D2 Exo音频与系统路由 | A01–A13/A15、PCM可用路径、AudioOutput桥接 | 解码/写入/路由/音量/焦点/直通各失败可区分；旧行为无回归 | 音频collector独立关闭；不改变输出默认值 |
+| D3 MPV | M01–M12中现有public API可得部分、native log关联、局部失败、queue健康 | HEVC init失败＋音频继续必须报视频局部失败；无主线程同步查询回归 | Java/JNI边界分清，若改JNI需整组兼容回滚 |
+| D4 IJK与恢复闭环 | IJK最小覆盖、journal/exit-info、跨进程完整性 | 旧内核/旧API缺项被正确表达；卡住/杀进程后可导出已有证据 | 独立开关、保持既有恢复行为 |
+| D5 经批准的深度探针/native缺口 | S08/A14、必要codec/VO/AO低层hook、A/B报告 | 有明确用户同意、限时、成本/安全/ABI门禁；观测边界不虚假消失 | 深度默认关，native阶段独立锁/产物/commit/tag |
+
+公共底座为Exo必需的陪同项；播放器实施顺序仍为 **Exo → MPV → IJK/公共闭环**。D5不是默认必须全量native重构：每项先证明现有public hook缺口。待批准实施时按真实工作树、设备与构建缓存给逐阶段当前agent墙钟估计，不在本文虚构未来构建耗时。
+
+所有阶段都需单独明确scope、现有脏文件保护、测试证据和本仓库规定的原子commit/annotated recovery tag。用户已批准从 D0 开始；完成 D0 不代表整个需求完成。
+
+### 14.3 D0 实施决定（2026-09-14）
+
+- 授权：用户在明确的“开始分阶段实施 / 先归档并评审”问题中选择前者；本轮执行恢复锚点指定的 D0，不同时开工 D1–D5。
+- 完成目标：复用 SpiderDebug/DebugLogStore，建立有界异步写盘、结构化会话与固定上下文、统一脱敏、可判断缺口的 TXT 导出及增量网页读取；诊断失败不改变播放器策略。
+- 当前代码核对：原设计至当前 HEAD 的相关提交均为 FEL 修复，D0 sink/HTTP/PlaybackTrace 尚未实现本方案。`DebugLogStore.add/writeLocked/loadLocked` 仍持锁同步 I/O 且无总量上限；`DebugLogs.stream` 仍反复返回全文；`ProxySetting.collectDebugUrls` 消费日志中的 URL，必须在脱敏时保存其域名建议功能。
+- 范围：`catvod/.../crawler/{DebugLogStore,SpiderDebug}.java`、新增 `crawler/diagnostics/**` 及对应单测；App `PlaybackTrace`、新 `PlaybackDiagnosticSession` 及对应测试；`Setting`、`ProxySetting`、`server/process/DebugLogs`；本文件和任务索引。保护已有 `app/.cxx/`；不改 AAR、native、锁、解码/选轨/输出/恢复策略。
+- 设计选择：保留同步原 sink 会继续阻塞播放且无法限制资源；全开 EventLogger/native verbose 仍缺完整性并泄露外部文本；采用原入口后接单 writer、有界队列/轮转、固定快照与独立健康统计。队列拥塞优先舍弃周期/旧文本，但关键事件也可能丢失，必须报告；写盘失败不能递归写自身。
+- 身份与事实：沿用每个 PlaybackTrace 的身份并补进程 run、实例和 generation；只有明确回调产生的阶段是 observed。READY、兼容 first-frame/audio-playable 只记控制器信号，视频可见/声音可闻均为 not-observable；D1–D5 尚无 collector 的层列为 not-collected，不声称覆盖完整 62 类事件。
+- 留存与并发：标准队列 1 MiB，内存读取窗口 1 MiB，pinned 总量 256 KiB，磁盘 4×4 MiB；单 writer 批处理/轮转，采集线程不做文件 I/O。TXT 导出使用有界等待与独立快照；writer 不响应时返回内存 partial 和明确 watermark。临时导出纳入 40 MiB 总预算，不保留无限份文件。
+- 隐私与兼容：结构化字段白名单，旧文本在进入内存/磁盘/平台日志前统一脱敏、限制长度、转义换行及控制字符；异常限制深度、帧数和循环。代理建议仅保存有界、本机内存中的 origin/域名，不导出凭证或 URL path。保留“关闭即清空”和现有 TXT 下载地址。本阶段不增加 mark/deep-capture/ZIP 远程操作；原 LAN 读取/启停权限模型保持现状，鉴权迁移是新增敏感操作上线前的后续门禁，不能据此宣称 T22 全部完成。
+- 基础上下文：D0 交付 session/device/config/request/resolve/controller lifecycle/end/health 与各 collector 的覆盖状态。codec/sample/AudioTrack/Surface/native 实际输出由 D1–D4 接入；未取到不补零、不复用 requested 冒充 observed。开日志过晚、日志清空、进程重启和截断均列入完整性。
+- 证据复用：第17节 R01/R02/R11/R12/R13/R14 的原始快照仍在原 `evidence/`，2026-09-14 按 D0 问题复核其相关正文与当前源码；不合入任何上游提交。官方事件媒体关联、OWASP 敏感字段/注入/资源耗尽与写失败、成熟项目桥接以及维护者观测边界支持本决定。无新算法，论文/通用 benchmark 不适用；并发和性能以真实 sink 故障注入及三次可比测量裁决。
+- 验收：有界/关键优先/轮转、写盘失败与超时导出、清空与并发写竞态、截断/seq gap、水位、字段/异常脱敏、旧文本和结构化 JSON 防注入、会话隔离/晚开启/非物理成功语义的定向单测；相关 Java 编译和 App 导出检查。构建只用已有二进制，不重建 native；设备不可用时明确记录，不能把构建代替设备性能验收。
+- 预算：2026-09-14 12:44 Asia/Shanghai 起，约45分钟，预计13:29；设计归档6分钟、实现24分钟、验证提交15分钟。基线性能与设备信息以实际取得的证据记录，不虚构。
+- 回滚：独立 D0 原子 commit/tag；撤回该提交整体恢复旧 Java sink/读取通路，native 产物不受影响。关闭诊断立即停止新增采集并按既有语义清空。
+
+### 14.4 D0 实施与验证记录
+
+- 已实现：`DiagnosticLogBuffer` 单 writer、有界内存/队列/pinned、优先保留关键事件、generation 清空隔离、游标缺口和健康统计；`RollingDiagnosticFile` 4 段轮转、历史脱敏、单份临时 TXT 导出、前置内容 SHA-256 与超时缓存回退；`DiagnosticText` 统一旧文本/异常脱敏，`DiagnosticEvent` 版本化白名单与固定未知状态。
+- 已接入：SpiderDebug/DebugLogStore 原入口、PlaybackTrace 控制器会话与 prepare attempt、Setting 设备环境/晚开启基线、网页增量日志/音视频过滤/TXT 下载。`ProxySetting` 改用仅保存在本机内存的最多200个 origin；`ShellProxyDialog.suggestRules` 已核实只消费 `suggestion.hosts()`，不依赖凭证或资源路径。
+- D0 事件覆盖：C01、C02、C05 的请求配置、C07 请求/解析、C11 的控制器轨道摘要、C13 控制器阶段、C16 未知音视频终态、C17 健康统计。C03/C04/C06/C08–C10/C12/C14/C15 及实际 codec/Surface/AudioTrack 仍明确 not-collected；C11 不声称逐轨完整选轨覆盖。控制器当前 trace 不冒充来源回调的媒体身份，`association=controller-context-only` / `eventMediaIdStatus=not-collected` 保留边界，D1/D3 才能补来源关联。
+- 首轮验证：JDK21 / 现有 Android37.0 SDK，Gradle 定向35项测试通过（新日志17项、新会话4项、原 Trace7项、PlaySpec4项、Exo trace3项），Mobile/Leanback arm64 Java 编译通过，耗时2分26秒。仅出现原有资源命名空间、Room查询字段和废弃 API 警告。完整输出：原证据目录 `d0-gradle-2.log`；首次沙箱缓存锁拒绝为环境错误，获准访问已有缓存后完成。
+- 网页验证：从实际 Java 字符串提取的脚本通过 Node 语法与执行检查，覆盖增量追加、run/clear generation 重置、gap 替换、结构化 severity 不靠关键词猜测、HTML 转义。脚本和输出位于原证据目录 `d0-web-check.py` / `d0-web-check.cjs` / `d0-debug-page.js`。
+- 并发审查补充：超时与 future 完成同时发生时主动释放未交付导出；内存 fallback 编码/哈希和文件关闭均放在 producer lock 外。新增旧 producer 跨 clear 丢弃、超时后文件释放两项用例；8项日志核心测试及双端 Java 编译通过，45秒，见 `d0-gradle-final.log`。合计37项不同用例。公开开关/恢复/清空再按同一控制锁串行化，防止并发 HTTP 启停造成 facade 与 writer 开关不一致；producer 不取该锁，最后 `:catvod:compileDebugJavaWithJavac` 通过。
+- 实际导出 fixture：`d0-fixtures/d0-export-fixture-1.txt`、`-2.txt`、`-3.txt` 由生产 `DiagnosticLogBuffer/RollingDiagnosticFile` 写入并导出，输入是人工构造的控制器信号和敏感字段，**不是设备实播日志**。三轮每轮1204条采集/落盘一致、零丢弃/写失败，样例内 URL/Cookie 值已移除、物理音画为 not-observable。生产文件校验测试验证前置内容 SHA-256，fixture 也保留 manifest。
+- 主机开销：同一 JDK21/机器、每轮200条预热后1000条标准文本采集，三轮均值0.148/0.118/0.095 ms，P95 0.277/0.202/0.157 ms，最大2.610/0.421/0.330 ms；内存窗口约347728字节、pinned约2322字节、队列高水位2628/1566/3927字节。原始输出 `d0-host-smoke.log` 与 `D0ExportSmoke.java`；这只验证主机 producer/预算，不证明设备 CPU、起播、seek 或播放性能达标。
+- 时长偏差：原目标13:29，导出并发收尾、缓存权限等待及证据生成超出估计；13:40后停止扩展，只完成公开开关时序、最小编译、文档校验与原子收尾。
+- 本地提交/恢复：guard `AV-DIAG-01-D0` 将本节、代码和测试一并原子提交并立即创建 `recovery/AV-DIAG-01-D0/<timestamp>-<commit>`；精确 commit/tag 使用 guard 回执和 Git 的 `Task-Guard: AV-DIAG-01-D0` 提交记录恢复，未授权推送。回滚只撤回该 D0 提交，基线 `2ec5afd8cc3f21bf1693b198f87018488775c660`。
+- 设备状态：本轮 `adb devices -l` 无已连接设备。未安装 APK、未进行手机/TV 实播或设备性能 A/B，T25 用户端闭环及产品 CPU/起播/seek 阈值保持未验收；不得用主机测试代替。
+
+## 15. 验收矩阵：如何证明日志真的够用
+
+### 15.1 无ADB原则
+
+验收执行者可以在研发机用测试工具制造故障，但**判读者只能收到与普通TV用户相同的TXT/诊断包**。不能偷用ADB/logcat/IDE观察来补漏后宣称“无需ADB已覆盖”。结果必须能引用包内事件ID还原链路。
+
+### 15.2 具体场景
+
+| 用例 | 故障/对照 | 日志最低验收结果 |
+| --- | --- | --- |
+| T01 正常AVC/AAC | Exo硬解、Surface、PCM | C/V/S/A各层身份连贯，实际decode/output路径明确，音视频终态独立 |
+| T02 HEVC Main10黑屏样本 | 本文用户样本或等价fixture | 记录实际codec、fixed-size requested/actual、frame层级、surface/shutter；不能直接断言模拟器不支持 |
+| T03 MPV视频失败音频继续 | mock/native故障使hevc init fail、vid=no、aid有效 | `videoPartialFailure=true`，封面来源明确；不输出“首帧成功=视频正常” |
+| T04 codec候选首个失败 | create/configure/start失败后第二个成功 | 完整顺序/错误码/实际成功codec；诊断不多计黑名单 |
+| T05 所有codec失败/扩展缺库 | hw-only和soft扩展缺失分别测试 | 区分无候选、过滤掉候选、加载失败、初始化失败 |
+| T06 Surface生命周期 | 旋转/切全屏/PiP/重建/seek | old/new surface和decoder绑定明确；过期事件不能写入新attempt |
+| T07 封面/遮罩/静态视频/合法黑场 | 分别触发 | 展示来源与selectedVideo明确；合法静态或黑场不能直接判decoder挂死 |
+| T08 输入不是媒体/错误Range | HTML/401/403/206不匹配/外部loopback不可见 | 输入层证据和不可见边界；不误标解码器坏 |
+| T09 DRM/secure | key不可用/secure surface | 等key与codec失败分开；不泄露key或进行像素捕获 |
+| T10 音频解码失败 | AAC/AC3等decoder init/runtime故障 | 原/实际轨、异常链和最后正常层；其他video进度不掩盖 |
+| T11 音量与焦点 | player0/系统mute/focus loss/duck | 每一层设置来源、有效值和变化时间；平台不可见mute明确未知 |
+| T12 AudioOutput短写/失效 | 0写、部分写、dead-object/负返回、underrun | 单位/接受量/错误/播放头/epoch可还原；正常短写非故障洪泛 |
+| T13 路由切换 | speaker→Bluetooth/HDMI/USB→speaker | discovered/preferred/actual分开；切换后output重建和格式快照完整 |
+| T14 直通/offload | AC3/EAC3/DTS/TrueHD、可用和不支持各一项 | actual模式、降级链；不存在PCM统计不判无声；不自动改直通 |
+| T15 多声道→立体声 | 5.1/7.1与2.0切轨/切文件 | mask/layout/mapping、release/reinit、路由能力前后；定位残留状态候选 |
+| T16 处理链静音 | 源静音、后处理gain0、正常低音量 | 可选pre/post统计区分；不录制原PCM，不认定物理声压 |
+| T17 时间戳/seek/reset | audio uint32 wrap、flush回零、timestamp false、PTS跳变 | epoch/validity正确，不用陈旧timestamp/0伪造正常或卡死 |
+| T18 切源/预载/切内核 | 快速切3个媒体并延迟回调 | trace/player/mediaGeneration正确；preload不能被统计成前台帧 |
+| T19 主线程/MPV卡死 | 阻塞模拟或既有hang fixture | 缓存快照和native此前错误仍可导出；export timeout有partial；诊断不制造额外deadlock |
+| T20 崩溃/被杀后启动 | Java异常/native crash/系统kill/API旧版本 | 上次unfinished trace、journal、exit-info状态；未获stack不宣称完整 |
+| T21 日志洪泛/磁盘不足 | Spider/native重复日志、writer失败 | 有界内存/磁盘、关键基线不被静默吞；drop/seqgap/write-failure明确，不阻塞播放 |
+| T22 安全输入 | URL query token、Cookie空格、堆栈多行、恶意标题HTML/CRLF、超长node | TXT/JSON/网页都脱敏并正确转义；日志不可伪造；配对/权限验证有效 |
+| T23 旧API/不支持属性 | API支持下限、MPV属性unavailable/IJK无AudioTrack | not-supported/unavailable与实际false分开；没有崩溃或同步轮询风暴 |
+| T24 原版对照 | 同设备/同sample/同PTS、原版与WebHTV硬解 | 对照包记录确知和unknown：APK/内核/decoder/renderer/配置/output；不靠“硬解”标签断言同路径 |
+| T25 TV用户端闭环 | 不接ADB，仅遥控器+局域网网页 | 开启→复现→标记→下载→判读全程可完成，面板不开也有日志 |
+
+### 15.3 单元、契约和性能测试
+
+- schema兼容、脱敏、JSON/HTML、异常cause循环/分片、ring/pinned/rotation、writer失败、seq gap、flush watermark、开关/停止/清空及崩溃恢复的确定性单元测试。
+- Exo基于已有Media3 audio sink测试/forwarding contracts覆盖buffer position不被采集破坏、短写、格式变化、flush后epoch、listener完整转发；禁止把错误“修成继续播放”来通过诊断测试。[R12]
+- MPV NODE深度/大小、MPV_FORMAT_NONE、旧generation、late callback、queue overflow、限流计数、observer卸载和command timeout契约测试。
+- “无输出”判定加入合法暂停/seek/缓冲/音频-only/封面/低帧率/静音对照，检验误报。
+- 开关诊断的性能A/B至少3次可比运行：同设备同sample同播放参数，观察起播/seek、音视频drop/underrun、CPU/Java/native内存、分配率、磁盘和queue延迟。目标是不出现新增卡顿/ANR/持锁I/O；若差异超过测试噪声且达到事先约定的产品阈值，必须优化或下调采集，不宣称零开销。
+- 建议实施前明确阈值：标准诊断CPU均值增加≤1个百分点、P95起播/seek额外≤20ms、稳态额外内存不超过声明预算；这些为候选门槛不是已测事实，低端TV基线噪声及CPU核数归一方式需写入测试记录。深度模式单独告知开销并验证限时恢复。
+- 仅改变Java诊断不跑无关全ABI/native矩阵；改JNI/native则验证两受影响ARM ABI/导出/依赖、对应播放器实播。依赖版本对齐和实际APK内容仍是门禁。
+
+### 15.4 完成定义
+
+每个已批准阶段必须同时交付：对应事件覆盖清单、真实导出样例、测试结果、哪些设备/API字段仍不可得、单变量A/B例子、性能/安全结果及回滚锚点。实现了D0/D1不能声称整个方案已完成；只写日志但仍无法分清“音轨未选”与“AudioTrack无声”不通过。
+
+## 16. 结构化日志示例（设计示意，不是真实新测试结果）
+
+为可读性省略公共字段；实际记录每行均有schema/run/trace/attempt/seq/timestamp。
+
+```json
+{"event":"video.configure","decoderId":"vd-2","observed":{"decoder":"OMX.qcom.video.decoder.hevc","mime":"video/hevc","size":[1920,1080],"bitDepth":10,"surfaceId":"sv-3"},"status":"known","source":"codec-adapter"}
+{"event":"surface.resize","operationId":"op-8","surfaceId":"sv-3","requested":{"mode":"fixed","size":[1280,720]},"observed":{"size":null},"status":"pending-callback","reason":"capability-profile"}
+{"event":"surface.changed","parentEventId":"op-8","surfaceId":"sv-3","observed":{"holderSize":[1280,720],"valid":true},"status":"known"}
+{"event":"video.output.summary","decoderId":"vd-2","windowMs":5000,"observed":{"submittedFrames":120,"sourceCadenceFps":24},"codecRenderCallbacks":{"value":null,"status":"not-collected"},"physicalDisplay":{"value":null,"status":"not-observable"}}
+{"event":"mpv.output.failure","observed":{"videoAvailable":true,"videoSelected":false,"audioSelected":true,"videoPartialFailure":true},"errorId":"err-4","reason":"hevc-decoder-init-failed"}
+{"event":"video.presentation.source","observed":{"kind":"artwork","selectedVideo":false},"source":"player-view"}
+{"event":"audio.output.configure","audioOutputId":"ao-4","requested":{"passthrough":true},"observed":{"mode":"pcm","sampleRate":48000,"channelMask":"0xFC","channels":6},"reason":"output-policy","source":"audio-output"}
+{"event":"audio.route","audioOutputId":"ao-4","observed":{"deviceType":"HDMI","deviceId":"report-local-2"},"status":"known","source":"AudioTrack.getRoutedDevice"}
+{"event":"audio.output.playhead","audioOutputId":"ao-4","epoch":2,"observed":{"headDeltaFrames":240000,"windowMs":5000},"timestamp":{"valid":false,"status":"unavailable"},"audibility":{"value":null,"status":"not-observable"}}
+{"event":"diag.health","observed":{"droppedPeriodic":80,"lastCapturedSeq":421,"lastFlushedSeq":410,"nativeOverflow":false},"completeness":"partial","missingEvidence":["periodic-window","unflushed-tail"]}
+```
+
+正式schema采用第4节固定status枚举并拒绝未定义值；不能让同一“未知”在不同collector里随意产生不可解析文案。示例中事件存在不代表失败已被单条解释，report必须组合上下文。
+
+## 17. 调研依据、适用性与限制
+
+所有在线资料访问日为2026-09-13；通过系统配置代理 `127.0.0.1:7897` 获取并读取正文/实际源码，而非搜索摘要。未上传用户日志或请求网盘资源。固定版用于接口语义，不意味着建议升级/降级到该版本。
+
+| 编号 / 等级 | 实际来源与revision | 支持的结论 | WebHTV适用性/限制与决策影响 |
+| --- | --- | --- | --- |
+| R01 / A | [Media3 Debug logging](https://developer.android.com/media/media3/exoplayer/debug-logging)，在线文档快照 | EventLogger覆盖状态、轨道support、decoder；默认调试观察面向Logcat | 借鉴事件，不以“加EventLogger”代替写入App调试日志 |
+| R02 / A | [Media3 Analytics](https://developer.android.com/media/media3/exoplayer/analytics)，在线快照 | AnalyticsListener/EventTime关联事件媒体；预载媒体可能不同于当前媒体；状态需要上下文解释 | 保留event/current media及role，不用全局当前trace回填旧事件 |
+| R03 / A | [Android Audio focus](https://developer.android.com/media/optimize/audio-focus)，在线快照 | Android版本/target影响焦点请求；系统可自动duck/fade/mute，部分不通知App | 采集有效gain和系统能力，不能用“没focus loss”排除静音 |
+| R04 / A | [AOSP MediaCodec.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/media/java/android/media/MediaCodec.java)，tag `android-15.0.0_r1` | CodecException恢复/暂时性、output-surface rendered callback可延迟批量且旧版本可漏 | 错误链字段和V2/V3/V4分层；不把callback等同物理图像 |
+| R05 / A | [AOSP AudioTrack.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/media/java/android/media/AudioTrack.java)，同tag | head uint32/reset、timestamp可不可用且稳定后应低频查询；actual route；写入错误 | A07–A13计量/采样/未知语义；不用hidden latency接口 |
+| R06 / A | [AOSP PixelCopy.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/graphics/java/android/view/PixelCopy.java)，同tag | 复制最近排队buffer、source无数据/保护/invalid等失败码 | 可选有限探针；不证明物理显示、不绕过保护 |
+| R07 / A | [mpv client API](https://github.com/mpv-player/mpv/blob/v0.40.0/include/mpv/client.h)，tag `v0.40.0` | event queue有限、overflow；property/async请求；PLAYBACK_RESTART不是present成功 | 有界observer/队列健康、重命名诊断证据而不是照搬ready |
+| R08 / A | [mpv properties](https://github.com/mpv-player/mpv/blob/v0.40.0/DOCS/man/input.rst)，tag `v0.40.0` | hwdec配置vs实际、decoder/output格式分层、drop/avsync语义和不可用状态 | 每属性可用性/age；平台实际fork需capability probe |
+| R09 / A | [FFmpeg libavutil/log.h](https://github.com/FFmpeg/FFmpeg/blob/n8.0/libavutil/log.h)，tag `n8.0` | 默认stderr、log callback须线程安全、format_line2截断语义 | 复用各内核日志owner桥接；不能进callback做慢I/O或假定stderr已导出 |
+| R10 / A | [AOSP ApplicationExitInfo.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/core/java/android/app/ApplicationExitInfo.java)，同AOSP tag | ANR/native trace可能存在且环形保留不保证 | journal＋下一次启动恢复；不承诺所有crash有stack |
+| R11 / B | [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)，在线快照 | interaction id、敏感数据排除、日志注入、资源耗尽/写失败和访问控制验证 | 日志基础设施与安全不是可选附录；纳入D0与T21/T22 |
+| R12 / A | 本地Media3 `e3e922d5c01bc0b564849940fe589daf37360d15`：`libraries/exoplayer/.../util/EventLogger.java`、`DecoderCounters.java`、`audio/DefaultAudioSink.java`、`AudioTrackAudioOutput.java`、`ForwardingAudioSink.java`、`ForwardingAudioOutput.java`、`mediacodec/ForwardingMediaCodecAdapter.java`、对应`audio/DefaultAudioSinkTest.java` | public forwarding hook、实际AudioTrack、生命周期/格式变化测试；日志可重用而不重写播放 | 注意锁的patch/override与最终AAR一致性；不是已完成二进制验证 |
+| R13 / B | [mpv-android MPVLib.kt](https://github.com/mpv-android/mpv-android/blob/751d53205cc3d878c7161d79a97e1b65ed6ed37b/app/src/main/java/is/xyz/mpv/MPVLib.kt)，HEAD `751d53205cc3d878c7161d79a97e1b65ed6ed37b` | 现成event/property/log observer桥接模式 | 参考职责，不复制其同步锁行为或以外部项目能力替代WebHTV实际实现 |
+| R14 / B | [Media3 #2765 维护者讨论](https://github.com/androidx/media/issues/2765#issuecomment-3258334393)，读取issue及comments快照 | READY+音频正常+视频黑屏仍可能是decoder自报正常或UI隐藏；建议对照设备/decoder/media | 支持多层证据、单变量A/B和厂商边界；不是本次模拟器根因证明 |
+| R15 / D | [Media3 #2711](https://github.com/androidx/media/issues/2711)、[#2519](https://github.com/androidx/media/issues/2519)、[#3339](https://github.com/androidx/media/issues/3339)、[#3316](https://github.com/androidx/media/issues/3316)，issue正文/相关comments快照 | 用户报告无错误黑屏、多声道→立体声无声、AVR侧/后声道映射问题 | 用于选择T02/T15等场景，不把未复现报告当普遍Android事实或直接修复依据 |
+| R16 / A（实现事实） | 本文第2节当前WebHTV源码；基线HEAD完整SHA见第0节 | 当前sink同步无上限、部分日志已有、MPV语义/Surface操作等 | 改造必须复用/补齐，不重复建设或改写已有播放策略 |
+| R17 / D（用户现场） | 2026-09-12用户截图、两份日志及“原版可硬解”补充 | 存在实际用户症状与部分日志链 | 缺设备现场、原版准确版本和可控A/B；只作为诊断需求与fixture素材 |
+
+补充读取了 [Media3 Troubleshooting](https://developer.android.com/media/media3/exoplayer/troubleshooting) 的seek/媒体容器/平台限制说明，帮助限定输入/时间戳边界。本文未提出新编解码算法或通用性能优化，因此学术论文/算法benchmark类证据不直接适用；性能验证采用本项目同设备同sample开关诊断A/B，而非搬用无关论文分数。上游revert/完整commit ledger不适用：本轮没有选择/合入任何上游提交。
+
+### 17.1 调研结论与停止条件
+
+官方接口语义、实际代码、成熟项目事件桥接及维护者讨论已能决定：**建立分层证据、输出路径观测、非阻塞有界日志、隐私和完整性，不能把更多verbose等同于足够诊断。** 继续扩大搜索不会解决无法访问的电视/模拟器/AVR状态；剩余不确定性应转入上面的验收和最小设备对照，而不是继续罗列资料。
+
+## 18. Recovery anchor / 后续唯一动作
+
+- Objective：实施无ADB音视频诊断 D0 公共底座；验收标准见14.3，完整需求标准见0.1、15节。
+- Plan：D0 代码和主机验证完成（37项不同测试、双端 Java 编译、嵌入网页执行检查、三轮实际 exporter fixture）；设备验收待进行。D1–D5 未开始。
+- Workspace：`feature/mpv-dv7-fel` / `2ec5afd8cc3f21bf1693b198f87018488775c660`；guard `AV-DIAG-01-D0`；保护原 `app/.cxx/` 70 文件。
+- Files：本文件及任务索引，允许代码范围见14.3和 guard scope；原临时方案与证据快照保留。
+- Evidence：设计来源见17节；D0 覆盖和验证见14.4，原始构建日志、网页验证、真实生产 exporter 的人工输入 fixture 和主机开销记录均在原临时目录。开发机无已连接 Android 设备。
+- Unverified：实际设备导出/播放/性能未验收；现有 LAN 访问控制未迁移。D1–D5 的 codec、Surface、AudioTrack、native hook、深度探针和恢复功能未实施，不能对外称原音视频问题已修复。
+- Residual risks：最终AAR/API可达性、native线程与日志反压、平台观测边界、隐私、低端TV开销、原版对照信息不足；各有对应门禁。
+- Rollback：撤回 `AV-DIAG-01-D0` 的原子提交可恢复原 Java 日志链，native/依赖不变；基线及 recovery tag 检索见14.4，保护原 `app/.cxx/`。
+- Exactly one next action：连接目标 Android 设备，执行 D0 开启、复现、TXT 导出、关闭/清空的用户端验收，并测量诊断开关的播放开销。

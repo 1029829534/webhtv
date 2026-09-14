@@ -3,9 +3,8 @@ package com.github.catvod.crawler;
 import android.text.TextUtils;
 
 import com.orhanobut.logger.Logger;
+import com.github.catvod.crawler.diagnostics.DiagnosticText;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.util.Locale;
 
 public class SpiderDebug {
@@ -23,24 +22,28 @@ public class SpiderDebug {
     public static void log(String tag, Throwable th) {
         if (th == null) return;
         if (!DebugLogStore.isEnabled()) return;
-        StringWriter writer = new StringWriter();
-        th.printStackTrace(new PrintWriter(writer));
-        Logger.t(tag).e(writer.toString());
-        DebugLogStore.add(tag, writer.toString());
+        String message = DiagnosticText.throwable(th);
+        DebugLogStore.add(tag, message, true);
+        Logger.t(safeTag(tag)).e(message);
     }
 
     public static void log(String msg) {
         if (TextUtils.isEmpty(msg)) return;
         if (!DebugLogStore.isEnabled()) return;
-        Logger.t(TAG).d(msg);
         DebugLogStore.add(TAG, msg);
+        Logger.t(TAG).d(DiagnosticText.clean(msg).text());
     }
 
     public static void log(String tag, String msg, Object... args) {
         if (TextUtils.isEmpty(msg)) return;
         if (!DebugLogStore.isEnabled()) return;
-        Logger.t(tag).d(msg, args);
-        DebugLogStore.add(tag, format(msg, args));
+        String message = format(msg, args);
+        DebugLogStore.add(tag, message);
+        Logger.t(safeTag(tag)).d(DiagnosticText.clean(message).text());
+    }
+
+    private static String safeTag(String tag) {
+        return DiagnosticText.clean(TextUtils.isEmpty(tag) ? TAG : tag).text();
     }
 
     private static String format(String msg, Object... args) {
