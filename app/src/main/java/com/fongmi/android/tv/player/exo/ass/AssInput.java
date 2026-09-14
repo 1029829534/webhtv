@@ -7,7 +7,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
-/** FULL_SCRIPT only. Container packets have a separate, unimplemented contract. */
+/** Complete ASS scripts and bounded CodecPrivate normalization; packets use AssPacketInput. */
 public final class AssInput {
     public static final String EXTERNAL_ID_PREFIX = "webhtv-ass-external:";
     public static final int MAX_INPUT_BYTES = 4 * 1024 * 1024;
@@ -42,6 +42,14 @@ public final class AssInput {
     }
 
     static byte[] normalize(byte[] bytes) {
+        return normalize(bytes, false);
+    }
+
+    static byte[] normalizeHeader(byte[] bytes) {
+        return normalize(bytes, true);
+    }
+
+    private static byte[] normalize(byte[] bytes, boolean header) {
         if (bytes.length == 0 || bytes.length > MAX_INPUT_BYTES) throw new IllegalArgumentException("script-bytes");
         Charset charset;
         int offset = 0;
@@ -72,13 +80,15 @@ public final class AssInput {
         text = text.substring(0, end);
         if (text.indexOf('\0') >= 0) throw new IllegalArgumentException("embedded-nul");
         String lower = text.toLowerCase(Locale.ROOT);
-        if (!lower.contains("[script info]") || !lower.contains("[events]"))
+        if (!lower.contains("[script info]") || !header && !lower.contains("[events]"))
             throw new IllegalArgumentException("not-full-script");
         if (lower.contains("[fonts]") || lower.contains("[graphics]"))
             throw new IllegalArgumentException("inline-attachments-not-admitted");
         int events = 0, styles = 0;
         for (String line : text.split("\n")) {
             String trimmed = line.trim();
+            if (header && trimmed.regionMatches(true, 0, "Dialogue:", 0, 9))
+                throw new IllegalArgumentException("codec-private-events");
             if (trimmed.regionMatches(true, 0, "Dialogue:", 0, 9) && ++events > MAX_EVENTS)
                 throw new IllegalArgumentException("event-count");
             if (trimmed.regionMatches(true, 0, "Style:", 0, 6) && ++styles > MAX_STYLES)

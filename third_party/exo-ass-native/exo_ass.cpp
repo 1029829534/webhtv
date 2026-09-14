@@ -50,6 +50,7 @@ struct Session {
     double pixel_aspect = 0;
     int color_space = 0, color_range = 0;
     bool force = true;
+    bool packetized = false;
 
     void detach() {
         if (display != EGL_NO_DISPLAY && context != EGL_NO_CONTEXT
@@ -382,8 +383,48 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(load)(JNIEnv *env, jclass, jlon
         }
         if (s->track) ass_free_track(s->track);
         s->track = track;
+        s->packetized = false;
         s->force = true;
         return JNI_TRUE;
+    } catch (...) { return JNI_FALSE; }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(loadHeader)(JNIEnv *env, jclass, jlong handle, jbyteArray bytes) {
+    Session *s = session(handle);
+    if (!s || !bytes) return JNI_FALSE;
+    jsize length = env->GetArrayLength(bytes);
+    if (length <= 0 || static_cast<size_t>(length) > MAX_SCRIPT) return JNI_FALSE;
+    try {
+        std::vector<char> header(static_cast<size_t>(length) + 1, 0);
+        env->GetByteArrayRegion(bytes, 0, length, reinterpret_cast<jbyte *>(header.data()));
+        if (env->ExceptionCheck()) return JNI_FALSE;
+        std::unique_ptr<ASS_Track, decltype(&ass_free_track)> track(ass_new_track(s->library), ass_free_track);
+        if (!track) return JNI_FALSE;
+        ass_process_codec_private(track.get(), header.data(), length);
+        if (!track->event_format || track->n_events != 0 || track->n_styles > MAX_STYLES) return JNI_FALSE;
+        if (s->track) ass_free_track(s->track);
+        s->track = track.release();
+        s->packetized = true;
+        s->force = true;
+        return JNI_TRUE;
+    } catch (...) { return JNI_FALSE; }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(chunk)(JNIEnv *env, jclass, jlong handle,
+        jbyteArray bytes, jlong start_ms, jlong duration_ms) {
+    Session *s = session(handle);
+    if (!s || !s->track || !s->packetized || !bytes || duration_ms < 0
+            || start_ms > INT64_MAX - duration_ms || s->track->n_events >= MAX_EVENTS) return JNI_FALSE;
+    jsize length = env->GetArrayLength(bytes);
+    if (length <= 0 || length > 4 * 1024 * 1024) return JNI_FALSE;
+    try {
+        std::vector<char> packet(static_cast<size_t>(length) + 1, 0);
+        env->GetByteArrayRegion(bytes, 0, length, reinterpret_cast<jbyte *>(packet.data()));
+        if (env->ExceptionCheck()) return JNI_FALSE;
+        // libass owns event parsing and ReadOrder duplicate handling. Do not mix this with
+        // ass_process_data or edit its event array; the worker serializes this with rendering.
+        ass_process_chunk(s->track, packet.data(), length, start_ms, duration_ms);
+        return s->track->n_events <= MAX_EVENTS ? JNI_TRUE : JNI_FALSE;
     } catch (...) { return JNI_FALSE; }
 }
 

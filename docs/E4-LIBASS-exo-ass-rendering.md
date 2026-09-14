@@ -2,7 +2,7 @@
 
 ## Recovery anchor
 
-- 目标/状态：阶段 1 已完成验证并获用户接受，归档默认关闭、可显式启用的 arm64 外挂 ASS 原型及 MKV 字体附件接线；保留现有字幕回退及音视频行为。完整内嵌 ASS 事件、双 ABI、HDR/DV、旧电视和产品化仍属后续阶段。
+- 目标/状态：阶段 1 外挂原型已归档；2026-09-15 实际容器 ASS 路径经修复后，用户确认“可以了，打tag”，按实际播放验收并归档。采用已有 Media3 SSA sample 的兼容桥，仍默认关闭、arm64/SDR/SurfaceView；精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV、旧电视和产品化仍属后续阶段。
 - 授权：2026-09-14 用户在复评后要求“在不破坏现有功能、性能的前提下，实施方案”，授权当前推荐的阶段 1；阶段 2–4 尚未授权。
 - Lane/scope：upstream，guard `E4-LIBASS-stage1`。范围为 Exo ASS 新目录及测试、`ExoUtil`、`ExoPlayerEngine`、`PlayerManager`、公共 `PlaybackActivity`、App 构建/混淆/调试测试入口、独立 native 构建/锁/产物、TextRenderer 补丁及对应 exoplayer Maven 产物、两份现有任务文档。精确路径由 guard scope 记录。首轮证据在 `/private/tmp/webhtv-libass-research-20260914/`，复评证据在 `/private/tmp/webhtv-libass-review-20260914/`。
 - 分支/实施基线：`feature/mpv-dv7-fel`；复评基线 `845ce82c64b16c94a1db7a61ed6bd38d2d1d35ac`。用户确认 MPV 修复后单独提交 `5cde3c015258f620f264d5f3ffe0a437c2ea3d48`，恢复 tag `recovery/E4-LIBASS-mpv-font/20260914222255-5cde3c015258`；当前 Exo guard 以该提交为基线，原有 Exo 改动完整接续。
@@ -18,7 +18,9 @@
 - 恢复 tag：用户要求先打 tag 时尚有失败门槛，因此仅对已提交基线创建 `recovery/E4-LIBASS-font-baseline/20260914-2040`，指向 `845ce82c64b16c94a1db7a61ed6bd38d2d1d35ac`；不含本次未提交实现，不代表原型验收通过。
 - 边界/风险：复杂旋转、缩放和模糊仍有实测 CPU 成本，不宣称任意脚本零开销。验收设备为 vivo V2453A/API 35，视频对照为 AVC/PCM SDR；用户原字体片段不代表原 4K 视频的解码性能。双 ABI、完整 MKV 事件、HDR/DV、旧电视仍未验收。前期多生成的 68 个 `.cxx` 文件已移至临时目录，初始 70 个文件未动。
 - 最终单元：源/补丁/锁/Java 与 JNI 产物/测试/两份文档作为同一提交，由 `Task-Guard: E4-LIBASS-stage1` 及 `recovery/E4-LIBASS-stage1/` 本地注释 tag 定位，不推送。最新安装 APK SHA-256 为 `50033c50d547ebff5aba19736a572be36802b649b4c1947f55c9c65ba9a2c76e`，对应下方最终产物表。
-- 唯一下一步：后续若继续扩展，先就阶段 2 的内嵌 ASS 原始事件/时长/seek 契约作独立决策；不将本次外挂与附件验证外推为完整内嵌事件支持。
+- 当前接续：`E4-LIBASS-runtime` guard，基线 `e7c0cdf0d6dafd5679425f045192e708e92dcfed`，恢复 tag `recovery/E4-LIBASS-stage1/20260915042400-e7c0cdf0d6da`。新证据位于 `/private/tmp/webhtv-libass-live-20260915/`；生产改动尚未验证，精确范围由当前 guard 记录，70 个原始 `.cxx` 文件继续保护。
+- 接续进度：`AssPacketInput`/会话/JNI/字体接线已实现；输入单测 14/14 通过（54 秒构建），独立 JNI 与 API/来源/许可证/导出检查通过，arm64 App/测试 APK 构建通过（1 分 25 秒）。JNI SHA-256 `476b3e048fff1002cbd25a328340637f0cb40fdec6a6f2f6033fc7548ac80157`。设备 6 项中 5 项通过；容器生命周期的首轮失败已确认是旧绘图素材的兼容 Cue 基线为空，素材已修正并重新打包。用户随后确认实际播放正常并要求 tag，按显式验收立即收尾，不补跑该项或追加截图；不将未复测项目写成通过。
+- 唯一下一步：执行 `E4-LIBASS-runtime` guard finish，将本次源/测试/产物/记录作为一个原子提交并立即创建本地恢复 tag，不推送。
 
 ### 阶段 1 验证口径（运行前冻结；复杂动画预算经用户明确修订）
 
@@ -572,3 +574,46 @@ USB 再次短暂重连后，改为手机本地 shell 连续测量，保留原已
 验证细节见 `perf-artifact-verification.json`、`perf-apk-build-2.log`、`perf-install.log`、`perf-test-install.log`。时间目标明显超出，期间经历 USB 中断、失败门槛修正及构建/安装等待；不以耗时为理由省略失败验收。临时字体日志属性已恢复，用户全局日志属性未改；用户字体、截图、缓存媒体和 profiler 文件只保留在临时目录/设备，不纳入 Git。
 
 本单元通过 guard 原子提交并立即创建本地注释恢复 tag；提交由 `Task-Guard: E4-LIBASS-stage1` 定位。回滚可关闭实验构建开关恢复原兼容字幕，或整体撤回本单元的源/补丁/锁/Java/JNI 产物；MPV 已确认的恢复锚点独立存在。本阶段不发布到远端，也不宣称后续内嵌事件、电视 ABI、HDR/DV 和产品化已完成。
+
+## 14. 正常播放页的容器 ASS 兼容桥（2026-09-15，用户实际播放已验收）
+
+### 实际故障与授权范围
+
+用户再次报告当前播放底部仍是系统字体，并授权监听当前手机；接续此前“不管是内嵌还是外挂”均需按成熟实现修复的要求。只补齐当前已经由 Media3 交付的 SSA sample，不借此展开新的精确 Matroska 输出协议、双 ABI 或 HDR。
+
+04:49–05:00 的应用日志和只读 JDI 会话检查保存于 `initial-logcat.txt`、`app-debug-log.txt`、`current-session.txt`。实际为正常 `VideoActivity`，Exo/HEVC 3840×2160、SurfaceView、tunneling=false、无 DRM，颜色元数据未声明 HDR。`EXO_ASS_PROTOTYPE=true`，会话为 `COMPAT`，`script=null/scripts=0/frames=0/nativeAlive=false`；选中 `Format.id=4`、`text/x-ssa`、非空初始化数据，播放请求 `PlaySpec.subs.size=0`，字体集为 0。这些是本次运行事实，不否定用户先前提供的独立 `.ass` 文件，但证明当前播放器没有加载那份外挂文件。
+
+根因有两处同属输入接线：`ExoAssSession.isExternal/onSample` 仅接受完整外挂；`MediaSourceFactory.createMediaSource` 只在外挂列表含 SSA 时启用字体附件提取。早先原字体画面使用原 ASS/字体的独立复现 Activity，不能据此称正常播放入口已经修复。
+
+### 成熟源码与决策
+
+沿用第 13 节的固定研究证据，本轮于 2026-09-15 直接阅读并核对以下源码；无依赖版本升级，无新增第三方源码复制：
+
+| 证据 | 支持的具体处理 | 本项目适配与限制 |
+| --- | --- | --- |
+| A：libass-android `04dcc7d49cfe35076fce5eea81c5918f381caa47` 的 `lib_ass_media/.../text/AssTrackOutput.kt`、`AssHandler.readTrackDialogue` | 从 SSA sample 前两个逗号取得相对结束时间，剩余 ReadOrder/Layer/样式/文本原样交给 libass chunk API | 在真实 TextRenderer 选中的输入上执行；不复制反射读取 extractor 私有缓冲区或绕过选轨的结构 |
+| A：当前 Media3 `e3e922d5c01bc0b564849940fe589daf37360d15` 的已发布 extractor sources JAR，`MatroskaExtractor.SSA_DIALOGUE_FORMAT/SSA_PREFIX/commitSampleToOutput` | 初始化数据为特定格式行和 CodecPrivate；sample 为 `Dialogue: 0:00:00:00,duration,ReadOrder,Layer,...`，缺 duration/laced 字幕保持既有处理 | 严格识别该格式，保留 ReadOrder 和全部 ASS 文本；duration 仍为当前输出的 10 ms 精度，不声称恢复原始 blockDurationUs |
+| A：锁定 libass `0a0221a1347e2f1e07c395263540026e9a0aa7c7` 的 `libass/ass.h`、`ass.c:ass_process_codec_private/ass_process_chunk` | 先装字体、创建 track、加载 CodecPrivate；每包传开始毫秒/时长；按 ReadOrder 去重；不能与后续 `ass_process_data` 混用修改事件 | 所有 JNI 调用仍在同一 worker；有界缓存已收到的包供晚到字体/Surface/轨道重建重放，seek 保留已缓存长事件并去重 |
+
+官方 Matroska ASS 映射、libass API 文档、成熟 VLC/MPV 实现、上游问题/维护讨论和渲染成本依据继续引用第 5、9、13 节；本轮不改变其结论。新问题仅是上述已发布 sample 的接线，论文和新的广泛性能文献不能改变输入格式决策，不再扩展检索。
+
+比较：不改动会让当前字幕永久走系统 Cue；原样移植第三方 extractor/全局 Handler 会绕过本地选轨和已保护的视频路径；采用其相同的 sample 拆分和 libass chunk API，在现有会话内接入是最小修复。完整新 Matroska packet/duration 契约继续独立评审，本轮不修改 Media3 Maven 产物或提取器输出 ABI。
+
+### 实施与验收约束
+
+- 默认构建开关、SDR/SurfaceView/非 DRM/非 tunneling 门槛保持；选中完整外挂继续原路径，选中明确识别的 Media3 SSA sample 才走新输入。其他字幕不建立 native worker。
+- 每选中 stream 独立包缓存，最多 20000 个 ReadOrder、总计 8 MiB、单包不超过 4 MiB；不丢中间包或以最新包覆盖历史。异常/超限恢复仍在更新的兼容 Cue。stream/媒体切换清除旧事件和字体；晚到字体重建后重放同一 stream 已有事件。
+- 原始 ReadOrder/Layer/样式和文本字节保留；开始时间从 renderer sample time 减真实 stream offset，再转换毫秒。字幕延迟只在渲染时钟扣一次。duration 沿用当前 Media3 精度；未读取过的 seek 前长事件不冒充已恢复。
+- 字体附件不再依赖外挂机会；每媒体集合、去重、64 个/16 MiB 单体/32 MiB 总量限制不变。预加载、拼接流仍沿旧工厂；MPV 和视频/音频逻辑不变。
+- Native 只增加 CodecPrivate/chunk 入口并重建独立 JNI；锁定依赖不变，源码/输入/许可证/ELF/APK provenance 一并验证。修正许可证拷贝的行尾空白规范，使 guard 空白检查与记录的许可证校验值一致。
+- 定向验收：sample 原文/时长/offset/重复/限额单测；分包与整份脚本在同一官方动画/卡拉 OK 时间点的像素对照；内嵌选轨、暂停延迟、seek/重建、回退和 worker 释放；外挂与关闭路径回归；最终正常 `VideoActivity` 原视频的原字体匹配日志和可见截图。
+- 性能预算沿用用户已接受的普通一核 10%/8 ms、复杂一核 40%/16.67 ms；本轮关注新输入的分配/队列开销，不重跑未改变的整个图形性能矩阵。原视频网络缓冲单独记录，不与字幕处理混淆。
+- 回滚：关闭实验开关，或整体撤回本 guard 的 App/JNI/产物/任务文档到 `e7c0cdf0d6dafd5679425f045192e708e92dcfed`；保留此前独立 MPV 恢复 tag。
+
+执行目标：北京时间 05:14 开始接入，源码和定向单测约 10–15 分钟、JNI/arm64 App 构建约 4–6 分钟、设备与原视频验证约 10–15 分钟、归档约 2 分钟，预计 05:44–05:54。
+
+05:50 定向设备结果：6 项中 5 项通过，包括分包官方 blur/karaoke 的 8 帧像素对照、重复 ReadOrder/重放、JNI 边界、外挂完整生命周期及关闭/无字幕。容器测试已 `ACTIVE input=media3-ssa packets=4 fonts=1`，但断言兼容 Cue 非空失败。关闭 libass 的同一素材也为 `cueCount=0`；已发布 `SsaParser.createCueFromDialogueInfo` 明确忽略以 `m `/`M ` 开头的纯绘图文本，而测试素材最后一个同时间包正是绘图。分类为测试素材不满足回退前提：仅将其绘图包排到文字包前，保留四个事件、Layer、时间和全部特效，保持非空断言；只复测原失败的容器生命周期，不重跑已通过的五项。输入/图形实现不因本项改动。原时间目标因此延长约 8–12 分钟。
+
+最终验收：用户在安装本次修复后明确确认“可以了，打tag”。依照显式闭合要求立即提交/tag，取消上述尚未执行的素材修正后复测及额外正常页日志/截图采集。原失败、基线分类及已通过的 5 项结果完整保留，未把用户确认表述为自动化测试全部通过。
+
+最终 APK `/private/tmp/webhtv-libass-live-20260915/exo-ass-runtime-final.apk`：173057932 字节，SHA-256 `07cd2260dbf07134c62c146192c677a526ccdcd24a29ea2f7df710ff8d304885`；JNI 为 2775600 字节，SHA-256 `476b3e048fff1002cbd25a328340637f0cb40fdec6a6f2f6033fc7548ac80157`，APK 中未压缩且 ZIP 偏移 151420928 满足 16 KiB。素材修正后的增量打包通过（20 秒），APK 字节/对齐验证通过。提交由 `Task-Guard: E4-LIBASS-runtime` 定位，恢复 tag 使用同名前缀；不推送远端。

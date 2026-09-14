@@ -211,10 +211,9 @@ public class MediaSourceFactory implements MediaSource.Factory {
         String url = mediaItem.requestMetadata.mediaUri != null ? mediaItem.requestMetadata.mediaUri.toString() : "";
         AssFontSet fonts = assSession == null ? null : assSession.beginMediaFonts();
         if (isConcatenatingUrl(url)) return createConcatenatingMediaSource(mediaItem, url);
-        if (fonts != null && mediaItem.localConfiguration != null
-                && mediaItem.localConfiguration.subtitleConfigurations.stream()
-                .anyMatch(subtitle -> MimeTypes.TEXT_SSA.equals(subtitle.mimeType))) {
+        if (fonts != null) {
             // Bind the collection to this source's extractors. Old loaders cannot populate a new video.
+            // Container ASS needs its attachments even when no external subtitle was configured.
             return new DefaultMediaSourceFactory(getDataSourceFactory(), buildExtractorsFactory(fonts))
                     .setLoadOnlySelectedTracks(PlaybackPerformanceSetting.isLoadOnlySelectedTracksEnabled())
                     .createMediaSource(mediaItem);

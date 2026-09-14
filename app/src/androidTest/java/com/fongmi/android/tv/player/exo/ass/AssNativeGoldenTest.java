@@ -8,6 +8,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 
 /** Fixed upstream PNGs + fixed fonts, with system font lookup explicitly disabled. */
 public class AssNativeGoldenTest extends TestCase {
@@ -88,6 +93,78 @@ public class AssNativeGoldenTest extends TestCase {
             assertTrue(AssNative.load(handle, AssInput.normalize(asset("357-k-and-kf-desynced.ass"))));
             assertTrue(AssNative.testSurface(handle, 1920, 1080));
             for (int time : new int[]{6798, 7170, 8170}) compare(handle, "357-k-and-kf-desynced", time, 1920, 1080);
+        } finally { AssNative.destroy(handle); }
+    }
+
+    private record PacketScript(byte[] header, List<AssPacketInput.Packet> packets) { }
+
+    private static long scriptTimeMs(String value) {
+        String[] parts = value.trim().split("[:.]");
+        return Long.parseLong(parts[0]) * 3_600_000 + Long.parseLong(parts[1]) * 60_000
+                + Long.parseLong(parts[2]) * 1000 + Long.parseLong(parts[3]) * 10;
+    }
+
+    private PacketScript packetize(String file) throws Exception {
+        String script = new String(AssInput.normalize(asset(file)), StandardCharsets.UTF_8);
+        StringBuilder header = new StringBuilder();
+        AssPacketInput input = new AssPacketInput();
+        int order = 0;
+        for (String line : script.split("\n")) {
+            if (!line.startsWith("Dialogue:")) { header.append(line).append('\n'); continue; }
+            String[] fields = line.substring("Dialogue:".length()).trim().split(",", 10);
+            long startMs = scriptTimeMs(fields[1]), duration = scriptTimeMs(fields[2]) - startMs;
+            String durationText = String.format(Locale.ROOT, "%d:%02d:%02d:%02d",
+                    duration / 3_600_000, duration / 60_000 % 60, duration / 1000 % 60, duration / 10 % 100);
+            String sample = "Dialogue: 0:00:00:00," + durationText + "," + order++ + "," + fields[0]
+                    + "," + String.join(",", Arrays.copyOfRange(fields, 3, 10));
+            assertTrue(input.add(ByteBuffer.wrap(sample.getBytes(StandardCharsets.UTF_8)),
+                    1_000_000_000_000L + startMs * 1000, 1_000_000_000_000L));
+        }
+        return new PacketScript(AssInput.normalizeHeader(header.toString().getBytes(StandardCharsets.UTF_8)), input.after(0));
+    }
+
+    private void loadPackets(long handle, PacketScript script) {
+        assertTrue(AssNative.loadHeader(handle, script.header()));
+        for (AssPacketInput.Packet packet : script.packets())
+            assertTrue(AssNative.chunk(handle, packet.data(), packet.startMs(), packet.durationMs()));
+    }
+
+    public void testPacketizedOfficialFramesDuplicatePrerollAndReplay() throws Exception {
+        long handle = create();
+        try {
+            for (String base : new String[]{"blur+t", "357-k-and-kf-desynced"}) {
+                PacketScript script = packetize(base + ".ass");
+                loadPackets(handle, script);
+                AssPacketInput.Packet first = script.packets().get(0);
+                assertTrue("Duplicate ReadOrder follows libass semantics",
+                        AssNative.chunk(handle, first.data(), first.startMs(), first.durationMs()));
+                boolean blur = base.equals("blur+t");
+                int width = blur ? 800 : 1920, height = blur ? 600 : 1080;
+                assertTrue(AssNative.testSurface(handle, width, height));
+                int[] times = blur ? new int[]{1900, 1000, 1500} : new int[]{8170, 6798, 7170};
+                for (int time : times) compare(handle, base, time, width, height);
+                // The same retained packets must reconstruct a fresh track after font changes.
+                loadPackets(handle, script);
+                compare(handle, base, times[1], width, height);
+            }
+        } finally { AssNative.destroy(handle); }
+    }
+
+    public void testPacketNativeBoundsAndScriptModeIsolation() throws Exception {
+        long handle = create();
+        try {
+            PacketScript script = packetize("blur+t.ass");
+            AssPacketInput.Packet first = script.packets().get(0);
+            assertFalse(AssNative.chunk(handle, first.data(), first.startMs(), first.durationMs()));
+            assertTrue(AssNative.load(handle, AssInput.normalize(asset("blur+t.ass"))));
+            assertFalse("Chunk input must never mutate a full-script track",
+                    AssNative.chunk(handle, first.data(), first.startMs(), first.durationMs()));
+            assertTrue(AssNative.loadHeader(handle, script.header()));
+            assertFalse(AssNative.chunk(handle, new byte[AssInput.MAX_INPUT_BYTES + 1], 0, 1));
+            assertFalse(AssNative.chunk(handle, first.data(), Long.MAX_VALUE, 1));
+            assertFalse(AssNative.chunk(handle, first.data(), 0, -1));
+            assertFalse(AssNative.loadHeader(handle, new byte[AssInput.MAX_UTF8_BYTES + 1]));
+            assertFalse(AssNative.loadHeader(handle, AssInput.normalize(asset("blur+t.ass"))));
         } finally { AssNative.destroy(handle); }
     }
 

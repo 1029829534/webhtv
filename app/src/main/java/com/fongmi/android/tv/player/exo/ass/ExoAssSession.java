@@ -22,6 +22,7 @@ import com.fongmi.android.tv.BuildConfig;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * One engine-owned, optional ASS session. Playback callbacks only publish bounded input or time.
@@ -45,6 +46,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
     @Nullable private TextRenderer.Stream displayingStream;
     @Nullable private Format videoFormat;
     @Nullable private byte[] script;
+    @Nullable private AssPacketInput packets;
     @Nullable private AssFontSet fonts;
     @Nullable private AssSurfaceHost host;
     @Nullable private Surface surface;
@@ -66,6 +68,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
     private volatile long lastStartNs;
     private String fontConfig;
     private AssFontSet.Snapshot loadedFonts;
+    private int loadedPacketCount;
     private int slowFrames;
     private final long[] nativeStats = new long[6];
 
@@ -87,6 +90,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
             fonts = enabled && !released ? new AssFontSet(this::onFontsChanged) : null;
             stream = displayingStream = null;
             script = null;
+            packets = null;
             videoFormat = null;
             failure = "";
             invalidateLocked();
@@ -147,6 +151,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
             if (fonts != null) fonts.close();
             fonts = null;
             script = null;
+            packets = null;
             stream = null;
             invalidateLocked();
             if (worker == null) releaseComplete = true;
@@ -171,9 +176,12 @@ public final class ExoAssSession implements TextRenderer.Observer {
             this.generation = generation;
             displayingStream = null;
             script = null;
+            packets = isPacketized(stream.format) ? new AssPacketInput() : null;
             ended = false;
             positionUs = C.TIME_UNSET;
             failure = fonts == null ? "" : fonts.failure();
+            Log.i(TAG, "input stream=" + stream.sequence + " kind="
+                    + (packets != null ? "media3-ssa" : isExternal(stream.format) ? "full-ass" : "compat"));
             invalidateLocked();
         }
     }
@@ -186,7 +194,8 @@ public final class ExoAssSession implements TextRenderer.Observer {
             this.positionUs = positionUs;
             displayingStream = stream;
             ended = false;
-            // FULL_SCRIPT events stay in libass. A seek invalidates presentation, not event data.
+            // Complete scripts and already received packets remain available across seeks.
+            // Repeated Matroska preroll is deduplicated by its original ReadOrder.
             invalidateLocked();
         }
     }
@@ -195,14 +204,24 @@ public final class ExoAssSession implements TextRenderer.Observer {
     public void onSample(TextRenderer.Stream stream, long generation, Format format, ByteBuffer data, long timeUs) {
         synchronized (lock) {
             if (released || this.stream == null || this.stream.sequence != stream.sequence
-                    || generation != this.generation || !isExternal(format) || script != null || !failure.isEmpty()) return;
+                    || generation != this.generation || !failure.isEmpty()) return;
             try {
+                if (packets != null && isPacketized(format)) {
+                    if (data.hasRemaining() && packets.add(data, timeUs, stream.offsetUs)) {
+                        // Events are retained in order, not coalesced like clock notifications.
+                        // Keep the last presented frame visible while appending the next event.
+                        clockVersion++;
+                        scheduleLocked(true);
+                    }
+                    return;
+                }
+                if (!isExternal(format) || script != null) return;
                 // At most one complete file is retained per selected stream. Seeks may redeliver it.
                 // No event/header/font queue uses a latest-wins policy.
                 script = AssInput.copy(data);
                 scripts++;
                 invalidateLocked();
-            } catch (IllegalArgumentException error) {
+            } catch (IllegalArgumentException | ArithmeticException error) {
                 failLocked(error.getMessage());
             }
         }
@@ -243,6 +262,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
             this.generation = generation;
             stream = displayingStream = null;
             script = null;
+            packets = null;
             ended = false;
             invalidateLocked();
         }
@@ -269,8 +289,14 @@ public final class ExoAssSession implements TextRenderer.Observer {
                 && format.initializationData.isEmpty() && AssInput.isExternalId(format.id);
     }
 
+    private static boolean isPacketized(Format format) {
+        return MimeTypes.TEXT_SSA.equals(format.sampleMimeType) && format.cryptoType == C.CRYPTO_TYPE_NONE
+                && AssPacketInput.matches(format.initializationData);
+    }
+
     private boolean admittedLocked() {
-        if (!enabled || released || ended || stream == null || !isExternal(stream.format)
+        if (!enabled || released || ended || stream == null
+                || !(isExternal(stream.format) || isPacketized(stream.format))
                 || !failure.isEmpty() || tunneling || videoFormat == null) return false;
         Format f = videoFormat;
         ColorInfo color = f.colorInfo;
@@ -283,7 +309,8 @@ public final class ExoAssSession implements TextRenderer.Observer {
     }
 
     private boolean renderableLocked() {
-        return admittedLocked() && script != null && surface != null && width > 0 && height > 0
+        return admittedLocked() && (script != null || packets != null && packets.size() > 0)
+                && surface != null && width > 0 && height > 0
                 && positionUs != C.TIME_UNSET && displayingStream != null
                 && displayingStream.sequence == stream.sequence;
     }
@@ -341,15 +368,21 @@ public final class ExoAssSession implements TextRenderer.Observer {
     private record Request(long revision, long clockVersion, long stream, long generation,
                            long surfaceEpoch, long layoutEpoch, long policyEpoch,
                            boolean admitted, boolean renderable, boolean released,
-                           byte[] script, Surface surface, int width, int height,
+                           byte[] script, boolean packetized, List<AssPacketInput.Packet> chunks, int packetCount,
+                           Surface surface, int width, int height,
                            Format video, long positionUs, long streamOffsetUs, long textOffsetUs,
                            AssFontSet.Snapshot fonts) { }
 
     private Request requestLocked() {
+        AssFontSet.Snapshot currentFonts = fonts == null ? AssFontSet.EMPTY : fonts.snapshot();
+        boolean replay = handle == 0 || stream == null || loadedStream != stream.sequence || loadedFonts != currentFonts;
+        List<AssPacketInput.Packet> chunks = packets == null ? List.of() : packets.after(replay ? 0 : loadedPacketCount);
         return new Request(revision, clockVersion, stream == null ? -1 : stream.sequence, generation,
                 surfaceEpoch, layoutEpoch, policyEpoch, admittedLocked(), renderableLocked(), released,
-                script, surface, width, height, videoFormat, positionUs, stream == null ? 0 : stream.offsetUs, textOffsetUs,
-                fonts == null ? AssFontSet.EMPTY : fonts.snapshot());
+                packets == null ? script : stream.format.initializationData.get(1), packets != null,
+                chunks, packets == null ? 0 : packets.size(),
+                surface, width, height, videoFormat, positionUs, stream == null ? 0 : stream.offsetUs, textOffsetUs,
+                currentFonts);
     }
 
     private void drain() {
@@ -381,9 +414,17 @@ public final class ExoAssSession implements TextRenderer.Observer {
                 synchronized (lock) { nativeAlive = true; }
             }
             if (loadedStream != request.stream) {
-                if (!AssNative.load(handle, AssInput.normalize(request.script))) throw new IllegalStateException("script-rejected");
+                boolean loaded = request.packetized
+                        ? AssNative.loadHeader(handle, AssInput.normalizeHeader(request.script))
+                        : AssNative.load(handle, AssInput.normalize(request.script));
+                if (!loaded) throw new IllegalStateException("script-rejected");
                 loadedStream = request.stream;
+                loadedPacketCount = 0;
             }
+            for (AssPacketInput.Packet packet : request.chunks)
+                if (!AssNative.chunk(handle, packet.data(), packet.startMs(), packet.durationMs()))
+                    throw new IllegalStateException("packet-rejected");
+            loadedPacketCount = request.packetCount;
             if (connectedSurfaceEpoch != request.surfaceEpoch) {
                 if (!AssNative.setSurface(handle, request.surface)) throw new IllegalStateException("surface-init");
                 connectedSurfaceEpoch = request.surfaceEpoch;
@@ -420,7 +461,9 @@ public final class ExoAssSession implements TextRenderer.Observer {
                         if (released || revision != request.revision || !renderableLocked()) return;
                         state = State.ACTIVE;
                         Log.i(TAG, "active stream=" + request.stream + " generation=" + request.generation
-                                + " surface=" + request.surfaceEpoch + " layout=" + request.layoutEpoch);
+                                + " surface=" + request.surfaceEpoch + " layout=" + request.layoutEpoch
+                                + " input=" + (request.packetized ? "media3-ssa" : "full-ass")
+                                + " packets=" + request.packetCount + " fonts=" + request.fonts.names().length);
                         postUiLocked();
                     }
                 });
@@ -450,6 +493,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
         handle = 0;
         loadedStream = connectedSurfaceEpoch = renderedRevision = submittedRevision = -1;
         loadedFonts = null;
+        loadedPacketCount = 0;
         slowFrames = 0;
         if (fontConfig != null) new File(fontConfig).delete();
         fontConfig = null;
@@ -466,7 +510,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
                               long scripts, long timeMs, long generation, long surfaceEpoch,
                               long layoutEpoch, long stream, boolean nativeAlive, boolean releaseComplete,
                               boolean workerAlive, int workerTid,
-                              int fontCount, int fontBytes) { }
+                              int fontCount, int fontBytes, int packetCount, int packetBytes) { }
 
     public Diagnostics diagnostics() {
         synchronized (lock) {
@@ -477,7 +521,8 @@ public final class ExoAssSession implements TextRenderer.Observer {
                     stream == null ? -1 : stream.sequence, nativeAlive, releaseComplete,
                     thread != null && thread.isAlive(), thread == null ? -1 : thread.getThreadId(),
                     fonts == null ? 0 : fonts.snapshot().names().length,
-                    fonts == null ? 0 : fonts.snapshot().bytes());
+                    fonts == null ? 0 : fonts.snapshot().bytes(),
+                    packets == null ? 0 : packets.size(), packets == null ? 0 : packets.bytes());
         }
     }
 

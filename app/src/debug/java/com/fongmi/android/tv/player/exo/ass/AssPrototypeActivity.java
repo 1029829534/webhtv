@@ -77,12 +77,14 @@ public final class AssPrototypeActivity extends Activity implements Player.Liste
         run = intent.getStringExtra("run");
         videoUri = intent.getStringExtra("video");
         assUri = intent.getStringExtra("subtitle");
-        if (videoUri == null) videoUri = "asset:///exo-ass/sample-fonts.mkv";
+        boolean embedded = intent.getBooleanExtra("embedded", false);
+        if (videoUri == null) videoUri = "asset:///exo-ass/" + (embedded ? "sample-embedded.mkv" : "sample-fonts.mkv");
         if (assUri == null) assUri = "asset:///exo-ass/animated.ass";
         engine = new ExoPlayerEngine(PlayerEngine.HARD, this);
         bindPlayer();
         spec = PlaySpec.from("E4-LIBASS-prototype", videoUri, Collections.emptyMap(), MediaMetadata.EMPTY);
-        if (!intent.getBooleanExtra("no_subtitle", false)) spec.setSub(Sub.create("ASS prototype", assUri, "zh", MimeTypes.TEXT_SSA));
+        if (!embedded && !intent.getBooleanExtra("no_subtitle", false))
+            spec.setSub(Sub.create("ASS prototype", assUri, "zh", MimeTypes.TEXT_SSA));
         startedNs = System.nanoTime();
         engine.start(spec);
     }
@@ -180,6 +182,7 @@ public final class AssPrototypeActivity extends Activity implements Player.Liste
                 out.put("workerTid", d.workerTid());
                 out.put("generation", d.generation()); out.put("surfaceEpoch", d.surfaceEpoch());
                 out.put("fontCount", d.fontCount()); out.put("fontBytes", d.fontBytes());
+                out.put("packetCount", d.packetCount()); out.put("packetBytes", d.packetBytes());
             }
             out.put("compatibleVisible", view.getSubtitleView().getVisibility() == View.VISIBLE);
             out.put("cueCount", player.getCurrentCues().cues.size());

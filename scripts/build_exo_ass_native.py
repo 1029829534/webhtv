@@ -177,7 +177,11 @@ def main():
             for license_path in source["licenses"]:
                 target = native / "licenses" / name / license_path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sources[name] / license_path, target)
+                # Preserve notice text while making generated copies pass repository whitespace
+                # checks. Hash the installed form below so source/build provenance stays coherent.
+                notice = (sources[name] / license_path).read_bytes()
+                notice = b"\n".join(line.rstrip(b" \t\r") for line in notice.split(b"\n"))
+                target.write_bytes(notice.rstrip(b"\n") + b"\n")
         manifest = native / "MANIFEST.sha256"
         manifest.write_text(digest + "  prebuilt/arm64-v8a/libexo_ass.so\n")
         def sha(path):

@@ -39,13 +39,18 @@ public class AssPlaybackTest extends TestCase {
     }
 
     private void start(boolean enabled, boolean noSubtitle) throws Exception {
+        start(enabled, noSubtitle, false);
+    }
+
+    private void start(boolean enabled, boolean noSubtitle, boolean embedded) throws Exception {
         // Shell launch is the same path as the device harness, avoiding the
         // runner's idle-queue wait while an animated player is being created.
         Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(
                 AssPrototypeActivity.class.getName(), null, false);
         try (ParcelFileDescriptor fd = instrumentation.getUiAutomation().executeShellCommand(
                 "am start -W -f 0x10008000 -n com.fongmi.android.tv/.player.exo.ass.AssPrototypeActivity"
-                        + " --ez enabled " + enabled + " --ez no_subtitle " + noSubtitle);
+                        + " --ez enabled " + enabled + " --ez no_subtitle " + noSubtitle
+                        + " --ez embedded " + embedded);
              FileInputStream input = new FileInputStream(fd.getFileDescriptor())) {
             byte[] buffer = new byte[1024];
             while (input.read(buffer) != -1) { }
@@ -63,14 +68,27 @@ public class AssPlaybackTest extends TestCase {
     }
 
     public void testPauseDelaySurfaceFallbackSeekTracksAndRelease() throws Exception {
-        start(true, false);
+        exerciseLifecycle(false);
+    }
+
+    public void testContainerPacketsPauseSeekLateFontsTracksAndRelease() throws Exception {
+        exerciseLifecycle(true);
+    }
+
+    private void exerciseLifecycle(boolean embedded) throws Exception {
+        start(true, false, embedded);
         await(() -> activity.session != null && activity.session.diagnostics().state() == ExoAssSession.State.ACTIVE,
                 "ASS should become visible after a valid native submission");
         await(() -> activity.player.getCurrentPosition() >= 1200, "position after positive delay boundary");
         main(() -> {
             assertEquals(View.INVISIBLE, activity.view.getSubtitleView().getVisibility());
-            assertEquals("Current MKV's font must reach the selected external ASS", 1,
+            assertEquals("Current MKV's font must reach the selected ASS", 1,
                     activity.session.diagnostics().fontCount());
+            if (embedded) {
+                assertEquals(0, activity.session.diagnostics().scripts());
+                assertTrue(activity.session.diagnostics().packetCount() > 0);
+                assertTrue(activity.player.getCurrentMediaItem().localConfiguration.subtitleConfigurations.isEmpty());
+            }
             assertTrue(activity.player.getCurrentCues().cues.size() > 0);
             activity.player.pause();
         });
@@ -81,6 +99,22 @@ public class AssPlaybackTest extends TestCase {
         assertEquals(frozen, activity.session.diagnostics().timeMs());
         main(() -> activity.player.setTextOffsetMs(500));
         await(() -> Math.abs(activity.session.diagnostics().timeMs() - (frozen - 500)) <= 40, "paused positive delay");
+        if (embedded) {
+            java.lang.reflect.Field field = ExoAssSession.class.getDeclaredField("fonts");
+            field.setAccessible(true);
+            AssFontSet fonts = (AssFontSet) field.get(activity.session);
+            byte[] font;
+            try (java.io.InputStream input = instrumentation.getContext().getAssets().open("exo-ass/official/Arimo-Regular.ttf")) {
+                font = input.readAllBytes();
+            }
+            long frames = activity.session.diagnostics().frames();
+            int packets = activity.session.diagnostics().packetCount();
+            fonts.add("late-Arimo-Regular.ttf", font);
+            await(() -> activity.session.diagnostics().state() == ExoAssSession.State.ACTIVE
+                    && activity.session.diagnostics().fontCount() == 2
+                    && activity.session.diagnostics().frames() > frames, "late font rebuild replays packets while paused");
+            assertEquals(packets, activity.session.diagnostics().packetCount());
+        }
         long epoch = activity.session.diagnostics().surfaceEpoch();
         main(() -> activity.command("reattach", null));
         await(() -> activity.session.diagnostics().state() == ExoAssSession.State.ACTIVE
@@ -96,6 +130,7 @@ public class AssPlaybackTest extends TestCase {
         });
         await(() -> activity.session.diagnostics().state() == ExoAssSession.State.ACTIVE, "runtime re-enable");
         long scripts = activity.session.diagnostics().scripts();
+        int packets = activity.session.diagnostics().packetCount();
         for (int i = 0; i < 4; i++) {
             long previous = activity.session.diagnostics().generation();
             final long position = i % 2 == 0 ? 6000 : 2000;
@@ -104,6 +139,8 @@ public class AssPlaybackTest extends TestCase {
                     && activity.session.diagnostics().state() == ExoAssSession.State.ACTIVE, "seek redraw");
         }
         assertEquals("Seek reuses the complete script", scripts, activity.session.diagnostics().scripts());
+        if (embedded) assertEquals("Duplicate preroll must not accumulate events", packets,
+                activity.session.diagnostics().packetCount());
         main(() -> activity.command("subtitle_off", null));
         await(() -> !activity.session.diagnostics().nativeAlive()
                 && activity.view.getSubtitleView().getVisibility() == View.VISIBLE, "track off releases native state");

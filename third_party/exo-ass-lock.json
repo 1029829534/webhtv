@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "scope": "E4-LIBASS stage 1, standalone external ASS; no MPV or FFmpeg linkage",
+  "scope": "E4-LIBASS gated standalone ASS: full external scripts and Media3 SSA packet bridge; no MPV or FFmpeg linkage",
   "android": {
     "ndk": "29.0.14206865",
     "api": 24,
