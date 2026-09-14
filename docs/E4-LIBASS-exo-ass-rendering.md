@@ -2,20 +2,30 @@
 
 ## Recovery anchor
 
-- 目标：回答 WebHTV 能否独立接入完整 ASS/SSA 特效渲染，并给出成熟开源参考、推荐设计、可验证边界、分阶段实施与回滚方案。
-- 授权：2026-09-14 用户要求复评本方案、参考成熟开源实现并结合实际代码完善；本轮仅评估和改文档，不改生产代码、依赖、补丁或二进制。
-- Lane/scope：assessment；仅本文件和 `docs/upstream-player-dependency-merge-assessment-2026-08-20.md`。首轮证据在 `/private/tmp/webhtv-libass-research-20260914/`，复评新增证据在 `/private/tmp/webhtv-libass-review-20260914/`。
-- 分支/复评基线：`feature/mpv-dv7-fel` / `bc2b3b284de87ada937b4ba3564f6fb12aa8a956`，即首轮方案归档提交。首轮代码基线为 `4a447f26e5fa488cb0c1c661398e374b10a56b6e`。
+- 目标/状态：阶段 1 已完成验证并获用户接受，归档默认关闭、可显式启用的 arm64 外挂 ASS 原型及 MKV 字体附件接线；保留现有字幕回退及音视频行为。完整内嵌 ASS 事件、双 ABI、HDR/DV、旧电视和产品化仍属后续阶段。
+- 授权：2026-09-14 用户在复评后要求“在不破坏现有功能、性能的前提下，实施方案”，授权当前推荐的阶段 1；阶段 2–4 尚未授权。
+- Lane/scope：upstream，guard `E4-LIBASS-stage1`。范围为 Exo ASS 新目录及测试、`ExoUtil`、`ExoPlayerEngine`、`PlayerManager`、公共 `PlaybackActivity`、App 构建/混淆/调试测试入口、独立 native 构建/锁/产物、TextRenderer 补丁及对应 exoplayer Maven 产物、两份现有任务文档。精确路径由 guard scope 记录。首轮证据在 `/private/tmp/webhtv-libass-research-20260914/`，复评证据在 `/private/tmp/webhtv-libass-review-20260914/`。
+- 分支/实施基线：`feature/mpv-dv7-fel`；复评基线 `845ce82c64b16c94a1db7a61ed6bd38d2d1d35ac`。用户确认 MPV 修复后单独提交 `5cde3c015258f620f264d5f3ffe0a437c2ea3d48`，恢复 tag `recovery/E4-LIBASS-mpv-font/20260914222255-5cde3c015258`；当前 Exo guard 以该提交为基线，原有 Exo 改动完整接续。
 - 保护：开始时仅 `app/.cxx/` 未跟踪，70 个文件由 guard 保护，不纳入本任务。
 - 稳定 ID：`E4-LIBASS`；历史 `E4-2` 是 Cue layer/collision/margin 适配，不重编号、不将其冒充 libass 接入。
-- 进度：复评方案已落盘。以实际发布的 Media3 sources JAR 补核了外挂输入、Matroska 封装、字幕延迟、RendererHolder 和宿主生命周期。推荐保留真实 TextRenderer，增加默认无操作的窄观察接口，复用 SurfaceView 承载契约，独立持有 Exo libass/GL 会话；不在首阶段抽取 MPV 公共 native 模块。所有实施阶段仍未批准。
-- 最便宜的决定性验证：逐项核对原始源码/测试、官方契约、维护者 issue 与独立实现；不把 README 宣传、编译或 MPV 行为当作 WebHTV Exo 的运行证据。
-- 本次时间目标：上海时间 2026-09-14 17:38–18:13；本地复核 8 分钟、开源证据 15 分钟、文档 10 分钟、校验归档 2 分钟。复用了同日已固定的研究快照，只补查能改变设计的事实。
+- 进度：输入单测 6/6、原 TextRenderer/附件/关闭路径及默认包装检查通过；暂停延迟、正常系统 provider、附件优先和完整生命周期修复已通过。最终缓存/调度版本的官方 blur/karaoke/重建与完整生命周期 4 项复测通过（7.012 秒）；用户原字体画面、实际匹配日志和原 ASS 开销已核实。三对性能、8 次释放在用户明确接受的复杂动画预算下通过，原始失败结果保留。MPV 已独立归档。
+- 最便宜的决定性验证：真实 TextRenderer + fake SampleStream 的关闭、有效输入、offset/延迟、seek/流结束契约；随后进行官方固定语料、GL/生命周期/失败注入及三次配对播放测量。
+- 本次时间目标：上海时间约 18:40–20:50；接线/实现 65 分钟、单 ABI/Java 构建 20 分钟、真机/性能 35 分钟、归档 10 分钟。复用已完成研究与可溯源缓存，避免重新进行广泛评审。
 - 网络：系统 HTTP/HTTPS 代理为 `http://127.0.0.1:7897`；后续网络取证显式使用该代理。初次 GitHub 发现查询在代理识别前直连成功，单独记录。
-- 回滚：撤销本次文档提交即可恢复首轮方案；生产代码保持复评基线。
-- 当前变更：本方案及索引的一行状态；无生产代码修改。文档校验和归档结果由 `Task-Guard: E4-LIBASS-review` 提交的 `Verification` 与 `recovery/E4-LIBASS-review/` 本地 tag 记录，不把方案建议标记为运行验证。
-- 未决风险：WebHTV 双 ABI 实机性能、HDR/DV 合成、复杂字体附件及连续 seek 的行为仍需将来经批准的原型验证；未执行构建、安装或性能测试。
-- 唯一下一步：用户决定是否批准第 8 节修订后的阶段 1；批准后按该阶段建立包含 Media3 窄接口、独立 JNI 和 App 接线的实施 scope。
+- 回滚：关闭实验/恢复兼容字幕；源代码、补丁、Java 产物、JNI 与锁作为同一提交整体回退至实施基线；不推送。
+- 当前变更：所有改动限 guard scope。主要符号为 `TextRenderer.Observer/Stream`、`ExoAssSession`、`AssSurfaceHost`、`AssInput`、`AssNative`；native 源在 `third_party/exo-ass-native/`。构建/运行证据集中于 `/private/tmp/webhtv-libass-stage1/`，App CMake 使用独立 `build/exo-ass-app-cxx`，初始 `.cxx` 保持保护。
+- 用户追加：要求一并修复 MPV 的 ASS 原字体问题，并明确以内嵌/外挂的成熟开源处理机制为依据。MPV 文件已单独提交，退出当前 Exo guard；字体接线增加 `MediaSourceFactory.java`、`DolbyVisionP81ExtractorsFactory.java`，保留初始 70 个脏文件。事实、固定源码与修复决策见第 13 节。
+- 恢复 tag：用户要求先打 tag 时尚有失败门槛，因此仅对已提交基线创建 `recovery/E4-LIBASS-font-baseline/20260914-2040`，指向 `845ce82c64b16c94a1db7a61ed6bd38d2d1d35ac`；不含本次未提交实现，不代表原型验收通过。
+- 边界/风险：复杂旋转、缩放和模糊仍有实测 CPU 成本，不宣称任意脚本零开销。验收设备为 vivo V2453A/API 35，视频对照为 AVC/PCM SDR；用户原字体片段不代表原 4K 视频的解码性能。双 ABI、完整 MKV 事件、HDR/DV、旧电视仍未验收。前期多生成的 68 个 `.cxx` 文件已移至临时目录，初始 70 个文件未动。
+- 最终单元：源/补丁/锁/Java 与 JNI 产物/测试/两份文档作为同一提交，由 `Task-Guard: E4-LIBASS-stage1` 及 `recovery/E4-LIBASS-stage1/` 本地注释 tag 定位，不推送。最新安装 APK SHA-256 为 `50033c50d547ebff5aba19736a572be36802b649b4c1947f55c9c65ba9a2c76e`，对应下方最终产物表。
+- 唯一下一步：后续若继续扩展，先就阶段 2 的内嵌 ASS 原始事件/时长/seek 契约作独立决策；不将本次外挂与附件验证外推为完整内嵌事件支持。
+
+### 阶段 1 验证口径（运行前冻结；复杂动画预算经用户明确修订）
+
+- 同一 vivo V2453A/API 35、同一 AVC/立体声 PCM SDR 样片、同一播放器设置，交错测量关闭/开启共三对；每次完整播放，记录启动、seek、掉帧、underrun、CPU/PSS、render/upload/swap 和温度。样片改 PCM 的现有 AAC 输出环境原因见第 13 节，生产音频策略未改。启动和 seek 的三次中位数增量分别不超过 `max(50 ms, 基线 10%)`、`max(30 ms, 基线 10%)`；不得新增 underrun，不得三对中两对出现额外视频掉帧。
+- 常规/用户 OP 样本：libass render + GL upload 的 p95 总和不超过 8 ms，worker CPU 不超过一核的 10%。2026-09-15 用户明确选择“保留完整特效，接受复杂字幕的实测 CPU 开销”，接受将连续旋转/缩放/blur 的 `animated.ass` 压力样本单列为一核 CPU ≤40%、render + upload p95 总和 ≤16.67 ms；此前已向用户说明这两个具体上限。swap 单列，不以等待时间冒充 CPU 工作。整进程 PSS 增量 ≤64 MiB，预热后末次与首次释放态增量 ≤8 MiB。原始 10%/8 ms 的压力样本失败记录保留，不改写为原门槛通过。
+- 固定官方字体/viewport/时间的 blur+kf PNG 采用预先选定容差：前景并集 RGBA 平均绝对误差 ≤1.5，任一通道误差 >16 的前景像素比例 ≤2%。屏幕可见、暂停延迟、Surface 重建、关轨、失败回退和最终资源释放独立验收。
+- 字符集限制：无 BOM 的短 GB18030 文本可能被现有 `UniversalDetector` 误判；20:13 对旧失败样本的独立探针得到 KOI8-R，对完整代表性样本得到 GB18030。原型保持既有检测策略，不宣称可可靠推断任意短文本编码；BOM/UTF-8 和完整代表性 legacy ASS 分别测试。
 
 ## 研究问题与证据标准
 
@@ -304,7 +314,7 @@ flowchart LR
 
 ## 8. 最小分阶段实施与回滚
 
-以下为研究提出的实施单元，**全部尚未获实施授权**。每阶段继续使用本任务唯一文档；开始时根据工具链、缓存、可用设备和 ABI 重新给出当前代理的实际墙钟估算，本轮不报人天或未经构建验证的工期。
+以下为研究提出的实施单元。**2026-09-14 复评后阶段 1 已获实施授权，阶段 2–4 尚未授权。** 每阶段继续使用本任务唯一文档；开始时根据工具链、缓存、可用设备和 ABI 重新给出当前代理的实际墙钟估算。
 
 | 阶段 | 独立交付 | 最便宜的决定性验证 | 回滚 |
 | --- | --- | --- | --- |
@@ -433,8 +443,132 @@ flowchart LR
 - 下载归档只用于阅读，没有执行外部项目脚本或 native 文件。取证显式使用 `http://127.0.0.1:7897`；复评的新增请求均为公开 GET。首轮记录的认证取证属于此前会话，不作为本轮新授权使用。
 - 三份源码归档 SHA-256：peerless `538984edf6480bef0c7605292e913f39e96d967ad69fc8802e5aad05c7c5f490`；assrender `918fefb558c4acf48ee271ac34beb7897e4cfb7c9df9890f4d718aba8c388532`；JASSUB `fe101651b866f746c799fe9820ea8def46bfd4a8e5ffc6ba5155eb547904cbfa`。原始快照位于 Recovery anchor 的临时目录；长期依据是本文件的固定 commit URL 与访问日期。
 
-## 12. 本轮完成边界
+## 12. 复评阶段的完成边界
 
 首轮已完成可行性与跨平台研究。复评补齐实际发布源码证据，修订输入/时钟接线、显示回退、seek 边界、字体/色彩/几何、生命周期、native 基础门槛及成熟测试语料。采用窄 TextRenderer 观察接口是结合当前 fork 的设计建议，其开销和完整性仍由阶段 1 证明；阶段 2 的精确输入传递和未缓存长事件恢复保持显式门槛。文档归档进行一次范围内的结构、链接、完整 revision 与索引核验，结果记录于提交的 `Verification` 字段；guard 检查保护路径、原子提交及 tag。
 
 本轮没有构建 APK/AAR/so，没有安装设备，没有运行 A01–A18 或 libass-tests，也没有测得 WebHTV 性能改善。建议仅实施可回退的阶段 1 原型；完整产品准入仍需后续阶段证据。首轮归档为 `bc2b3b284de87ada937b4ba3564f6fb12aa8a956`；本次文档提交用 `Task-Guard: E4-LIBASS-review` 定位，本地恢复 tag 使用同名任务前缀，不推送远端。
+
+## 13. 阶段 1 实施与用户字体问题（本阶段已验收）
+
+本节覆盖复评之后获批的实现，不能将第 12 节历史状态当作当前结果。独立 native 固定 libass `89cc0f4e450d64f74281a17d7f11ed05229665e8`（与已有可溯源源码版本一致，重新独立编译），未采用研究用参考 head，也没有链接 MPV/FFmpeg。完整依赖、许可、工具链、构建输入和产物见 `third_party/exo-ass-lock.json`、`third_party/exo-ass-native/build-provenance.json`；生成脚本和 verifier 随本任务归档。
+
+### 用户样本与因果证据
+
+- 用户给出的 `S02E02认真又真实的分歧点.ass` 为 UTF-8 BOM、40369 字节、422 个 Dialogue，SHA-256 `3348b91d75605a69f7f8fc687b444fffe7e48c693ceac3602f9502c92f7a8495`。`OP_CN` 指定 `WEOYTLVC`，另有多组重命名字体；文件没有 `[Fonts]` 数据。只凭视频文件名把当前字幕推断为内嵌的早先说法已被用户纠正，后续以外挂 ASS 为准。用户媒体不纳入仓库测试资产。
+- 完整读取 `显示信息.lua`（108 行）：启用时用 `sub-ass-force-style` 写入颜色/粗体/描边等，但没有 `FontName`；关闭时清空此项。它没有下载或提供字体。用户报告启用后原字形恢复，与下面 MPV 覆盖项被替换的源码路径一致；不据此推断 Exo 具有同样根因。
+- MPV `MpvPlayer.applySubtitleStyle()` 原来无条件写入 `sub-ass-style-overrides=FontName=sans-serif,...`，即使未开启系统字幕样式也如此。本次删除应用自动生成的 ASS 全局覆盖，保留普通字幕 `sub-*`、字号/位置和 `sub-ass-override=scale`，并保留用户 mpv.conf/Lua 对覆盖列表的所有权。无 MPV native、锁或 ABI 修改。
+- Exo 的实际发布 `MergingMediaPeriod.onPrepared()` 会把 **Format ID** 改成 `<childIndex>:<originalId>`。原型只接受字符串开头为自有标识，导致合法外挂 ASS 未进入 libass。现在只为准入识别合法数字前缀；stream/period/generation 仍用完整身份，不能把去前缀后的字符串作为跨会话缓存键。
+
+### 针对此次问题深入读取的成熟实现
+
+访问日 2026-09-14，沿用第 10 节固定 revision，以下均为实际正文/源码证据，未重复拉取无关历史。
+
+| 来源 | 已读代码及结论 | 本地决定 |
+| --- | --- | --- |
+| MPV `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42` | `options/options.c` 将 `sub-ass-force-style` 映射到 `sub-ass-style-overrides`，带 `UPDATE_SUB_HARD`；`DOCS/man/options.rst` 的 embeddedfonts、style-overrides、override 明确区分脚本样式和普通字幕样式；`sub/sd_ass.c` 的 `assobjects_init/add_subtitle_fonts` 在建 track 前登记字体并应用显式覆盖 | 修复 App 错误下发的 FontName，不另造字体替换机制、不用定时 Lua“修正”结果 |
+| libass-android `04dcc7d49cfe35076fce5eea81c5918f381caa47` | `AssMatroskaExtractor.binaryElement` 读取附件 MIME/name/data → `AssHandler.addFont`；`pendingFonts/createTrack` 覆盖字体先到的情况；`Ass.kt` 将 library/font/track 调用置于同一锁 | 字体数据必须有明确来源、先登记后匹配；适配现有 Media3/DV 提取链，不能仅更改默认 family |
+| Jellyfin Android TV `3d087faa00e79044016b14f8b227affe5942af7e` | `ExoPlayerBackend` 实际使用 `withAssMkvSupport`、`AssSubtitleParserFactory`、`AssRenderersFactory` 和 `OVERLAY_OPEN_GL` | 对照真实消费者的完整接线；保留 WebHTV 现有工厂和字幕回退契约 |
+| VLC `c666634229ca28354fd4fc1bdf8c43a8a232644b` | `modules/codec/libass.c` 的附件 MIME/扩展名识别、`ass_add_font`、`ass_set_fonts_dir`，默认 `ass_set_style_overrides(NULL)` | 系统 provider 是兜底，附件是字体数据，不能用一个固定系统 family 覆盖脚本所有样式 |
+| 本地已发布 Media3（源码基础 `e3e922d5c01bc0b564849940fe589daf37360d15` + lock 补丁） | `SingleSampleMediaSource` 保留 SubtitleConfiguration.id，`MergingMediaPeriod` 再加数字前缀 | 修复外部 ASS 准入，补直接/合并/嵌套合并和普通容器 ID 的边界测试 |
+
+取舍：不改动会保留已证实的 MPV 字体覆盖和 Exo 准入遗漏；直接替换为第三方整套播放器工厂会丢失本地视频、音频与网络适配；采用成熟 libass/字体登记机制，并对现有调用链做上述窄修正。匹配不到原字体的数据缺口必须单列，不能通过换一个相近系统字体来宣称恢复。用户实际字体附件仍待取得并验收。
+
+### 已完成验证与剩余门槛
+
+- `AssInputTest` 5/5 通过（新增合并 ID 测试后需再跑）；Mobile 主代码和 Leanback Java 编译通过。
+- `verify_exo_ass.py --sanitize` 通过：944 个无关 Media3 class/resource 保留，源/补丁/lock/metadata/校验和一致；独立 `.so` API 24/AArch64/16 KiB，限定系统 DT_NEEDED、8 个 JNI 导出；36 个恰好末行大小的 mask 分配和无效尺寸用例通过 host ASan/UBSan。native SHA-256 `291a38b0b8c43dfb20897a111a53bd3867101cfd182bd25c505373a62592bcba`。
+- 实验 APK 含匹配的 2762848 字节 `.so`，未压缩且 ZIP 数据偏移 16384 对齐；默认 APK 不含该库且 BuildConfig=false。两份增量构建 APK 的总大小受 ZIP 空洞/布局影响，不把 APK 总差值当净增量；ZIP 有效压缩条目增量为约 2.76 MB。
+- vivo V2453A/API 35/Adreno 首次 instrumentation 10 项：官方 blur、karaoke、unchanged/context/empty 三项通过；真实 TextRenderer 的字节/offset/延迟/seek/end、异常隔离、reading/displaying period 三项通过。失败四项：一项 fake SampleStream 没把返回 FORMAT 的 peek 算入计数，已修 fixture；三项 Activity 启动等待超时，改用已可成功启动的 shell 路径和 ActivityMonitor，待跑。
+- 暂停调延迟后的兼容 Cue、真实外挂/用户字体、MPV 原字体与普通字幕、Surface/释放、三对性能仍未通过。阶段仍未完成，不能把已打的基线 tag 或已编译 APK 表述为最终交付。
+
+### 22:23 起：已确认 MPV 归档，继续 Exo 字体链路
+
+用户确认“mpv正常了，exo还不行”并要求先打 tag。MPV 修复已独立提交/tag（见 Recovery anchor），未夹带未验证的 Exo 实现；原 guard 状态保存在 `/private/tmp/webhtv-libass-stage1/guard-before-mpv-font-20260914-2222`。恢复 Exo guard 时仅显式接续任务已有文件，70 个原始 `.cxx` 文件继续受保护。
+
+最新构建的 `AssInputTest` 6/6、Mobile APK/test APK、Leanback Java 通过；默认 observer 测试已通过。Activity shell 启动问题已解决，三项播放用例现在实际进入播放，但被音轨初始化阻塞：`AudioTrack init failed Config(48000,4,10,...)`，包含关闭 ASS 和无字幕两条基线。正在用立体声样片区分设备/现有直通设置与字幕问题，不改生产音频策略。
+
+用户后续明确要求修复内嵌/外挂字体，授权补齐字体附件部分；完整 MKV ASS 事件/时长/seek 的阶段 2 仍未展开。固定 Media3 已将 EBML 元素回调设为 protected，可采用 libass-android 的附件子类模式，完全保留现有 raw subtitle、deferred Cues、DV7 参数与外层视频包装，无需新增 extractor Maven 补丁。新增接线范围仅为 `MediaSourceFactory.java`、`DolbyVisionP81ExtractorsFactory.java`；附件类、会话和 JNI 均位于原 scope。
+
+决定：仅对当前前台完整外挂 ASS 创建每媒体字体集合；预加载继续使用原默认工厂，拼接流仍使用兼容路径。读取 Matroska Attachment 的 name/MIME/data，容忍字段顺序，按内容哈希去重，限制 64 个字体、单体 16 MiB、总量 32 MiB。字体不写到共享文件目录，不改变原内部 family。初始字体先 `ass_add_font` 再建 renderer/track；晚到字体在同一 worker 重建 libass 状态并失效旧图块。新媒体/释放使旧集合失效；关字幕仅释放 native，允许本视频重选时复用附件。异常只回退字幕，不中断音视频。
+
+相比不改动，修复仅有系统 provider 的字体缺口；相比原样移植，避免反射、全局跨 extractor Handler、字段顺序假设和无界附件分配。验收覆盖附件真实字形、字段乱序/重复/限额、晚到重建/跨视频隔离、普通播放回退及性能；关闭原型或回退本 Exo 单元即可撤销。北京时间 22:23 续作估计 25–35 分钟，预计 22:48–22:58；后因回退和字体 provider 故障超时，停止可选研究，继续处理确定性缺陷。
+
+23:00 后新增实际证据：从刚播放媒体的 Exo 缓存头（823428 字节）提取出 8 个字体附件，内部相关命名与用户 ASS 的 `WEOYTLVC` 等相符，其中 WEOYTLVC 对应华康金文体 W3；总字体数据 811760 字节。用户字幕依然是外挂，容器同时有内嵌轨道不改变这一事实。用户字体/缓存及仅供复现的重封装文件都保存在 `/private/tmp/webhtv-libass-stage1/` 和设备 cache，不纳入 Git。
+
+附件字段乱序/去重/旧媒体关闭、production JNI 附件字形与固定参考一致、关闭 ASS、无字幕播放四项已通过。第一次字体测试没有要求无附件时的输出非空，后来证实系统 provider 缺陷；该结果只能证明附件字形，不能证明正常系统兜底下的优先关系，已补非空断言待跑。暂停回退测试失败：观察路径 `setTextOffsetUs` 清空 Cue，而暂停时 `renderFromSubtitles` 不再产出，已在 observer 存在且仍是同一 displaying stream 时从现有 Subtitle 立即计算当前 Cue；默认 null observer 分支保持原样，补暂停正/负时间边界测试。原播放 fixture 改用立体声 PCM，两个 AAC 版本都被相同的现有直通设置拒绝，生产音频代码未动。
+
+字体 provider 第二处确切构建缺陷：锁定 fontconfig `a4e25ec391d417e4bca052fbfa5cd7ce5f7fd39e` 的 `src/fcxml.c:FcConfigParseAndLoadFromMemoryInternal` 设置 SAX1 `startElement/endElement`；独立 libxml2 2.15.3 的 `minimum=true` 却关闭 SAX1，使 `<dir>` 等配置未正确装载。已读取 libxml2 `meson.build:114–115` 和 `parser.c:xmlDetectSAX2`，并核对现有 MPV `buildscripts/scripts/libxml2.sh` 明确 `-D{push,reader,sax1,iso8859x,pattern}=enabled`。决定只补 `-Dsax1=enabled` 并重建独立依赖，版本不变；新增“缺少附件时仍有可见系统兜底”像素断言，不能用全透明结果通过字体差异比较。
+
+最近一次新 APK 安装被 OEM 返回 `INSTALL_FAILED_ABORTED`，设备已切到其他应用；已询问是否用户主动取消，设备操作等待回复。主代码/两个 APK/Leanback 和暂停 Cue 的 Media3 重建均已通过编译，最新 APK 尚未安装验收。宿主 FFmpeg 不含 subtitles filter，离线参考命令未成功；不把失败参考列为验收结果。
+
+### 当前候选与恢复入口（00:26 已恢复安装和定向复测）
+
+- MPV 已归档，Exo 全部代码/产物仍未提交，guard 基线为 `5cde3c015258f620f264d5f3ffe0a437c2ea3d48`。失败门槛未关闭，不为 Exo 创建实现 tag。
+- 已重建 SAX1 libxml2 和独立 JNI；`verify_exo_ass.py` 通过，944 个无关 Media3 class/resource 字节保持。最终 `.so` 为 2772512 字节，SHA-256 `ffea1ff04cf262b739c9fcc1a69c08b3c336884a3a5dd9c082979ddec93ae2f6`；最终 AAR `ddfe4d5f7f4afe96347f38f980b3861cdd0432179ff4d976bc7067096df673bd`，sources JAR `80971da199285f9f6c1507c2ace66b313258532be6bae44dd751ff8b88862ac6`。
+- 最后一次 Mobile APK 构建通过（31 秒）；APK 中的 native 字节与上述产物一致，未压缩、ZIP 数据偏移 16 KiB 对齐。最终源码差异空白检查通过。原 host ASan/UBSan 的 mask 逻辑未再修改，不重复运行。
+- 候选 `/private/tmp/webhtv-libass-stage1/exo-ass-font-candidate.apk`，SHA-256 `11724d7a7473254dbcf5f92260987ecb9d5e1aa006b4755cd99340745b14e7d6`；测试 APK 同目录 `exo-ass-font-candidate-test.apk`，SHA-256 `54789c76c0be9760b8ecedf8568848f86c97182ad013491e26a47e3c0af5e150`。
+- 两次 OEM 安装拒绝日志为 `paused-cue-install.log`、`sax1-install.log`，均 `INSTALL_FAILED_ABORTED: User rejected permissions`；已停止重试。设备留在用户正在使用的应用，未强制切换、卸载或改安装安全设置。临时 ExoPlayerImplInternal/ExoAssNative/ExoAssTest 日志标签已恢复，用户全局 `log.tag` 未改。
+- 恢复后仅跑新增/修正用例：`AssAttachmentTest#testAttachedFaceWinsOverSystemFallback`、`TextRendererObserverTest#testPausedObserverDelayRedeliversCompatibleCue`、`TextRendererObserverTest#testDefaultObserverOffPreservesCueAndSingleConsumption`、`AssPlaybackTest#testPauseDelaySurfaceFallbackSeekTracksAndRelease`。再运行原 ASS/原字体画面与三对性能验证；未受影响的像素组不重跑。
+- 用户字体复现资源已就绪：设备 cache 中 `exo-ass-user-fonts.mkv` 为自生成视频/PCM + 原 8 字体附件，`exo-ass-user.ass` 是用户原文件未改字节；本机同名用途文件和字体在临时目录，首条 OP_CN 从 75.09 秒开始。它用于验证字幕字形，不代表用户原 4K 视频解码/性能验收。
+
+### 2026-09-15 设备恢复后的实际结果
+
+用户“手机连上了”后已成功安装上述原候选和测试 APK；安装证据 `resumed-install.log`、`resumed-test-install.log`。`instrumentation-resumed.txt` 记录 4 项定向测试全部通过：`AssAttachmentTest#testAttachedFaceWinsOverSystemFallback`、`TextRendererObserverTest#testPausedObserverDelayRedeliversCompatibleCue`、`TextRendererObserverTest#testDefaultObserverOffPreservesCueAndSingleConsumption`、`AssPlaybackTest#testPauseDelaySurfaceFallbackSeekTracksAndRelease`，耗时 6.393 秒。此次才关闭先前系统 provider/暂停 Cue 的失败门槛；附件优先断言同时要求系统兜底产生非空像素。
+
+原 ASS 的临时绝对 `file://` 路径在 `ExoUtil.buildSubConfig → UrlUtil.convert → Server /file → Path.local` 中被按应用既有本机文件地址规则处理，造成试验字幕未读入；字体附件本身已到达。将调试输入改为应用已有 FileProvider 的 `content://com.fongmi.android.tv.provider/cache/exo-ass-user.ass` 后，同一候选无代码改动即正常。这是试验资源寻址问题，未修改生产本机文件策略。
+
+`user-font-content-metrics.json`：75.500 秒暂停，`ACTIVE`、`scriptCount=1`、`fontCount=8`、`fontBytes=811760`、`nativeAlive=true`、`compatibleVisible=false`，无音频 underrun/视频丢帧。`user-font-content.png` 已实际查看，底部“给这循环往复的每日”与用户原图均为同一细长特效字形，上方日文也保留原字形。这里只证明该原 ASS/字体的实际可见效果；静止画面的 render p95 不能代替完整性能配对。
+
+00:36 左右设备再次从 ADB 列表消失，尚未取得本次实际字体选择日志和性能配对；没有为 Exo 创建实现提交或 tag。当前轮从 00:25 起估计 12–18 分钟（安装/定向 3 分钟，实样/性能 8–12 分钟，归档 2 分钟），原目标 00:37–00:43；USB 中断会增加必要等待，恢复后只继续未完成测量。
+
+00:44:42 的 ADB 列表仍为空；先前安装/测试执行会话已确认正常结束，没有后台安装等待。性能脚本已备好，使用 24 秒 AVC/PCM 固定资产、三对交替的独立进程启动、原型关闭/开启对照、`/proc/<pid>/task/*/stat` 的 ExoAss worker CPU 增量、播放中 PSS、8 次重建/关轨释放及最终 worker 消失检查；尚未运行，不能预写通过。预计设备恢复后 4–6 分钟完成剩余测量和归档。临时 `ExoAssNative`/`ExoAssTest` 日志标签应在取证结束后恢复为空；USB 中断前未能读取最终标签状态。00:34 实读全局 `log.tag=I`，未修改，不按旧会话记录覆盖为其他值。
+
+### 00:58 恢复：原字体日志通过，性能门槛实际失败
+
+`user-font-final-logcat.txt` 在 75.500 秒记录 `WEOYTLVC → DFPJinWenW3-GB`、`TPDAXLCR → DFKinBun-W3-WIN-RKSJ-H`，对应原中/日文字体；14 styles/422 events、8 个附件进入当前 libass。临时 ExoAssNative/ExoAssTest 标签随后成功恢复为空，未改全局日志属性。
+
+USB 再次短暂重连后，改为手机本地 shell 连续测量，保留原已完成的第一组关闭结果；证据为 `performance-pairs.json`、`performance-device/`，不是新的源码语料或生产设置。三对均无视频丢帧/音频 underrun，但原样模式 render p95 为 9.110/10.277/10.050 ms，upload p95 为 2.774/3.182/2.954 ms；PSS 增量 108918/78181/63518 KiB，首组实际 worker CPU 35.94%，不满足既定门槛。第二/三组出现约 6 秒 Android 前台启动延迟，5 秒 CPU 窗口落在首帧之前，所得 0% 无效，不作为性能通过证据。释放态 PSS 已进入平台，但最后仅按线程名称观察 1 秒仍有同名线程；需以实际 HandlerThread 和 native owner 的完成状态判断，不能直接定性永久泄漏。
+
+继续在原授权的性能验收范围内作窄适配：libass-android 固定 revision `04dcc7d49cfe35076fce5eea81c5918f381caa47` 的 `AssSubtitleTextureView.kt:AssRenderThread` 使用默认优先级 HandlerThread；本原型人为设为 Android BACKGROUND，拟改为 DEFAULT，仍在独立 worker 上串行执行，不挪到 UI/播放线程。已读锁定 libass `ass_render_api.c:ass_set_cache_limits` 和 `ass_render.c:check_cache_limits`：bitmap 参数是位图与 composite 的合计预算，glyph 参数限制 outline 数量；将试验值 2000/32 MiB 缩为 512/8 MiB，淘汰缓存，不修改像素、字体、字幕分辨率或更新频率。取舍是缩短历史 glyph 复用范围，是否增加排版开销由同一配对验证否决，不先宣称达标。
+
+补充诊断使用 HandlerThread 的存活状态/TID；调试 close 在保持前台的异步等待中记录 releaseComplete 和线程退出后再 finish，避免以 Activity 关闭后固定等待 1 秒作为 native 释放证据。生产释放仍不阻塞 UI/播放线程，既有 instrumentation 同时断言实际线程退出。修正测量在真实 playing/ACTIVE 后采 CPU，关闭组保持同样播放窗口。
+
+本轮日志还暴露 libass 的 Meson `vcs_tag` 从源码归档向上误读 WebHTV 外层 Git tag。固定源码输入没有改变；构建脚本仅将 `CONFIG_SOURCEVERSION` 标记为 lock 中完整 libass commit，并在产物验证中要求该字节串，避免把外层 tag 当库版本。该修正与本轮必要的 native 缓存调整一起重建，不另开依赖升级。约 01:31 起估计 12–18 分钟完成窄修正/构建/受影响组/配对，目标约 01:43–01:49；尚无新的验证通过结论。
+
+### 最终验证、用户决定与归档
+
+缓存上限已改为 512 个 glyph/8 MiB 位图与 composite 合计，worker 使用普通优先级；保留原字体、分辨率、动画和更新频率。普通优先级没有显著降低本压力脚本 CPU，不将它表述为已证实的 CPU 优化。新增诊断记录实际 HandlerThread TID/存活状态，测试在前台异步等待 native 和线程真正结束后记录关闭；生产释放仍不阻塞 UI/播放线程。
+
+构建/安装与产物核验通过。`perf-instrumentation.txt` 的官方 blur、karaoke、unchanged/context/empty、完整暂停/延迟/回退/seek/换轨/重建/最终释放 4 项全部通过，7.012 秒；实际 worker 退出也进入断言。输入与未改动的 TextRenderer/默认包装检查沿用前述通过证据，没有重复运行无关检查。
+
+最终三对测量使用已开始播放/原样 ACTIVE 的窗口，按诊断给出的精确 TID 计算 CPU，不再把首帧前 0% 算入。原始证据 `performance-device-v2/`、`performance-v2.json` 保留最初预算下两个失败项；下表记录实际结果及用户明确接受后的结论：
+
+| 项目 | 实测 | 结论 |
+| --- | --- | --- |
+| 首开中位数（关闭 → 开启） | 599 → 643 ms，增加 44 ms | 通过原门槛 |
+| seek 中位数（关闭 → 开启） | 218 → 245 ms，增加 27 ms | 通过原门槛 |
+| 视频丢帧/音频 underrun | 六次均为 0 | 通过 |
+| 复杂动画 worker CPU | 一核 36.65%、35.48%、35.60% | 用户接受复杂动画 ≤40%；原 10% 门槛未通过 |
+| 复杂动画 render + upload p95 之和 | 12.255、11.897、12.574 ms | 用户接受复杂动画 ≤16.67 ms；原 8 ms 门槛未通过 |
+| swap p95 | 1.781、1.715、1.617 ms | 单列，未混入上述计算耗时 |
+| PSS 增量 | 28174、56393、60779 KiB（最大 59.35 MiB） | ≤64 MiB，通过 |
+| 8 次重建/关轨释放 | 预热后末次比首次 +1906 KiB（约 1.86 MiB） | 有界平台，≤8 MiB，通过 |
+| 最终所有者释放 | 六次播放及最后循环均 releaseComplete=true、nativeAlive=false、workerAlive=false | 通过 |
+
+为判断压力样本成本来源，使用已安装 NDK 的官方 Simpleperf 采样，不改生产库：`cpu-profile.data` / `cpu-profile-report.txt` 中约 63% 的 worker 采样调用栈经过 `ass_render_frame`，主要是 composite、blur、bitmap shift/rasterizer；另有 Adreno 纹理上传和提交开销。符号来自相同对象/静态库的仅供分析重链接，不安装或发布。不会把 libass 的必要栅格化说成可通过改默认字体消除的开销，也不据此替用户放宽门槛。
+
+用户随后明确选择“保留完整特效，接受复杂字幕的实测 CPU 开销（推荐）”。选择前已说明复杂动画 CPU ≤40%、render + upload p95 ≤16.67 ms 的具体调整，常规样本继续按 10%/8 ms。这是显式接受的验收取舍，没有降低字幕质量，也没有将最初失败测量删除或改写。
+
+用户原 ASS/原 8 附件的 OP 片段另作定向实测，`user-ass-performance.json`：约 75.7–81.2 秒，5.125 秒采样，一核 CPU 6.63%，render p95 0.873 ms、upload p95 1.806 ms，合计 2.679 ms，无视频丢帧/underrun，当前原样 ACTIVE，符合原 10%/8 ms 预算。此为原文件与原字体的代表片段，不代表整集或原 4K 解码负载。
+
+| 最终产物 | SHA-256 / 状态 |
+| --- | --- |
+| `libexo_ass.so`（2772464 字节） | `1b1d13c42da24c2e9b3652085f53b6876bdb6e06b226ed5701e250428f9df915`；API 24、arm64、16 KiB ELF、8 个 JNI 导出；内嵌源码标记等于锁定 libass 完整 commit |
+| exoplayer AAR | `ddfe4d5f7f4afe96347f38f980b3861cdd0432179ff4d976bc7067096df673bd` |
+| exoplayer sources JAR | `80971da199285f9f6c1507c2ace66b313258532be6bae44dd751ff8b88862ac6`；944 个无关 class/resource 保留 |
+| 已安装实验 APK（173057779 字节） | `50033c50d547ebff5aba19736a572be36802b649b4c1947f55c9c65ba9a2c76e`；native 字节匹配，未压缩且 ZIP 偏移 151420928 满足 16 KiB 对齐 |
+
+验证细节见 `perf-artifact-verification.json`、`perf-apk-build-2.log`、`perf-install.log`、`perf-test-install.log`。时间目标明显超出，期间经历 USB 中断、失败门槛修正及构建/安装等待；不以耗时为理由省略失败验收。临时字体日志属性已恢复，用户全局日志属性未改；用户字体、截图、缓存媒体和 profiler 文件只保留在临时目录/设备，不纳入 Git。
+
+本单元通过 guard 原子提交并立即创建本地注释恢复 tag；提交由 `Task-Guard: E4-LIBASS-stage1` 定位。回滚可关闭实验构建开关恢复原兼容字幕，或整体撤回本单元的源/补丁/锁/Java/JNI 产物；MPV 已确认的恢复锚点独立存在。本阶段不发布到远端，也不宣称后续内嵌事件、电视 ABI、HDR/DV 和产品化已完成。

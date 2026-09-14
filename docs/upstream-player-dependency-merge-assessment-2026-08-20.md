@@ -32,7 +32,7 @@
 
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
-| 复评完成 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 2026-09-14 按实际 Media3 发布源码修订：保留 TextRenderer + 窄观察接口、独立 Surface/libass/GL、兼容 Cue 回退；补齐官方语料与字体/色彩/native 门槛；仅建议阶段 1 外挂原型，MKV 未缓存长事件等留作阶段 2 门槛，全部尚未授权实施；既有 E4-2 不重做 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
+| 阶段 1 已验收 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 默认关闭的 arm64 外挂原型与 MKV 字体附件已实现；2026-09-15 最终像素/生命周期 4 项、原字体画面/匹配日志、三对性能与释放验收完成。用户明确接受复杂动画一核 CPU ≤40% / render+upload p95 ≤16.67 ms，原 ASS OP 片段 6.63% / 2.679 ms；原失败记录保留。MPV 字体修复已独立提交/tag；完整 MKV 事件、双 ABI、HDR/DV 和产品化仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
 | 插入需求 | `AV-DIAG-01` | 通用/App，后续 Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D0 代码及主机验证完成；D1–D5 未实施，设备验收待进行 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
 | P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 新日志31首draw误超时/bind热点；9.17有界初始化与能力门控push候选本机验证通过，整体电视画面/实时性能未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |

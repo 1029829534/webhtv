@@ -41,6 +41,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime;
@@ -64,6 +65,8 @@ import com.fongmi.android.tv.player.PlaybackExperimentPolicy;
 import com.fongmi.android.tv.player.PlaybackSystemConditionCoordinator;
 import com.fongmi.android.tv.player.engine.PlaySpec;
 import com.fongmi.android.tv.player.engine.PlayerEngine;
+import com.fongmi.android.tv.player.exo.ass.AssInput;
+import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
 import com.fongmi.android.tv.player.lut.LutSetting;
 import com.fongmi.android.tv.player.track.LangUtil;
 import com.fongmi.android.tv.setting.ExoPerformanceSetting;
@@ -168,6 +171,19 @@ public class ExoUtil {
             ExoFrameSchedulingPlayerSettings frameSchedulingSettings,
             @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState,
             @Nullable ExoCompressedAudioDirectPolicy compressedAudioDirectPolicy) {
+        return buildPlayer(decode, listener, tunnelingFallbackAttempted, decoderRuntimeSession,
+                frameSchedulingSettings, dolbyVisionPlaybackState, compressedAudioDirectPolicy, null);
+    }
+
+    public static ExoPlayer buildPlayer(
+            int decode,
+            Player.Listener listener,
+            boolean tunnelingFallbackAttempted,
+            @Nullable ExoDecoderRuntimeSession decoderRuntimeSession,
+            ExoFrameSchedulingPlayerSettings frameSchedulingSettings,
+            @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState,
+            @Nullable ExoCompressedAudioDirectPolicy compressedAudioDirectPolicy,
+            @Nullable ExoAssSession assSession) {
         ExoFrameSchedulingPlayerSettings schedulingSettings =
                 frameSchedulingSettings == null
                         ? ExoFrameSchedulingPlayerSettings.capture(decode)
@@ -185,15 +201,15 @@ public class ExoUtil {
                         isTunnelingEnabled(decode, tunnelingFallbackAttempted));
         ExoPlayer.Builder builder = new ExoPlayer.Builder(App.get())
                 .setTrackSelector(trackSelector)
-                .setRenderersFactory(buildPlaybackRenderersFactory(
+                .setRenderersFactory(withAssObserver(buildPlaybackRenderersFactory(
                         decode,
                         automaticProfile ? decoderRuntimeSession : null,
                         decoderOutput,
                         schedulingSettings,
                         dolbyVisionPlaybackState,
-                        compressedAudioDirectPolicy))
+                        compressedAudioDirectPolicy), assSession))
                 .setMediaSourceFactory(buildMediaSourceFactory(
-                        dolbyVisionPlaybackState))
+                        dolbyVisionPlaybackState, assSession))
                 .setVideoChangeFrameRateStrategy(ExoPerformanceSetting.getFrameRateStrategy());
         if (PlaybackPerformanceSetting.isHighBufferEnabled()) builder.setLoadControl(buildEnhancedLoadControl());
         else ExoPlaybackDiagnostics.logDefaultLoadControl(PlaybackPerformanceSetting.getProfile(PlayerSetting.EXO));
@@ -209,7 +225,11 @@ public class ExoUtil {
         PlaybackAnalyticsListener.reset();
         PlaybackAnalyticsListener analyticsListener = new PlaybackAnalyticsListener();
         player.addAnalyticsListener(analyticsListener);
-        player.setVideoFrameMetadataListener(analyticsListener);
+        if (assSession == null) player.setVideoFrameMetadataListener(analyticsListener);
+        else player.setVideoFrameMetadataListener((presentationTimeUs, releaseTimeNs, format, mediaFormat) -> {
+            analyticsListener.onVideoFrameAboutToBeRendered(presentationTimeUs, releaseTimeNs, format, mediaFormat);
+            assSession.onVideoFrame(format);
+        });
         if (PlaybackPerformanceSetting.isAdaptiveDowngradeEnabled()) {
             if (PlaybackPerformanceSetting.isAuto(
                     PlayerSetting.EXO,
@@ -226,6 +246,17 @@ public class ExoUtil {
         player.setPlayWhenReady(true);
         player.addListener(listener);
         return player;
+    }
+
+    private static RenderersFactory withAssObserver(RenderersFactory factory, @Nullable ExoAssSession session) {
+        if (session == null) return factory;
+        return (handler, video, audio, text, metadata) -> {
+            Renderer[] renderers = factory.createRenderers(handler, video, audio, text, metadata);
+            for (Renderer renderer : renderers) {
+                if (renderer instanceof TextRenderer textRenderer) textRenderer.setObserver(session);
+            }
+            return renderers;
+        };
     }
 
     public static MediaItem getMediaItem(PlaySpec spec, int decode) {
@@ -805,8 +836,8 @@ public class ExoUtil {
     }
 
     private static MediaSource.Factory buildMediaSourceFactory(
-            @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState) {
-        return new MediaSourceFactory(dolbyVisionPlaybackState);
+            @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState, @Nullable ExoAssSession assSession) {
+        return new MediaSourceFactory(dolbyVisionPlaybackState, assSession);
     }
 
     private static MediaItem.RequestMetadata buildRequestMetadata(PlaySpec spec) {
@@ -815,12 +846,16 @@ public class ExoUtil {
 
     private static List<MediaItem.SubtitleConfiguration> buildSubtitleConfigs(List<Sub> subs) {
         List<MediaItem.SubtitleConfiguration> configs = new ArrayList<>();
-        if (subs != null) for (Sub sub : subs) configs.add(buildSubConfig(sub));
+        if (subs != null) for (Sub sub : subs) configs.add(buildSubConfig(sub, configs.size()));
         return configs;
     }
 
-    private static MediaItem.SubtitleConfiguration buildSubConfig(Sub sub) {
-        return new MediaItem.SubtitleConfiguration.Builder(Uri.parse(UrlUtil.convert(sub.getUrl()))).setLabel(sub.getName()).setMimeType(sub.getFormat()).setSelectionFlags(sub.getFlag()).setLanguage(sub.getLang()).build();
+    private static MediaItem.SubtitleConfiguration buildSubConfig(Sub sub, int index) {
+        MediaItem.SubtitleConfiguration.Builder builder = new MediaItem.SubtitleConfiguration.Builder(Uri.parse(UrlUtil.convert(sub.getUrl())))
+                .setLabel(sub.getName()).setMimeType(sub.getFormat()).setSelectionFlags(sub.getFlag()).setLanguage(sub.getLang());
+        if (BuildConfig.EXO_ASS_PROTOTYPE && MimeTypes.TEXT_SSA.equals(sub.getFormat()))
+            builder.setId(AssInput.EXTERNAL_ID_PREFIX + index);
+        return builder.build();
     }
 
     private static MediaItem.DrmConfiguration buildDrmConfig(Drm drm) {

@@ -44,6 +44,7 @@ import com.fongmi.android.tv.player.exo.ExoOutputModePolicy;
 import com.fongmi.android.tv.player.exo.ExoUtil;
 import com.fongmi.android.tv.service.PlaybackService;
 import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
+import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
 import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.dialog.DiscMenuDialog;
@@ -69,6 +70,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
     private int render = -1;
     private int requestedResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT;
     private ExoOutputModeManager exoOutputModeManager;
+    private ExoAssSession attachedAssSession;
 
     protected MediaController controller() {
         return mController;
@@ -438,6 +440,12 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
             if (player().isNativePlayer()) getExoView().post(this::syncShutter);
         }
         publishRenderTarget(getExoView().getVideoSurfaceView());
+        ExoAssSession assSession = player().getAssSession();
+        if (attachedAssSession != assSession) {
+            detachAssSurface();
+            attachedAssSession = assSession;
+        }
+        if (attachedAssSession != null) attachedAssSession.attach(getExoView());
         onSurfaceAttached();
         logSurfaceState("attach done");
     }
@@ -531,11 +539,18 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
     }
 
     private void detachSurface() {
+        detachAssSurface();
         getExoView().setPlayer(null);
         if (mService != null) player().publishPlaybackRenderTarget(PlaybackAutoContext.RenderTarget.DETACHED);
     }
 
+    private void detachAssSurface() {
+        if (attachedAssSession != null) attachedAssSession.detach();
+        attachedAssSession = null;
+    }
+
     private void resetVideoSurfaceForDecoderSwitch() {
+        detachAssSurface();
         int targetRender = getRender();
         int temporaryRender = targetRender == PlayerSetting.RENDER_TEXTURE ? PlayerSetting.RENDER_SURFACE : PlayerSetting.RENDER_TEXTURE;
         if (SpiderDebug.isEnabled()) SpiderDebug.log("playback-flow", "reset video surface for decoder switch temp=%d target=%d", temporaryRender, targetRender);
@@ -885,6 +900,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
 
     @Override
     protected void onDestroy() {
+        detachAssSurface();
         if (SpiderDebug.isEnabled()) SpiderDebug.log("playback-lifecycle", "activity destroy beforeRelease %s", lifecycleState());
         restoreExoOutputMode();
         super.onDestroy();

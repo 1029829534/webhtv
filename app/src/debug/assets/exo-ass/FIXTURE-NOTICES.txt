@@ -1,0 +1,9 @@
+sample-fonts.mkv contains a locally generated test pattern and tone (AVC + stereo PCM),
+and Aileron-Regular.otf from libass/libass-tests at
+10edd9ecd8054f2c4678d36b379d8372d0e573c6.
+The font's name-table copyright is "No Rights Reserved". Its identity and source URL
+are recorded in app/src/androidTest/assets/exo-ass/official/sources.json.
+The PCM track avoids the connected device's existing AAC direct-output initialization
+failure without changing production audio settings. animated.ass requests Aileron by
+its internal family; its CJK line also exercises system fallback.
+These generated media/font fixtures are included only in debug/test APKs.

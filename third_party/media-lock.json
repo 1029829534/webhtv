@@ -68,6 +68,10 @@
       {
         "path": "third_party/patches/media3-exo-alac-wave.patch",
         "sha256": "2b6de52af60d16f705c03963c3e40b872f899f1c1b17b21c48851f7ecfe571f3"
+      },
+      {
+        "path": "third_party/patches/media3-exo-ass-observer.patch",
+        "sha256": "5ceff44d31b67157b84ef2868ed1957279056eca4f0e7aee0ae2809fb53ba3ec"
       }
     ],
     "artifact_overrides": [
@@ -91,9 +95,9 @@
       },
       {
         "coordinate": "androidx.media3:media3-exoplayer:1.11.0-alpha01-fongmi",
-        "aar_sha256": "cfea29681799509923174cac7ce31b7e944e542db9df58fd56b7a86499a5c07e",
-        "sources_sha256": "83f4f83b4f44e621d52002c161f63fbcb77be6856af4b1e4a4cb0982b04549e1",
-        "reason": "E3-1a/E4-1 baseline plus E7-2 Blu-ray/DVD logical multi-extent routing and E-SP3-B HLS pre-cache request safety"
+        "aar_sha256": "ddfe4d5f7f4afe96347f38f980b3861cdd0432179ff4d976bc7067096df673bd",
+        "sources_sha256": "80971da199285f9f6c1507c2ace66b313258532be6bae44dd751ff8b88862ac6",
+        "reason": "E3-1a/E4-1/E7-2/E-SP3-B baseline; E4-LIBASS optional TextRenderer observer (all unrelated class bytes preserved)"
       },
       {
         "coordinate": "androidx.media3:media3-exoplayer-dash:1.11.0-alpha01-fongmi",

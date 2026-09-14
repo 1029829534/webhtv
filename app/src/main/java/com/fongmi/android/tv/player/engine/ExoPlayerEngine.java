@@ -32,6 +32,7 @@ import com.fongmi.android.tv.player.exo.ExoDolbyVisionPlaybackState;
 import com.fongmi.android.tv.player.exo.ExoFrameSchedulingPlayerSettings;
 import com.fongmi.android.tv.player.exo.ExoFrameSchedulingSessionLock;
 import com.fongmi.android.tv.player.exo.ExoUtil;
+import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
 import com.fongmi.android.tv.player.exo.ExoTunnelingProgressWatchdog;
 import com.fongmi.android.tv.player.exo.ExoTunnelingRuntimeState;
 import com.fongmi.android.tv.player.exo.ExoTunnelingWatchdog;
@@ -65,6 +66,7 @@ public class ExoPlayerEngine implements PlayerEngine {
     private PlaySpec spec;
     private String activeFormat;
     private ExoPlayer player;
+    private ExoAssSession assSession;
     private int decode;
     private boolean playWhenReady;
     private boolean cacheSessionActive;
@@ -150,6 +152,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         this.frameSchedulingOutput = ExoDecoderRuntimeProfiles.currentOutput(
                 ExoUtil.isTunnelingEnabled(decode, false));
         MediaSourceFactory.acquireCacheSession();
+        this.assSession = ExoAssSession.createIfEnabled(App.get(), ExoUtil.isTunnelingEnabled(decode, false));
         try {
             this.player = ExoUtil.buildPlayer(
                     decode,
@@ -158,8 +161,10 @@ public class ExoPlayerEngine implements PlayerEngine {
                     decoderRuntimeSession,
                     frameSchedulingSettings,
                     dolbyVisionPlaybackState,
-                    compressedAudioDirectPolicy);
+                    compressedAudioDirectPolicy,
+                    assSession);
         } catch (RuntimeException | Error e) {
+            if (assSession != null) assSession.release();
             MediaSourceFactory.releaseCacheSession();
             throw e;
         }
@@ -176,6 +181,10 @@ public class ExoPlayerEngine implements PlayerEngine {
     @Override
     public Player getPlayer() {
         return player;
+    }
+
+    public ExoAssSession getAssSession() {
+        return assSession;
     }
 
     @Override
@@ -195,6 +204,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         dolbyVisionP81RuntimeFailureObserved = false;
         dolbyVisionFallbackPreparedForNextStart = false;
         dolbyVisionFallbackSpec = null;
+        if (assSession != null) assSession.release();
         player.release();
     }
 
@@ -209,6 +219,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         finishDecoderRuntimeAttempt();
         PlaybackAnalyticsListener.finishSession(player.getCurrentPosition());
         dolbyVisionPlaybackState.resetAttempt();
+        if (assSession != null) assSession.release();
         player.release();
         PlaybackTrace.log("player-engine", getPlaybackTraceId(), "rebuild decode=%d", decode);
         tunnelingEnabledForSession = ExoUtil.isTunnelingEnabled(decode, tunnelingFallbackAttempted);
@@ -218,6 +229,7 @@ public class ExoPlayerEngine implements PlayerEngine {
                 PlaybackPerformanceSetting.isDv7Hdr10FallbackEnabled();
         frameSchedulingOutput = ExoDecoderRuntimeProfiles.currentOutput(
                 tunnelingEnabledForSession);
+        assSession = ExoAssSession.createIfEnabled(App.get(), tunnelingEnabledForSession);
         player = ExoUtil.buildPlayer(
                 decode,
                 listener,
@@ -225,7 +237,8 @@ public class ExoPlayerEngine implements PlayerEngine {
                 decoderRuntimeSession,
                 schedulingSettings,
                 dolbyVisionPlaybackState,
-                compressedAudioDirectPolicy);
+                compressedAudioDirectPolicy,
+                assSession);
         frameSchedulingSettings = schedulingSettings;
         frameSchedulingSessionLock.onRendererRebuilt(
                 schedulingSettings.decision());
