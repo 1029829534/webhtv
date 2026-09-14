@@ -18,6 +18,7 @@ import android.widget.ScrollView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.OneShotPreDrawListener;
 import androidx.fragment.app.DialogFragment;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
@@ -464,6 +465,10 @@ public final class PlaybackPerformanceDialog extends DialogFragment {
 
     private void refreshRows() {
         if (list == null) return;
+        View focused = list.findFocus();
+        Object focusedOption = focused == null ? null : focused.getTag();
+        ScrollView scroll = (ScrollView) list.getParent();
+        int scrollY = scroll.getScrollY();
         list.removeAllViews();
         PlaybackPerformanceUiPolicy.Split split = optionSplit();
         addHeader(getString(R.string.player_performance_common_section));
@@ -480,6 +485,13 @@ public final class PlaybackPerformanceDialog extends DialogFragment {
             addRow(option.id(), option.title(), optionValue(option.id()),
                     optionAction(option.id()));
         }
+        // Row indices can change when a setting reveals another option.
+        if (focusedOption != null) {
+            View row = list.findViewWithTag(focusedOption);
+            if (row != null) row.requestFocus();
+        }
+        // Restore after layout so ScrollView's focus handling cannot move us.
+        OneShotPreDrawListener.add(scroll, () -> scroll.scrollTo(0, scrollY));
     }
 
     private void showConfirmDialog(
@@ -801,6 +813,7 @@ public final class PlaybackPerformanceDialog extends DialogFragment {
         boolean overridden = PlaybackPerformanceSetting.isOverridden(
                 PlayerSetting.getPlayer(), id);
         MaterialButton button = new MaterialButton(requireContext());
+        button.setTag(id);
         button.setAllCaps(false);
         button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         button.setSingleLine(false);
