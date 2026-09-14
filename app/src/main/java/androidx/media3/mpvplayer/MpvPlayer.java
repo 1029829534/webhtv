@@ -5585,7 +5585,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         safeSetPropertyString("sub-border-style", style.borderStyle);
         safeSetPropertyDouble("sub-border-size", style.borderSize);
         safeSetPropertyDouble("sub-shadow-offset", style.shadowOffset);
-        safeSetPropertyString("sub-ass-style-overrides", assStyleOverrides(style));
+        // sub-* supplies the plain-text/default caption style. ASS keeps its own
+        // font/style under sub-ass-override=scale; writing FontName through
+        // sub-ass-style-overrides would override every script's named styles.
+        // Leave explicit mpv.conf/Lua overrides under their existing ownership.
     }
 
     private double subtitleScale() {
@@ -5643,23 +5646,6 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private String mpvColor(int color) {
         return String.format(Locale.US, "%.4f/%.4f/%.4f/%.4f", Color.red(color) / 255.0, Color.green(color) / 255.0, Color.blue(color) / 255.0, Color.alpha(color) / 255.0);
-    }
-
-    private String assStyleOverrides(CaptionStyle style) {
-        return "FontName=" + style.font
-                + ",Bold=" + (style.bold ? "1" : "0")
-                + ",Italic=" + (style.italic ? "1" : "0")
-                + ",PrimaryColour=" + assColor(style.foreground)
-                + ",OutlineColour=" + assColor(style.edge)
-                + ",BackColour=" + assColor(style.back)
-                + ",BorderStyle=" + ("background-box".equals(style.borderStyle) ? "4" : "1")
-                + ",Outline=" + String.format(Locale.US, "%.1f", style.borderSize)
-                + ",Shadow=" + String.format(Locale.US, "%.1f", style.shadowOffset);
-    }
-
-    private String assColor(int color) {
-        int alpha = 255 - Color.alpha(color);
-        return String.format(Locale.US, "&H%02X%02X%02X%02X", alpha, Color.blue(color), Color.green(color), Color.red(color));
     }
 
     private void safeSetPropertyDouble(String property, double value) {
