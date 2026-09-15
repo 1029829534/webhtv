@@ -38,8 +38,8 @@ public class DebugLogs implements Process {
     public Response doResponse(IHTTPSession session, String url, Map<String, String> files) {
         if (url.startsWith("/debug/diag/")) return diagnosticAction(session, url, files);
         if (url.startsWith("/debug/enable") || url.startsWith("/debug/disable") || url.startsWith("/debug/clear")) {
-            if (session.getMethod() != NanoHTTPD.Method.POST) return diagnosticMessage(Response.Status.METHOD_NOT_ALLOWED, "请在调试页配对后操作");
-            if (!authorized(session)) return diagnosticMessage(Response.Status.FORBIDDEN, "请使用 App 显示的配对码授权操作");
+            Response rejection = controlRequestError(session);
+            if (rejection != null) return rejection;
         }
         if (url.startsWith("/debug/enable")) {
             Setting.putDebugLog(true);
@@ -91,28 +91,23 @@ public class DebugLogs implements Process {
         return DiagnosticAccess.sameOrigin(session.getHeaders().get("origin"), session.getHeaders().get("host"), hosts);
     }
 
-    private boolean authorized(IHTTPSession session) {
-        String auth = session.getHeaders().get("authorization");
-        return originAllowed(session) && auth != null && auth.startsWith("Bearer ") && DiagnosticControls.ACCESS.authorize(auth.substring(7));
+    private Response controlRequestError(IHTTPSession session) {
+        if (session.getMethod() != NanoHTTPD.Method.POST) return diagnosticMessage(Response.Status.METHOD_NOT_ALLOWED, "此操作需要 POST");
+        if (!originAllowed(session)) return diagnosticMessage(Response.Status.FORBIDDEN, "请求来源不匹配，请从设备日志页面操作");
+        if (!DiagnosticControls.ACCESS.allowAction()) return diagnosticMessage(Response.Status.TOO_MANY_REQUESTS, "操作过快，请稍后重试");
+        return null;
     }
 
     private Response diagnosticAction(IHTTPSession session, String url, Map<String, String> files) {
         if (url.equals("/debug/diag/status") && session.getMethod() == NanoHTTPD.Method.GET)
             return noCache(NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", DiagnosticControls.status().toString()), null);
-        if (session.getMethod() != NanoHTTPD.Method.POST) return diagnosticMessage(Response.Status.METHOD_NOT_ALLOWED, "此操作需要 POST");
-        if (!originAllowed(session)) return diagnosticMessage(Response.Status.FORBIDDEN, "请求来源不匹配");
+        Response rejection = controlRequestError(session);
+        if (rejection != null) return rejection;
         try {
             if (Long.parseLong(session.getHeaders().getOrDefault("content-length", "0")) > 2048) return diagnosticMessage(Response.Status.BAD_REQUEST, "请求过长");
             String raw = files.getOrDefault("postData", "{}");
             if (raw.length() > 2048) return diagnosticMessage(Response.Status.BAD_REQUEST, "请求过长");
             JsonObject data = JsonParser.parseString(raw.isEmpty() ? "{}" : raw).getAsJsonObject();
-            if (url.equals("/debug/diag/pair")) {
-                String token = DiagnosticControls.ACCESS.pair(field(data, "code"));
-                if (token == null) return diagnosticMessage(Response.Status.FORBIDDEN, "配对码无效、已过期或尝试过多，请查看 App");
-                JsonObject response = new JsonObject(); response.addProperty("token", token); response.addProperty("expiresInSeconds", 900);
-                return noCache(NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", response.toString()), null);
-            }
-            if (!authorized(session)) return diagnosticMessage(Response.Status.FORBIDDEN, "未配对、授权已过期或操作过快");
             switch (url) {
                 case "/debug/diag/mark" -> DiagnosticControls.mark(field(data, "symptom"));
                 case "/debug/diag/deep" -> {
@@ -120,7 +115,6 @@ public class DebugLogs implements Process {
                     DiagnosticControls.startDepth(data.has("seconds") ? data.get("seconds").getAsInt() : 60);
                 }
                 case "/debug/diag/stop" -> DiagnosticCapture.stop("user-stopped");
-                case "/debug/diag/compare" -> DiagnosticControls.compare(field(data, "parameter"), field(data, "old"), field(data, "new"), field(data, "note"));
                 case "/debug/diag/export" -> { return archive(); }
                 default -> { return diagnosticMessage(Response.Status.NOT_FOUND, "未找到操作"); }
             }
@@ -218,9 +212,9 @@ public class DebugLogs implements Process {
                 + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
                 + "<title>调试日志</title><style>" + css() + "</style></head><body>"
                 + "<main><header class=\"console-head\"><div class=\"brand\"><h1>调试日志</h1><span id=\"meta\" class=\"meta\" data-version=\"" + DebugLogStore.version() + "\">" + (enabled ? "记录中" : "已关闭") + " · " + DebugLogStore.bytes() / 1024 + " KB</span></div>"
-                + "<div class=\"primary-actions\"><button id=\"search-toggle\" aria-expanded=\"false\" aria-controls=\"search-panel\">搜索</button><button id=\"pause\" aria-pressed=\"false\">暂停</button><button id=\"tools-open\" aria-haspopup=\"dialog\" aria-controls=\"log-drawer\">工具<span id=\"filter-count\" class=\"count\" hidden></span></button></div>"
+                + "<div class=\"primary-actions\"><a id=\"download\" class=\"action\" href=\"/debug/logs.txt\" download=\"webhtv-debug-log.txt\" title=\"下载 TXT 日志\" aria-label=\"下载 TXT 日志\">下载</a><button id=\"clear\" class=\"danger\" data-debug-action=\"/debug/clear\" aria-label=\"清空日志\">清空</button><button id=\"pause\" aria-pressed=\"false\">暂停</button><button id=\"tools-open\" aria-haspopup=\"dialog\" aria-controls=\"log-drawer\">工具<span id=\"filter-count\" class=\"count\" hidden></span></button></div>"
                 + "<div id=\"search-panel\" class=\"search-panel\" hidden><input id=\"filter\" type=\"search\" aria-label=\"搜索日志\" placeholder=\"搜索日志关键词\"><button id=\"search-hide\">收起</button></div>"
-                + "<nav class=\"tabs\" aria-label=\"日志分类\"><button class=\"chip on\" data-mode=\"all\" aria-pressed=\"true\">全部</button><button class=\"chip\" data-mode=\"diagnostic\">音视频诊断</button><button class=\"chip\" data-mode=\"console\">Console</button><button class=\"chip\" data-mode=\"player\">播放</button><button class=\"chip\" data-mode=\"proxy\">代理</button><button class=\"chip\" data-mode=\"webhome\">WebHome</button><button class=\"chip\" data-mode=\"webview\">WebView</button><button class=\"chip\" data-mode=\"api\">站源</button><button class=\"chip\" data-mode=\"pan\">网盘</button><button class=\"chip\" data-mode=\"server\">服务</button><button class=\"chip\" data-mode=\"sync\">同步</button><button class=\"chip\" data-mode=\"startup\">启动</button><button class=\"chip\" data-mode=\"error\">错误</button></nav></header>"
+                + "<div class=\"category-row\"><nav class=\"tabs\" aria-label=\"日志分类\"><button class=\"chip on\" data-mode=\"all\" aria-pressed=\"true\">全部</button><button class=\"chip\" data-mode=\"diagnostic\">音视频诊断</button><button class=\"chip\" data-mode=\"console\">Console</button><button class=\"chip\" data-mode=\"player\">播放</button><button class=\"chip\" data-mode=\"proxy\">代理</button><button class=\"chip\" data-mode=\"webhome\">WebHome</button><button class=\"chip\" data-mode=\"webview\">WebView</button><button class=\"chip\" data-mode=\"api\">站源</button><button class=\"chip\" data-mode=\"pan\">网盘</button><button class=\"chip\" data-mode=\"server\">服务</button><button class=\"chip\" data-mode=\"sync\">同步</button><button class=\"chip\" data-mode=\"startup\">启动</button><button class=\"chip\" data-mode=\"error\">错误</button></nav><button id=\"search-toggle\" aria-expanded=\"false\" aria-controls=\"search-panel\">搜索</button></div></header>"
                 + "<div id=\"logs\" class=\"logs\"></div><pre id=\"raw\" class=\"fallback\">" + logs + "</pre></main>"
                 + diagnosticHtml(localUrl, lanUrl, enabled)
                 + "<script>" + scriptEnhanced() + diagnosticScript() + toolbarScript() + "</script></body></html>";
@@ -237,9 +231,9 @@ public class DebugLogs implements Process {
             a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #0969da;outline-offset:2px}
             .console-head{position:sticky;top:0;z-index:20;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"brand actions" "tabs tabs" "search search";align-items:center;column-gap:8px;padding:4px 8px 0;margin-bottom:8px;background:#fff;border-bottom:1px solid #d8dee4;box-shadow:0 2px 8px #1f232808}
             .brand{grid-area:brand;overflow:hidden}h1{margin:0;font-size:16px;line-height:21px;font-weight:650}.meta{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11px;line-height:16px;color:#656d76}.meta.partial{color:#9a6700}
-            .primary-actions{grid-area:actions;display:flex;gap:4px}.primary-actions button{min-width:44px;min-height:44px;padding:6px 9px;border-color:transparent;font-size:13px}
+            .primary-actions{grid-area:actions;display:flex;gap:4px}.primary-actions button,.primary-actions a.action,#search-toggle{min-width:44px;min-height:44px;padding:6px 9px;border-color:transparent;font-size:13px}.primary-actions .danger{color:#cf222e}
             .count{margin-left:4px;min-width:16px;padding:0 4px;border-radius:8px;background:#0969da;color:#fff;font-size:11px;line-height:16px}
-            .tabs{grid-area:tabs;display:flex;gap:0;overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;white-space:nowrap;scrollbar-width:none;-webkit-overflow-scrolling:touch}.tabs::-webkit-scrollbar{display:none}
+            .category-row{grid-area:tabs;display:flex;align-items:center}.category-row>button{flex:0 0 auto}.tabs{flex:1;display:flex;gap:0;overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;white-space:nowrap;scrollbar-width:none;-webkit-overflow-scrolling:touch}.tabs::-webkit-scrollbar{display:none}
             .tabs .chip{flex:0 0 auto;min-height:44px;padding:7px 12px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#57606a;font-size:13px}
             .tabs .chip.on{color:#0969da;border-bottom-color:#0969da;font-weight:650}.tabs .chip:focus-visible{outline-offset:-3px}
             .search-panel{grid-area:search;display:flex;align-items:center;gap:6px;padding:4px 0 8px}
@@ -257,7 +251,6 @@ public class DebugLogs implements Process {
             .simple{display:flex;align-items:center;gap:9px;min-height:44px;cursor:pointer}.simple input{flex:0 0 18px;width:18px;height:18px;margin:0;padding:0}
             .hint{margin:8px 0;color:#656d76;font-size:12px;line-height:1.6}.hint:empty{display:none}.summary{white-space:normal;overflow-wrap:anywhere}
             .drawer-feedback{flex:0 0 auto;max-height:100px;overflow:auto;margin:0;padding:10px 16px;color:#0969da;background:#f0f7ff;font-size:13px;line-height:1.5}.drawer-feedback:empty{display:none}
-            #diag-code{max-width:200px}.compare-fields{margin-top:12px}.fold>summary{min-height:40px;line-height:40px;cursor:pointer;font-size:14px;font-weight:600}
             .addr{display:grid;gap:8px;font-size:12px}.addr a{display:block;padding:10px;border-radius:7px;background:#f6f8fa;color:#0969da;overflow-wrap:anywhere;word-break:break-all;text-decoration:none}
             .logs{display:grid;gap:6px;width:100%;overflow:hidden}.fallback{margin:0}
             .entry,.fallback{width:100%;overflow:hidden;background:#fff;border:1px solid #d8dee4;border-radius:7px;padding:8px 10px}
@@ -268,7 +261,7 @@ public class DebugLogs implements Process {
             .detail,.rawline,.fallback{overflow-wrap:anywhere;word-break:break-all;white-space:pre-wrap}.detail{margin-top:4px;color:#57606a}
             .rawline{display:block;margin-top:6px;padding-top:6px;border-top:1px dashed #d8dee4;color:#6e7781}
             .rawline,.fallback{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body.simple .rawline{display:none}
-            @media(min-width:800px){.console-head{grid-template-columns:minmax(0,1fr) 260px auto;grid-template-areas:"brand search actions" "tabs tabs tabs"}.search-panel{padding:0}#search-hide{display:none}.tabs .chip{min-height:36px}.primary-actions button{min-height:40px}}
+            @media(min-width:800px){.console-head{grid-template-columns:minmax(0,1fr) 260px auto;grid-template-areas:"brand search actions" "tabs tabs tabs"}.search-panel{padding:0}#search-hide{display:none}.tabs .chip{min-height:36px}.primary-actions button,.primary-actions a.action{min-height:40px}}
             @media(max-width:600px){.log-drawer{top:auto;right:0;bottom:0;left:0;width:100%;height:auto;max-height:88vh;max-height:88dvh;border-radius:16px 16px 0 0;box-shadow:0 -8px 32px #1f232826}.drawer-body{padding-bottom:20px;padding-bottom:max(20px,env(safe-area-inset-bottom))}.drawer-body button,.drawer-body a.action,.drawer-body select,.drawer-body input:not([type=checkbox]){min-height:44px}}
             @media(max-width:480px){main{padding:0 4px 4px}.console-head{padding:4px 6px 0}.title{white-space:normal}.time{display:none}.entry{padding:7px 8px}.detail{font-size:13px}}
             """;
@@ -335,14 +328,13 @@ public class DebugLogs implements Process {
                   <div class="form-section"><h3>显示方式</h3><label class="simple"><input id="simple" type="checkbox" autocomplete="off"><span>只看解释，隐藏原始行</span></label></div>
                 </section>
                 <section id="tool-panel-diagnostics" role="tabpanel" aria-labelledby="tool-tab-diagnostics" hidden>
-                  <div class="form-section"><h3>操作配对</h3><p class="hint">输入 App 调试日志弹窗中的配对码，授权后可标记故障、控制采集和导出诊断包。</p><div class="action-row"><input id="diag-code" aria-label="App 显示的配对码" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="6 位配对码"><button id="diag-pair">配对</button></div><p id="diag-status" class="hint" role="status"></p></div>
+                  <p id="diag-status" class="hint" role="status"></p>
                   <div class="form-section"><h3>标记故障</h3><p class="hint">出现问题时标记，保留前后日志方便定位。</p><div class="action-row"><select id="diag-symptom" aria-label="故障现象"><option>黑屏</option><option>画面不动</option><option>无声</option><option>断音</option><option>音画不同步</option><option>其他</option></select><button id="diag-mark" class="primary">标记此刻</button></div></div>
                   <div class="form-section"><h3>限时深度统计</h3><p class="hint">只记录画面和声音的统计数值，不保存图像或声音；到期自动停止。</p><div class="action-row"><button id="diag-deep">开启 60 秒</button><button id="diag-stop">停止统计</button></div></div>
-                  <details class="form-section fold"><summary>记录单参数对照</summary><div class="field-grid compare-fields"><label class="field">对照参数<select id="diag-parameter"><option value="decoder">解码方式</option><option value="renderer">渲染方式</option><option value="surface">画面尺寸/输出</option><option value="audio-output">音频输出</option><option value="audio-effects">音效</option><option value="network">网络</option><option value="player">播放器</option><option value="other">其他</option></select></label><label class="field">修改前<input id="diag-old" maxlength="200"></label><label class="field">修改后<input id="diag-new" maxlength="200"></label><label class="field">观察现象<input id="diag-note" maxlength="200"></label></div><div class="action-row"><button id="diag-compare">记录对照</button></div><p class="hint">这里只记录对照步骤，播放设置仍在原设置页面修改。</p></details>
                 </section>
                 <section id="tool-panel-utilities" role="tabpanel" aria-labelledby="tool-tab-utilities" hidden>
-                  <div class="form-section"><h3>导出日志</h3><div class="action-row"><a id="download" class="action" href="/debug/logs.txt" download="webhtv-debug-log.txt">下载 TXT</a><button id="diag-zip">诊断 ZIP</button></div><p class="hint">TXT 包含保留日志；诊断包还包含报告和结构化事件。</p></div>
-                  <div class="form-section"><h3>采集管理</h3><div class="action-row"><a class="action" href="/debug/logs">刷新页面</a><a class="action" href="/debug/clear">清空日志</a></div><div class="action-row"><a class="action" href="%s">%s</a><button id="info-toggle" aria-expanded="false" aria-controls="address-panel">地址说明</button></div><p class="hint">清空、采集开关和诊断包下载需要先在「诊断」中配对。</p>
+                  <div class="form-section"><h3>诊断包</h3><div class="action-row"><button id="diag-zip">下载诊断 ZIP</button></div><p class="hint">包含保留日志、报告和结构化事件；仅需 TXT 时使用顶部「下载」。</p></div>
+                  <div class="form-section"><h3>采集管理</h3><div class="action-row"><a class="action" href="/debug/logs">刷新页面</a></div><div class="action-row"><button data-debug-action="%s">%s</button><button id="info-toggle" aria-expanded="false" aria-controls="address-panel">地址说明</button></div>
                     <section id="address-panel" hidden><p class="hint">页面显示最近日志窗口，下载包含保留的轮转日志。关闭采集会清空日志。音视频就绪回调不代表实际看见或听见。</p><div class="addr"><a href="%s">本机地址：%s</a><a href="%s">局域网地址：%s</a></div></section>
                   </div><div class="form-section"><h3>日志概况</h3><p id="summary" class="hint summary"></p></div>
                 </section>
@@ -357,16 +349,13 @@ public class DebugLogs implements Process {
         return """
             function diagEl(id){return document.getElementById('diag-'+id)}
             function diagSay(text){diagEl('feedback').textContent=text;if(!toolsOpen())openTools('diagnostics')}
-            function diagToken(){try{return sessionStorage.getItem('webhtv-diagnostic-token')||''}catch(e){return''}}
-            async function diagPost(path,data,binary){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+diagToken()},body:JSON.stringify(data||{}),cache:'no-store'});if(!r.ok){let j;try{j=await r.json()}catch(e){}throw Error(j&&j.message||'操作失败，请重试')}return binary?r.blob():r.json()}
+            async function diagPost(path,data,binary){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{}),cache:'no-store'});if(!r.ok){let j;try{j=await r.json()}catch(e){}throw Error(j&&j.message||'操作失败，请重试')}return binary?r.blob():r.json()}
             function diagRun(action){return Promise.resolve().then(action).catch(e=>diagSay(e.message||'操作失败'))}
-            diagEl('pair').onclick=()=>diagRun(async()=>{const j=await diagPost('/debug/diag/pair',{code:diagEl('code').value.trim()});try{sessionStorage.setItem('webhtv-diagnostic-token',j.token)}catch(e){throw Error('浏览器未允许会话存储，请使用本机 App 操作')}diagEl('code').value='';diagSay('已配对，操作授权有效 15 分钟')});
             diagEl('mark').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/mark',{symptom:diagEl('symptom').value});diagSay('已标记，继续记录后 15 秒；随后下载可包含故障前后上下文')});
             diagEl('deep').onclick=()=>{if(confirm('开启本次播放的 60 秒深度统计？只记录低分辨率画面和 PCM 数值，不保存图像或声音；到期自动停止。'))diagRun(async()=>{await diagPost('/debug/diag/deep',{seconds:60,consent:true});diagSay('已开启限时统计')})};
             diagEl('stop').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/stop');diagSay('深度统计已停止')});
-            diagEl('compare').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/compare',{parameter:diagEl('parameter').value,old:diagEl('old').value,new:diagEl('new').value,note:diagEl('note').value});diagSay('已记录对照步骤；实际生效结果以播放事件为准')});
             diagEl('zip').onclick=()=>diagRun(async()=>{diagSay('正在生成诊断包…');const blob=await diagPost('/debug/diag/export',{},true);if(!blob.size)throw Error('诊断包为空，请重试 TXT 下载');const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='webhtv-av-report.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);diagSay('诊断包已生成，含日志、可读报告、结构化事件和校验信息')});
-            document.querySelectorAll('a[href="/debug/enable"],a[href="/debug/disable"],a[href="/debug/clear"]').forEach(a=>a.onclick=e=>{e.preventDefault();diagRun(async()=>{const r=await fetch(a.getAttribute('href'),{method:'POST',headers:{Authorization:'Bearer '+diagToken()}});if(!r.ok){const j=await r.json();throw Error(j.message)}location.reload()})});
+            document.querySelectorAll('[data-debug-action]').forEach(button=>button.onclick=()=>diagRun(async()=>{const r=await fetch(button.dataset.debugAction,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',cache:'no-store'});if(!r.ok){const j=await r.json();throw Error(j.message)}location.reload()}));
             function diagPass(e){const trace=diagEl('trace').value,attempt=diagEl('attempt').value,domain=diagEl('domain').value,priority=diagEl('priority').value;if(!trace&&!attempt&&!domain&&!priority)return true;const d=e.diag;if(!d)return false;if(trace&&d.trace!==trace||attempt&&String(d.attemptId)!==attempt)return false;const name=d.event||'',p=d.observed&&d.observed.property&&d.observed.property.value||'';if(domain==='video'&&!/video|surface|display|pixel/.test(name+' '+p))return false;if(domain==='audio'&&!/audio|pcm|volume|mute|avsync/.test(name+' '+p))return false;if(priority==='critical'&&d.priority!=='critical'&&!/error|fatal|warn/.test(d.level))return false;if(priority==='error'&&!/error|fatal/.test(d.level))return false;return true}
             ['trace','attempt','domain','priority'].forEach(id=>diagEl(id).onchange=()=>{updateFilterState();render()});
             function diagOptions(id,values,label){const el=diagEl(id),selected=el.value,all=Array.from(values).slice(-100);if(selected&&!all.includes(selected))all.push(selected);const signature=all.join('|');if(el.dataset.signature===signature)return;el.dataset.signature=signature;el.textContent='';const first=document.createElement('option');first.value='';first.textContent=label;el.appendChild(first);all.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent=value;el.appendChild(option)});el.value=selected}

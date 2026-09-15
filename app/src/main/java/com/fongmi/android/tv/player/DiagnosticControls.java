@@ -37,17 +37,6 @@ public final class DiagnosticControls {
         return DiagnosticCapture.start(owner.trace(), collector.instanceId(), owner.generation(), owner.attempt(), seconds, collector.protectedMedia());
     }
 
-    public static void compare(String parameter, String oldValue, String newValue, String note) {
-        if (!Set.of("decoder", "renderer", "surface", "audio-output", "audio-effects", "network", "player", "other").contains(parameter))
-            throw new IllegalArgumentException("不支持的对照项目");
-        if (!DebugLogStore.isEnabled()) throw new IllegalStateException("请先开启调试日志");
-        publish("diag.comparison", e -> e.userReported().observed("parameter", parameter).observed("oldValue", limited(oldValue))
-                .observed("newValue", limited(newValue)).observed("note", limited(note)).observed("phase", "user-step")
-                .unknown("result", DiagnosticEvent.Status.PENDING_CALLBACK).pin("last-comparison"));
-    }
-
-    private static String limited(String value) { return value == null ? "" : value.substring(0, Math.min(200, value.length())); }
-
     public static void forTrace(String trace, String name, String source, java.util.function.Consumer<DiagnosticEvent> facts) {
         if (!DebugLogStore.acceptsEvent(name)) return;
         PlaybackDiagnosticCollector collector = latest.get();

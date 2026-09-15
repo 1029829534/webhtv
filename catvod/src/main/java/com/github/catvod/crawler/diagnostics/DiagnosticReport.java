@@ -69,7 +69,7 @@ public final class DiagnosticReport {
                 out.append("缺少证据：").append(session.video < 0 ? "视频输出未观测；" : "")
                         .append(session.audio < 0 ? "音频输出未观测；" : "").append("物理显示/实际可闻始终不可直接观测。\n");
                 out.append("下一步：").append(session.errors.isEmpty() ? "在原播放参数下标记故障；需要区分内容与输出时主动开启一次限时统计。"
-                        : "围绕上述最早失败操作，仅改变一个相关参数，并用“记录对照步骤”保存前后证据。").append("\n\n");
+                        : "围绕上述最早失败操作，仅改变一个相关参数，分别下载修改前后的日志进行比较。").append("\n\n");
             }
             return out.toString();
         }

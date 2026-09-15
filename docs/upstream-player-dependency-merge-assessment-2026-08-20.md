@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-16 用户插入日志页需求已按[AV-DIAG-01第14.16节](AV-DIAG-01-playback-diagnostics.md#1416-无配对日志操作与固定顶部按钮2026-09-16)实现：完整取消调试配对/token，保留同源POST/限频和脱敏；下载/清空移固定顶部，删除仅手填备注的对照入口。5项JUnit、实际Java网页四视口、61秒TV64构建及10库身份/v2签名/ZIP检查通过。产物`202609160721`同时包含已提交FEL候选，SHA-256及证据见唯一文档。基线`ed3d710ef551210278920ba4cd25e8dda6e19ad6`，guard `AV-DIAG-01-WEB-ACTIONS`，104个 `app/.cxx/` 文件保护；未改native或安装设备。唯一下一步：安装TV64后用同片电视日志验收P2-4候选实际收益。
+
 - 2026-09-16 P2-4第9.19-A获批并完成[9.20描述符内容复用候选](P2-4-mpv-android-fel.md#920-描述符内容复用候选2026-09-16)本机验证：1200帧写入1200→72，仍1200次fresh bind/record/dispatch；真实函数ASan/UBSan、静态契约、同锁双ABI/ELF/导出、18库不变及TV64包10库/签名/ZIP通过。buildTime=`202609160647`，APK SHA256=`0edb43e7a30b5dc92966dd55c6811d2fe720d24cbda7b0b28ce23f3c2e726b74`；guard `P2-4-fel-descriptor-content`原子保存本机候选，104个既有 `app/.cxx/` 文件保护，不推送。唯一下一步：含本候选libmpv的包在电视完成像素及三组性能对照；B/C未实施，起播与整体实时性能未验收。用户插入日志页需求不改变此状态。
 
 - 2026-09-16 P2-4第9.18节无ADB诊断候选完成本机验证：新日志30的bind约32–35ms，已补每3秒本线程调度/栅栏采样及实际Vulkan能力。真实函数ASan/UBSan、源/补丁、双ABI/ELF/导出、13项Java和TV64包10库/签名/ZIP通过，18依赖不变。基线`206a57e0e337304a8b78712c487ef245d7cb0fa0`，guard `P2-4-fel-wait-diagnostics`；保护104个既有脏文件，不改重建/画质/同步。唯一下一步：TV64安装05:28候选（SHA256 `6e9bba7846e2e99620757c7ced5c357b287ce1bc64562a79f2db511e83c86a51`），从用户提供Web地址读取新采样；电视实时性能仍未验收。

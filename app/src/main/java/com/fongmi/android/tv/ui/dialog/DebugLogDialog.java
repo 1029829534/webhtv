@@ -50,9 +50,9 @@ public final class DebugLogDialog {
             toggle.setOnCheckedChangeListener((button, checked) -> com.github.catvod.crawler.DebugLogStore.setCategory(category, checked));
             panel.addView(toggle);
         }
-        MaterialTextView pairing = new MaterialTextView(activity);
-        pairing.setText("网页操作配对码：" + com.fongmi.android.tv.player.DiagnosticControls.ACCESS.localPairingCode() + "（10 分钟内使用）\n标准日志按容量轮转；深度统计只保留数值，不保存画面或声音。");
-        pairing.setTextSize(14); panel.addView(pairing);
+        MaterialTextView captureNote = new MaterialTextView(activity);
+        captureNote.setText("标准日志按容量轮转；深度统计只保留数值，不保存画面或声音。");
+        captureNote.setTextSize(14); panel.addView(captureNote);
         android.widget.Button mark = new android.widget.Button(activity); mark.setText("标记此刻故障"); mark.setFocusable(true); panel.addView(mark);
         mark.setOnClickListener(v -> new androidx.appcompat.app.AlertDialog.Builder(activity).setTitle("选择当前现象")
                 .setItems(com.fongmi.android.tv.player.DiagnosticControls.SYMPTOMS, (d, which) -> {

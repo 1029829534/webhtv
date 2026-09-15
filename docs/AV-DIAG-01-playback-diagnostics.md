@@ -187,7 +187,7 @@
 2. 用户原样复现，不先切软解/直通，避免破坏原故障现场。
 3. 遥控器可选择「黑屏」「画面不动」「无声」「断音」「音画不同步」「其他」，或网页点「标记此刻故障」。先保存快照，再允许深度捕获。
 4. 一次点击下载 `webhtv-debug-log.txt`；可选下载完整诊断包。下载不能依赖播放线程响应，也不能触发重新查询所有 native 属性。
-5. 如需 A/B，使用“记录对照步骤”：原内核/硬解保持，单独改一个参数；日志自动记录 old/new/request/effective/restartAttempt。系统/原版 App 的未知参数由用户填写并标为 user-reported。
+5. 如需 A/B，保持原内核/硬解，仅改变一个相关参数，分别保存修改前后的日志；实际生效结果以播放事件为准。按14.16用户决定，移除只记录手填备注的“记录单参数对照”入口。
 
 未提前开启时无法恢复此前没有采集的事实；此时输出 `captureStartedLate=true`、现有基线和能得到的历史记录，再请求一次复现。不开日志时不暗中常驻采集媒体/设备隐私。
 
@@ -462,8 +462,8 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - CSD/extradata只记录类型/长度及适当摘要；保护内容默认不做内容指纹/PCM/像素probe。可比对的媒体样本hash仅限用户明确提供的测试样本，不自动下载全片求hash。
 - 白名单过的错误字符串仍需长度上限、CR/LF/控制字符转义、HTML/JSON正确编码；不能让站源或媒体metadata伪造结构化event。[R11]
 - 深度模式/附件/远程导出单独提示用户；不自动上传用户日志，不因诊断而扩大现有远程托管授权。
-- 局域网服务不是天然安全；新增mark/deep-capture/export等敏感操作需沿用并审计认证/授权，避免新增匿名操作面。配对或短期token、Origin/CSRF保护、操作限频纳入实现设计；**token只鉴权，不进入日志URL**。
-- 现有启停/清空GET入口及访问控制需在实施安全审查中明确兼容迁移；本文不声称当前已具备认证，也不擅自更改端点行为。
+- 2026-09-16用户明确要求去掉调试日志配对，按14.16取消配对码/token身份认证，保留POST、设备已知Host和严格同源Origin、操作限频、导出预算与脱敏；同局域网可访问设备者可直接操作。Origin是浏览器跨站请求防护，不冒充用户身份认证，不改变其他远程托管授权。
+- 启停/清空维持POST，GET不产生修改；缺失/null/异常Origin的修改请求拒绝，TXT/stream/status只读接口保持原用法。
 
 ## 12. 根因判定矩阵
 
@@ -838,6 +838,38 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 
 前一轮浮层越界已由视口级dialog替代，Chrome在末尾Tab移出焦点的问题已加显式循环修正；最终浏览器检查全部通过。没有进一步更改播放器/native、业务爬虫执行或签名/CNB发布。
 
+### 14.16 无配对日志操作与固定顶部按钮（2026-09-16）
+
+用户插入需求：删除调试日志配对，把下载/清空放顶部，评估“记录单参数对照”。基线`feature/mpv-dv7-fel` / `ed3d710ef551210278920ba4cd25e8dda6e19ad6`，FEL内容复用候选已独立提交/tag；本轮不重编native。guard `AV-DIAG-01-WEB-ACTIONS` / quick-fix，保护104个既有 `app/.cxx/` 文件。06:59 Asia/Shanghai开始，修改/定向验证约10–18分钟、TV64打包及收尾约5–7分钟，目标07:15–07:25。
+
+#### 依据、选择与批准
+
+- 实际调用链：`DebugLogs.doResponse/diagnosticAction`使用Bearer和`DiagnosticControls.ACCESS`；`DiagnosticAccess`生成6位码、15分钟token并同时做5次/秒限频；App `DebugLogDialog`显示配对码，网页将token放sessionStorage。用户要求的是整个调试操作流程取消配对，仅删除页面输入框会留下403，不能作为实现。
+- `DiagnosticControls.compare`只发布`diag.comparison`的手填old/new/note，result仍为unknown；`DiagnosticReport`未使用它做对照计算，只提示使用该入口。日常使用价值不足，删除页面/接口/该专用发布方法，并将报告指引改为保存前后日志；正常参数事件、故障标记、限时统计、历史日志解析保留。报告这一处必要文案纳入同一任务scope，无新增行为或模块边界。
+- UI复用14.15已读Chrome DevTools toolbar、Carbon、APG dialog/tabs及WCAG触控目标证据：高频动作在固定顶部，手机仍两行，44px点击区域；下载/清空/暂停/工具同排，搜索移到单行横滑分类旁；结构筛选及低频ZIP/采集管理继续在原抽屉，不叠加新的面板体系。
+
+| 新访问证据（2026-09-16） | 事实/等级及本地适用性 |
+| --- | --- |
+| [Go net/http csrf.go](https://github.com/golang/go/blob/56ebf80e57db9f61981fc0636fc6419dc6f68eda/src/net/http/csrf.go)与[测试](https://github.com/golang/go/blob/56ebf80e57db9f61981fc0636fc6419dc6f68eda/src/net/http/csrf_test.go)，go1.25.1=`56ebf80e57db9f61981fc0636fc6419dc6f68eda` | A；不安全方法校验Origin/Host或Fetch Metadata，GET不能做状态修改；测试覆盖跨站/null/方法及bypass误匹配。借鉴同源防护边界，不引入Go/新依赖；其无Origin默认放行不直接采用 |
+| [OWASP CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)，当日完整正文 | B；强匹配源/目标Origin，目标地址应由服务端确定，缺失来源推荐拒绝；该机制也适用于无认证请求。沿用设备实际地址allowlist，去token后拒绝缺失/null/异常Origin，HTTP页面的fetch POST自动携带Origin；不信任任意Host/转发头 |
+| [Go #75054](https://github.com/golang/go/issues/75054)与[#79766](https://github.com/golang/go/pull/79766)实际问题/提议正文 | B/C；bypass匹配/Origin userinfo接受边界需要明确。本地不增加bypass，已有userinfo/path/query/fragment拒绝保留；两项均只读参考，不移植patch，也不把closed状态当作已合并证据 |
+
+原始正文、源码/测试、API元数据保存在`/private/tmp/webhtv-debug-web-actions.ALJuwC/`。这是已有产品流程与HTTP/UI契约调整，无新的渲染/密码学/媒体算法；论文和GPU benchmark不能决定此取舍，不新增此类检索。网页布局继续复用昨日固定快照及实际浏览器验证，不重复泛搜。
+
+比较：不改违背用户需求；只去UI但保留Bearer会使按钮失败；完全删掉来源/方法/资源预算并无必要。采用窄适配：完整删除配对/token链，严格同源POST和原5次/秒限频独立保留；删除手工对照入口及无效报告指引；把高频动作放顶部。用户本次指令已明确批准产品访问行为变化，无需重新请求相同批准。
+
+验收：无配对即可标记、停止统计、导出ZIP及启停/清空；跨站/未知Host/缺失Origin/GET修改继续拒绝、过快返回429；TXT读取兼容。320/390/844/1440视口无重叠/横向页面溢出，下载/清空滚动后仍可用，抽屉/键盘/筛选/暂停保留；手机/TV共用弹窗不再显示配对码。先跑修改后的访问/报告JUnit和实际Java页面浏览器检查，再一次TV64构建、包内MPV库身份/签名验证。回滚到本节基线恢复这组App源码/测试；FEL native提交保持独立。APK与性能验收不混同。
+
+#### 实现及软件验证结果
+
+- `DiagnosticAccess`删除配对码、token及其过期状态，`allowAction()`独立保留每秒5次有界限频；`sameOrigin()`拒绝缺失/空/null来源，并保留设备已知Host与URI严格比较。`DebugLogs.controlRequestError()`统一限制所有修改/诊断操作，方法、来源、频率失败分别返回405/403/429。网页不再读写sessionStorage或发送Authorization；App共用弹窗也删除配对提示。
+- 顶部第一行依次为下载TXT、清空、暂停、工具；第二行分类横滑，手机搜索入口位于分类右侧。ZIP及低频工具保留在原抽屉。删除手填对照表单、接口及专用发布方法，报告改为提示保存修改前后日志；历史事件格式保持可解析。
+- `DiagnosticExportAccessTest`共5项通过：无需配对即可操作、5次/秒及窗口恢复/时钟回退；同源IPv4/IPv6/localhost、跨站/未知Host/缺失与异常Origin；既有ZIP快照/哈希、TXT防伪及incident恢复检查保留。结果见证据目录`access-tests.xml`。
+- `scripts/verify_crawler_web_logs.py`使用实际Java生成的开启/关闭页面、已安装Chrome和本地模拟HTTP响应通过320×640、390×844、844×390、1440×900。顶部手机93px、桌面83px，下载/清空滚动后命中有效，按钮尺寸/重叠、分类、搜索/暂停、Console、安全转义、抽屉焦点/Escape、页签及旧dialog降级通过；标记/深度统计确认/停止/ZIP/清空/采集启停均发送不含Authorization的同源POST。浏览器检查验证页面发出的请求，真实服务器访问判定由上述JUnit及编译验证覆盖，未冒充电视实测。证据：`browser-run.log`、`browser/browser-result.json`及截图。
+- JDK21下定向JUnit和`:app:assembleLeanbackArm64_v8aDebug`一次实际构建61秒通过，108任务中14执行、94复用缓存，隔离CXX目录且不重编FEL。最初仅因沙箱拒绝Gradle缓存锁和Chrome启动而重试权限；页面生成成功项没有重跑。证据：`gradle-build.log`，原始环境拒绝见`gradle.log`/`browser.log`。
+- TV64 buildTime=`202609160721`，APK为`app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk`；164143897字节，SHA-256=`f5f13571b3a210ab689d8aed3963620399bbcd75f191ecdf7e49debc98938eab`。10个MPV包内库全部与已提交资产一致，v2签名通过，ZIP开销802588字节。libmpv仍为FEL候选`240935cf90a8ff660bc11cf8f3d20ef2be228ee559317db952af1ee1d1a1a62d`。固定副本为证据目录`webhtv-tv64-debug-web-actions.apk`；旧候选另存`prior-fel-candidate-tv64.apk`，未安装或推送。
+- 本轮证据统一位于`/private/tmp/webhtv-debug-web-actions.ALJuwC/`。FEL电视实际像素、bind/map收益及p95验收继续归属P2-4，不能把本轮软件/打包通过作为卡顿已解决的证据。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -869,7 +901,7 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 | T19 主线程/MPV卡死 | 阻塞模拟或既有hang fixture | 缓存快照和native此前错误仍可导出；export timeout有partial；诊断不制造额外deadlock |
 | T20 崩溃/被杀后启动 | Java异常/native crash/系统kill/API旧版本 | 上次unfinished trace、journal、exit-info状态；未获stack不宣称完整 |
 | T21 持续日志/洪泛/磁盘不足 | 容量充足下5秒内超过32条不同事件→最后新错误→静默；跨文件轮转；实际队列耗尽/writer失败另测；标准级别INFO错误 | 正常容量下所选级别事件完整导出，无固定条数丢弃；轮转持续采集并声明历史边界；实际损失在结束前/后导出均可见，sink零丢弃不冒充全链完整；不阻塞播放 |
-| T22 安全输入 | URL query token、Cookie空格、堆栈多行、恶意标题HTML/CRLF、超长node | TXT/JSON/网页都脱敏并正确转义；日志不可伪造；配对/权限验证有效 |
+| T22 安全输入 | URL query token、Cookie空格、堆栈多行、恶意标题HTML/CRLF、超长node | TXT/JSON/网页都脱敏并正确转义；日志不可伪造；修改操作仅接受同源POST并限频（14.16已取消配对） |
 | T23 旧API/不支持属性 | API支持下限、MPV属性unavailable/IJK无AudioTrack | not-supported/unavailable与实际false分开；没有崩溃或同步轮询风暴 |
 | T24 原版对照 | 同设备/同sample/同PTS、原版与WebHTV硬解 | 对照包记录确知和unknown：APK/内核/decoder/renderer/配置/output；不靠“硬解”标签断言同路径 |
 | T25 TV用户端闭环 | 不接ADB，仅遥控器+局域网网页 | 开启→复现→标记→下载→判读全程可完成，面板不开也有日志 |
@@ -941,12 +973,11 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 
 ## 18. Recovery anchor / 后续唯一动作
 
-- Objective：D0–D5已交付；当前追加PR #107爬虫日志与紧凑固定Web操作区，验收见14.15。
-- Plan：14.15实现、定向检查和最终双端APK完成；两行顶部+三页签面板已通过四种视口及键盘/配对检查。
-- Current unit：`feature/mpv-dv7-fel` / `5acbb05afff34235d66bc1a6f3d7f67427e2a239`；guard `AV-DIAG-01-CRAWLER-WEB`；保护 `app/.cxx/` 原70文件。
-- Files：`DebugLogs.java`、QuickJS Console、SpiderDebug/DiagnosticCategories、Chaquo Loader/webhtv_logging、针对性Python/JUnit/浏览器检查、本文/索引；无native或依赖修改。
-- Evidence：`/private/tmp/pr107-python-tests.log` 7项、category JUnit 1项、`/private/tmp/pr107-web/browser-result.json` 四视口通过；`/private/tmp/pr107-final-build.log` 最终双端57秒成功；产物哈希见14.15。
-- Unverified：真实设备导出/播放与性能A/B由用户验收，不记录为通过；本轮没有新增ADB/设备操作。
-- Residual risks：真实手机/电视体验和性能由用户实测；Python native fd、脚本主动替换标准流或提前缓存旧流的第三方handler不在此桥接可见范围；不伪造异步爬虫媒体归属。
-- Rollback：本单元回滚到`5acbb05afff34235d66bc1a6f3d7f67427e2a239`及`recovery/AV-DIAG-01-COMPLETE-NATIVE/20260915162159-5acbb05afff3`。
-- Exactly one next action：安装14.15最终APK，验收实际站源日志及手机/桌面浏览器使用体验。
+- Objective：完成用户插入的无配对日志页、高频动作固定顶部、删除手工单参数对照，见14.16；此前PR #107桥接与FEL原生候选保留。
+- Plan：14.16的无配对操作、固定顶部按钮及对照入口删除均已实现并通过定向软件验证，TV64已打包；不重复已完成的研究、构建或FEL检查。
+- Current unit：`feature/mpv-dv7-fel` / `ed3d710ef551210278920ba4cd25e8dda6e19ad6`；guard `AV-DIAG-01-WEB-ACTIONS`；保护 `app/.cxx/` 104文件。
+- Files：`DebugLogs.java`、`DebugLogDialog.java`、`DiagnosticControls.java`、`DiagnosticAccess.java`、`DiagnosticReport.java`及对应JUnit/网页检查、本文/索引；无native或依赖修改。
+- Evidence：`/private/tmp/webhtv-debug-web-actions.ALJuwC/`保留来源、5项JUnit、四视口浏览器结果、61秒构建及包内库/签名/ZIP校验；TV64 `202609160721`、APK SHA-256=`f5f13571b3a210ab689d8aed3963620399bbcd75f191ecdf7e49debc98938eab`。详见14.16。
+- Unverified：无未验证代码编辑；未安装电视，真实电视FEL像素与性能仍是P2-4独立待验收项。
+- Rollback：本单元基线及 `recovery/P2-4-fel-descriptor-content/20260916065330-ed3d710ef551`；不推送。
+- Exactly one next action：电视安装本节TV64产物后，以同片播放和调试日志完成P2-4候选的真实设备验收。

@@ -20,20 +20,31 @@ public class DiagnosticExportAccessTest {
     @Rule public TemporaryFolder temp = new TemporaryFolder();
     private static final DiagnosticLogBuffer.Limits LIMITS = new DiagnosticLogBuffer.Limits(8192, 8192, 2048, 8192, 4);
 
-    @Test public void pairingIsSingleUseExpiringRateLimitedAndSameOrigin() {
+    @Test public void actionsNeedNoPairingButRemainRateLimited() {
         AtomicLong now = new AtomicLong(10_000);
         DiagnosticAccess access = new DiagnosticAccess(now::get);
-        String code = access.localPairingCode(), token = access.pair(code);
-        assertNotNull(token); assertNull(access.pair(code)); assertFalse(access.authorize(code));
-        for (int i = 0; i < 5; i++) assertTrue(access.authorize(token));
-        assertFalse(access.authorize(token)); now.addAndGet(1000); assertTrue(access.authorize(token));
-        now.addAndGet(900_000); assertFalse(access.authorize(token));
-        String next = access.localPairingCode();
-        for (int i = 0; i < 5; i++) assertNull(access.pair("invalid"));
-        assertNull(access.pair(next)); now.addAndGet(60_000); assertNotNull(access.pair(next));
-        assertTrue(DiagnosticAccess.sameOrigin("http://192.168.1.2:9978", "192.168.1.2:9978", Set.of("192.168.1.2:9978")));
-        assertFalse(DiagnosticAccess.sameOrigin("http://evil.test", "192.168.1.2:9978", Set.of("192.168.1.2:9978")));
-        assertFalse(DiagnosticAccess.sameOrigin(null, "evil.test", Set.of("192.168.1.2:9978")));
+        for (int i = 0; i < 5; i++) assertTrue(access.allowAction());
+        for (int i = 0; i < 100; i++) assertFalse(access.allowAction());
+        now.addAndGet(999); assertFalse(access.allowAction());
+        now.incrementAndGet(); assertTrue(access.allowAction());
+        now.set(0); // A changed clock origin must not lock the controls indefinitely.
+        for (int i = 0; i < 5; i++) assertTrue(access.allowAction());
+        assertFalse(access.allowAction());
+    }
+
+    @Test public void controlsRequireAnExplicitSameOriginAndKnownDeviceHost() {
+        String host = "192.168.1.2:9978";
+        Set<String> hosts = Set.of(host, "localhost:9978", "[::1]:9978");
+        assertTrue(DiagnosticAccess.sameOrigin("http://" + host, host, hosts));
+        assertTrue(DiagnosticAccess.sameOrigin("http://LOCALHOST:9978", "localhost:9978", hosts));
+        assertTrue(DiagnosticAccess.sameOrigin("http://[::1]:9978", "[::1]:9978", hosts));
+        for (String origin : new String[]{null, "", "null", "http://evil.test", "http://192.168.1.2",
+                "https://" + host, "http://" + host + "/", "http://" + host + "?x=1", "http://" + host + "#x",
+                "http://user@" + host, "http://" + host + ".evil.test", "http://[broken", "http://" + host + " http://evil.test"}) {
+            assertFalse("Rejected origin: " + origin, DiagnosticAccess.sameOrigin(origin, host, hosts));
+        }
+        assertFalse(DiagnosticAccess.sameOrigin("http://evil.test", "evil.test", hosts));
+        assertFalse(DiagnosticAccess.sameOrigin("http://" + host, null, hosts));
     }
 
     @Test public void zipUsesOneImmutableSnapshotAndEveryEntryHasMatchingHash() throws Exception {
