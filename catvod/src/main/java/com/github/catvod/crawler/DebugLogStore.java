@@ -77,6 +77,12 @@ public class DebugLogStore {
         if (enabled && current != null) current.collectorFailure();
     }
 
+    /** Producer-published immutable cache; export never calls back into a player. */
+    public static void collectorHealth(String id, DiagnosticEvent event, boolean partial, long generation) {
+        DiagnosticLogBuffer current = buffer;
+        if (enabled && current != null) current.collectorHealth(id, event, partial, generation);
+    }
+
     public static String text() {
         if (!enabled) return "调试日志未开启";
         DiagnosticLogBuffer.Snapshot snapshot = incremental(-1, "", -1);

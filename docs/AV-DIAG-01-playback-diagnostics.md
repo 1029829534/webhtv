@@ -597,6 +597,19 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - 明确缺项：factory没有内部子操作hook，不能区分其内部create/configure/start；没有抢占普通codec frame listener；实际processor内部数据、完整焦点请求结果、物理呈现/声压、CSD内容、native metrics/低层阶段均不伪造，深度字段属于D5或明确not-collected边界。没有像素/PCM探针、额外解码器探测或native重建。
 - 验证：首次接线双端Java编译42秒通过；修正窗口/Surface关联后最终双端Java编译36秒通过，记录 `/private/tmp/avdiag-exo-final-compile.log`。字段白名单唯一性、collector字面字段匹配及diff格式检查通过；没有运行自动化测试、设备场景或性能A/B。
 - 时间：11:34–12:05完成本单元代码/编译；继续MPV，保持整体12:45执行目标。guard `AV-DIAG-01-EXO` 原子提交/tag后转下一单元；实际设备/导出验收未完成。
+- 提交：`57656c06bdb4e13de3cbaf8f573dc76212e7d718`，tag `recovery/AV-DIAG-01-EXO/20260915120613-57656c06bdb4`，未推送。
+
+### 14.7 D3 MPV 公开接口交付
+
+- 12:06起，预计10–15分钟；guard `AV-DIAG-01-MPV`，基线为上述Exo提交。范围是MPV Java wrapper/现有JNI Java入口、诊断schema/缓存/sink、本文件及索引；不修改JNI源码或native产物。
+- 实际JNI已将QUEUE_OVERFLOW转给通用event；日志订阅是 `terminal-default`，因此以可观察的 `msg-level` 组件覆盖取得INFO初始化消息。保留原播放恢复逻辑；诊断日志不触发额外fallback。
+- 缓存健康与最后错误由后台心跳和现有事件维护，HTTP直接读sink内已发布副本；无native反查/UI等待。属性事实与acceptedWrite请求缓存分开，保留generation/status/age及注册结果。
+- 已实现：所有订阅native消息在旧业务过滤之前持续进入统一结构化sink，移除播放器路径对32条及FEL测量条数窗口的使用；错误/边界关键优先，普通/周期事件按容量处理。sink新增最多16个不可变collector健康缓存，导出读取缓存；队列、native overflow、Java无条数丢弃、过期/坏NODE、源端不可观测过滤计数分别报告。
+- 已实现：INFO组件覆盖只提高不足的级别，保留已有verbose；观察实际msg-level，区分App请求/原生读回。新增INFO不流入原有恢复分类器。关闭诊断恢复保存的日志配置；初始mpv.conf回调及后续用户修改分别作为恢复基线，不把自己的设置回执当成用户配置。
+- 已实现：新增版本、hwdec实际/请求、视频/音频格式、输出/音量/同步、逐轨观测和command返回/reply；属性值只用observer缓存，不使用acceptedWrite冒充实际值，跨文件保留过程级选项并清理文件数据。静态字段只输出变化，周期时钟最多5秒一次。
+- M08/M09：保留查名失败原severity/prefix/原文和独立事件身份，查名结果与实际create/configure/start分开；缺选择器内部原因明确native-hook-required。有video轨、vid=no及audio选中并伴视频init错误时报告videoPartialFailure，保留音频是否实际发声的未知边界。
+- 验证：MPV接线及日志级别恢复/跨文件缓存补齐后的Mobile/Leanback arm64 Java编译通过，日志 `/private/tmp/avdiag-mpv-final-compile.log`；schema、live路径不再引用nativeLogWindow及diff检查通过。未运行用户保留自行执行的native入口洪泛/静默尾部fixture、设备导出或性能A/B；不能把编译称作T03/T05/T21已验收。
+- 用时超过10–15分钟估计：原恢复策略输入隔离与原生回调代际/关闭恢复需补齐；后续仅推进D4必要实现，不增加native研究或测试范围。
 
 ## 15. 验收矩阵：如何证明日志真的够用
 
@@ -702,11 +715,11 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 ## 18. Recovery anchor / 后续唯一动作
 
 - Objective：依用户指定评审版实施D1–D4；验收见0.1/14.5/15节，D5深度/native独立。
-- Plan：D0保留；D1/D2公开接口代码/双端编译完成，范围/缺项见14.6；D3/D4待接续。
-- Workspace：`feature/mpv-dv7-fel`，HEAD `684f6066393fa503b2a0573c25a2aa25d01294fc`；guard `AV-DIAG-01-EXO`，保护 `app/.cxx/` 原70文件。
+- Plan：D0保留；D1/D2及D3公开接口代码/双端编译完成，范围/缺项见14.6/14.7；D4待接续。
+- Workspace：`feature/mpv-dv7-fel`，HEAD `57656c06bdb4e13de3cbaf8f573dc76212e7d718`；guard `AV-DIAG-01-MPV`，保护 `app/.cxx/` 原70文件。
 - Files：ExoDiagnosticCollector/CodecAdapter/AudioOutput、PlaybackDiagnosticCollector、SurfaceDiagnosticCollector、SystemAudioDiagnosticCollector；现有ExoUtil/runtime selector/vendor audio provider/engine/公共Activity、DiagnosticEvent及本文件/索引。
 - Evidence：研究R01–R19、最终AAR javap；双端最终Java编译36秒通过、schema静态检查通过，不代表实播验证。
 - Unverified：新代码、真实设备导出/播放/性能；不运行用户已要求自行执行的测试。
 - Residual risks：来源关联、输出生命周期、native过滤/缓存、平台边界；使用只读装饰与明确未知状态。
 - Rollback：上述HEAD；本单元commit/tag由guard回执记录。
-- Exactly one next action：Exo单元guard收尾后，实现D3 MPV持续native日志、缓存字段状态/静默尾部健康及视频局部失败。
+- Exactly one next action：D3 guard收尾后实施D4 IJK最小同等采集及私有journal/退出信息恢复。

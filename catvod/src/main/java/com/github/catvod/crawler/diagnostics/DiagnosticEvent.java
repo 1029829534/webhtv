@@ -65,6 +65,8 @@ public final class DiagnosticEvent {
     private final JsonObject requested = new JsonObject();
     private final JsonObject coverage = new JsonObject();
     private String pinKey;
+    private boolean critical;
+    private boolean truncated;
 
     public DiagnosticEvent(String event, String trace, String instance, long generation, long attempt) {
         if (!EVENTS.contains(event)) throw new IllegalArgumentException("Unknown diagnostic event");
@@ -90,6 +92,20 @@ public final class DiagnosticEvent {
     public DiagnosticEvent coverage(String name, Status status) { put(coverage, name, status == Status.KNOWN ? true : null, status); return this; }
     public DiagnosticEvent pin(String key) { pinKey = label(key); return this; }
     public String pinKey() { return pinKey; }
+    public boolean critical() { return critical || pinKey != null; }
+    public boolean truncated() { return truncated; }
+
+    /** A bounded native message, still sanitized, with explicit truncation rather than a silent label cut. */
+    public DiagnosticEvent message(String text) {
+        String safe = DiagnosticText.clean(text).text();
+        JsonObject fact = new JsonObject();
+        fact.addProperty("status", Status.KNOWN.value);
+        fact.addProperty("value", safe.substring(0, Math.min(1800, safe.length())));
+        observed.add("message", fact);
+        truncated = safe.length() > 1800;
+        observed("truncated", truncated);
+        return this;
+    }
 
     public DiagnosticEvent source(String engine, String version, String role, String source, String association,
                                   String eventMediaId, String currentMediaId, long sourceSeq, long capturedAtNs) {
@@ -111,6 +127,7 @@ public final class DiagnosticEvent {
         if (!Set.of("fatal", "error", "warn", "info", "debug", "trace").contains(level))
             throw new IllegalArgumentException("Unknown diagnostic severity");
         root.addProperty("level", level);
+        critical = "fatal".equals(level) || "error".equals(level) || "warn".equals(level);
         return this;
     }
 

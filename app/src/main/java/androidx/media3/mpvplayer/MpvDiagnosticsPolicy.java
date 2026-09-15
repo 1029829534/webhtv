@@ -20,6 +20,33 @@ final class MpvDiagnosticsPolicy {
     private MpvDiagnosticsPolicy() {
     }
 
+    static boolean includedByLogLevel(String prefix, int level, String settings) {
+        int threshold = 30, specificity = -1;
+        if (settings != null) for (String entry : settings.split(",")) {
+            String[] pair = entry.split("=", 2);
+            if (pair.length != 2) continue;
+            String component = pair[0].trim();
+            int rank = "all".equals(component) ? 0 : prefix != null
+                    && (prefix.equals(component) || prefix.startsWith(component + "/")) ? component.length() : -1;
+            if (rank < 0 || rank < specificity) continue;
+            threshold = switch (pair[1].trim()) {
+                case "no" -> 0; case "fatal" -> 10; case "error" -> 20; case "warn" -> 30;
+                case "info", "status" -> 40; case "v" -> 50; case "debug" -> 60; case "trace" -> 70;
+                default -> threshold;
+            };
+            specificity = rank;
+        }
+        return level <= threshold;
+    }
+
+    static String diagnosticLogLevel(String base) {
+        StringBuilder result = new StringBuilder(base == null ? "all=warn" : base);
+        for (String component : new String[]{"vd", "ffmpeg/video", "ffmpeg/audio", "vo", "ao", "cplayer"}) {
+            if (!includedByLogLevel(component, 40, base)) result.append(',').append(component).append("=info");
+        }
+        return result.toString();
+    }
+
     static boolean allowsSynchronousProperties(Request request, boolean debugLogEnabled) {
         if (request == null) return false;
         return switch (request) {

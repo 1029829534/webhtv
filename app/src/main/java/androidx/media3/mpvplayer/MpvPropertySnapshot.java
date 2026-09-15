@@ -19,6 +19,48 @@ final class MpvPropertySnapshot {
     private final Map<String, Object> values = new HashMap<>();
     private TrackList tracks = TrackList.empty();
     private long generation;
+    record DiagnosticValue(Object value, long generation, long updatedAtMs, String status) {}
+    record DiagnosticSnapshot(long generation, Map<String, DiagnosticValue> values, Map<String, Integer> registrations,
+                              TrackList tracks, boolean tracksObserved, long lateEvents, long nodeErrors) {}
+    private final Map<String, DiagnosticValue> diagnosticValues = new HashMap<>();
+    private final Map<String, Integer> registrations = new HashMap<>();
+    private TrackList diagnosticTracks = TrackList.empty();
+    private boolean diagnosticTracksObserved;
+    private long diagnosticGeneration, diagnosticCapture = -1, lateEvents, nodeErrors;
+
+    synchronized void diagnosticBegin(long nextGeneration) {
+        diagnosticGeneration = nextGeneration;
+        diagnosticValues.entrySet().removeIf(entry -> !Set.of("mpv-version", "ffmpeg-version", "options/msg-level", "hwdec",
+                "gpu-api", "volume", "mute", "speed", "audio-device", "audio-delay", "audio-spdif").contains(entry.getKey()));
+        diagnosticValues.replaceAll((name, value) -> new DiagnosticValue(value.value(), nextGeneration, value.updatedAtMs(), value.status()));
+        diagnosticTracks = TrackList.empty(); diagnosticTracksObserved = false;
+    }
+
+    synchronized void diagnosticRegister(String property, int result) { registrations.put(property, result); }
+
+    synchronized void diagnosticUpdate(long eventGeneration, String property, Object value, long nowMs, long capture) {
+        if (diagnosticCapture != capture) {
+            diagnosticCapture = capture; diagnosticValues.clear(); diagnosticTracks = TrackList.empty();
+            diagnosticTracksObserved = false; lateEvents = nodeErrors = 0;
+        }
+        if (eventGeneration != diagnosticGeneration) { lateEvents++; return; }
+        if ("track-list".equals(property)) {
+            diagnosticTracks = value instanceof TrackList list ? list : TrackList.empty();
+            diagnosticTracksObserved = value instanceof TrackList;
+            if (!diagnosticTracks.valid()) nodeErrors++;
+        } else if (MpvDiagnosticCollector.propertyAllowed(property)) {
+            Object bounded = value instanceof String text && text.length() > 2048 ? text.substring(0, 2048) : value;
+            diagnosticValues.put(property, new DiagnosticValue(bounded, eventGeneration, nowMs,
+                    value == null ? "unavailable" : "known"));
+        }
+    }
+
+    synchronized DiagnosticSnapshot diagnosticSnapshot(long capture) {
+        boolean current = diagnosticCapture == capture;
+        return new DiagnosticSnapshot(diagnosticGeneration, current ? Map.copyOf(diagnosticValues) : Map.of(), Map.copyOf(registrations),
+                current ? diagnosticTracks : TrackList.empty(), current && diagnosticTracksObserved,
+                current ? lateEvents : 0, current ? nodeErrors : 0);
+    }
 
     record TrackList(List<Map<String, Object>> entries, boolean valid) {
         static TrackList empty() {

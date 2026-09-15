@@ -75,11 +75,14 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
     private final ArrayDeque<Entry> memory = new ArrayDeque<>();
     private final LinkedHashMap<String, Entry> pinned = new LinkedHashMap<>();
     private final LinkedHashSet<String> origins = new LinkedHashSet<>();
+    private final LinkedHashMap<String, JsonObject> collectorHealth = new LinkedHashMap<>();
+    private final LinkedHashSet<String> partialCollectors = new LinkedHashSet<>();
     private Thread writer;
     private volatile boolean enabled;
     private boolean stopped, clearPending, restorePending, restoredHistory;
     private int queueBytes, memoryBytes, pinnedBytes, highWatermark;
-    private long generation = 1, sequence, version, droppedNormal, droppedCritical, evictedMemory, evictedPinned;
+    private volatile long generation = 1;
+    private long sequence, version, droppedNormal, droppedCritical, evictedMemory, evictedPinned;
     private long truncated, writeFailures, lastFlushedSeq, lastProcessedSeq, persistedBytes, collectorFailures;
     private long capturedAtNanos, lastWriterProgressNanos, rotatedSegments, exportFailures;
     private String lastWriteError = "none";
@@ -92,7 +95,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
     public boolean isEnabled() { return enabled; }
     public String runId() { return runId; }
     public long version() { synchronized (lock) { return version; } }
-    public long generation() { synchronized (lock) { return generation; } }
+    public long generation() { return generation; }
 
     public void start(boolean restore) {
         synchronized (lock) {
@@ -117,7 +120,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
 
     private void clearLocked() {
         generation++;
-        queue.clear(); memory.clear(); pinned.clear(); origins.clear();
+        queue.clear(); memory.clear(); pinned.clear(); origins.clear(); collectorHealth.clear(); partialCollectors.clear();
         queueBytes = memoryBytes = pinnedBytes = highWatermark = 0;
         droppedNormal = droppedCritical = evictedMemory = evictedPinned = truncated = writeFailures = collectorFailures = exportFailures = 0;
         lastFlushedSeq = lastProcessedSeq = 0;
@@ -149,13 +152,30 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         long epoch = generation();
         long sourceSeq = sourceSequence.incrementAndGet();
         try {
-            offer("av-diag", event.json(), event.pinKey(), true, true, captured, sourceSeq, false, List.of(), epoch);
+            offer("av-diag", event.json(), event.pinKey(), event.critical(), true, captured, sourceSeq, event.truncated(), List.of(), epoch);
         } catch (RuntimeException error) {
             collectorFailure(); // Diagnostics cannot throw into a player callback.
         }
     }
 
     public void collectorFailure() { synchronized (lock) { collectorFailures++; version++; } }
+
+    public void collectorHealth(String id, DiagnosticEvent event, boolean partial, long captureGeneration) {
+        if (!enabled) return;
+        try {
+            JsonObject value = com.google.gson.JsonParser.parseString(event.json()).getAsJsonObject();
+            synchronized (lock) {
+                if (!enabled || generation != captureGeneration) return;
+                collectorHealth.put(id, value);
+                if (partial) partialCollectors.add(id); else partialCollectors.remove(id);
+                while (collectorHealth.size() > 16) {
+                    String oldest = collectorHealth.keySet().iterator().next();
+                    collectorHealth.remove(oldest); partialCollectors.remove(oldest);
+                }
+                version++;
+            }
+        } catch (RuntimeException ignored) { collectorFailure(); }
+    }
 
     private void offer(String tag, String text, String pinKey, boolean critical, boolean structured,
                        long captured, long sourceSeq, boolean wasTruncated, List<String> foundOrigins, long epoch) {
@@ -252,9 +272,12 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         health.addProperty("writerLastProgressAtNs", lastWriterProgressNanos == 0 ? null : lastWriterProgressNanos);
         health.addProperty("writerProgressStatus", lastWriterProgressNanos == 0 ? "not-collected" : "known");
         health.addProperty("nativeOverflow", "not-collected");
+        JsonObject collectors = new JsonObject();
+        for (java.util.Map.Entry<String, JsonObject> entry : collectorHealth.entrySet()) collectors.add(entry.getKey(), entry.getValue().deepCopy());
+        health.add("collectorHealth", collectors);
         boolean partial = droppedNormal + droppedCritical + evictedPinned + truncated + writeFailures + collectorFailures > 0
                 || sequence > lastFlushedSeq || clearPending || restorePending || restoredHistory || rotatedSegments > 0
-                || ("memory-window".equals(scope) && evictedMemory > 0);
+                || ("memory-window".equals(scope) && evictedMemory > 0) || !partialCollectors.isEmpty();
         health.addProperty("completeness", partial ? "partial" : "complete-within-declared-window");
         return health;
     }

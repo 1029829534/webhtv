@@ -186,8 +186,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private final MpvAutoHlsBitrateState autoHlsBitrateState;
     private final MpvCacheObserverState cacheObserverState;
     private final MpvPropertySnapshot propertySnapshot = new MpvPropertySnapshot();
-    private final MpvDiagnosticsPolicy.NativeLogWindow nativeLogWindow =
-            new MpvDiagnosticsPolicy.NativeLogWindow();
+    private final MpvDiagnosticCollector diagnostics = new MpvDiagnosticCollector(propertySnapshot);
+    private String diagnosticBaseMsgLevel;
+    private String diagnosticAppliedMsgLevel;
+    private volatile boolean diagnosticLogLevelApplied;
+    private final AtomicBoolean diagnosticLogUpdatePending = new AtomicBoolean();
     private final java.util.concurrent.atomic.AtomicLong propertyGeneration =
             new java.util.concurrent.atomic.AtomicLong();
     private record PropertyUpdate(long generation, Object value) {}
@@ -618,6 +621,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     protected ListenableFuture<?> handleStop() {
+        diagnostics.end(MPVLib.MpvEndFileReason.MPV_END_FILE_REASON_STOP, 0);
         stopInternal(true);
         stopMainThreadWatchdog();
         return Futures.immediateVoidFuture();
@@ -625,6 +629,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     protected ListenableFuture<?> handleRelease() {
+        diagnostics.end(MPVLib.MpvEndFileReason.MPV_END_FILE_REASON_QUIT, 0);
         prepareTerminalRelease();
         released = true;
         startMainThreadWatchdog();
@@ -1255,6 +1260,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     public void event(int eventId) {
         long generation = eventId == MPVLib.MpvEvent.MPV_EVENT_START_FILE
                 ? propertyGeneration.incrementAndGet() : propertyGeneration.get();
+        if (eventId == MPVLib.MpvEvent.MPV_EVENT_START_FILE) propertySnapshot.diagnosticBegin(generation);
+        diagnostics.event(eventId, generation);
         postToMain(() -> {
             if (released) return;
             if (eventId == MPVLib.MpvEvent.MPV_EVENT_START_FILE)
@@ -1281,6 +1288,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     public void eventCommandReply(long requestId, int error) {
+        diagnostics.command("async-reply", requestId, error, "completed", -1);
         if (requestId == pendingOsdSurfaceRequestId) {
             postToMain(() -> handleOsdSurfaceReply(requestId, error));
             return;
@@ -1296,43 +1304,29 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     public void endFile(int reason, int error, String errorText) {
+        diagnostics.end(reason, error);
         postToMain(() -> handleEndFile(reason, error, errorText));
     }
 
     @Override
     public void logMessage(String prefix, int level, String text) {
         if (released) return;
+        diagnostics.nativeLog(prefix, level, text);
         int performanceKind = MpvDiagnosticsPolicy.felPerformanceKind(prefix, level, text);
         if (performanceKind >= 0) {
-            // Measurements cannot change playback state. Keep them out of the UI
-            // queue and synchronous pretty Logcat output, even when rate-limited.
-            if (SpiderDebug.isEnabled() && nativeLogWindow.allowPerformance(
-                    SystemClock.elapsedRealtime(), performanceKind)) {
-                int suppressed = nativeLogWindow.takePerformanceSuppressed();
-                String measurement = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text.trim());
-                com.github.catvod.crawler.DebugLogStore.add("mpv-native",
-                        "trace=" + playbackTraceId + " " + measurement
-                                + (suppressed > 0 ? " perf-rate-limited=" + suppressed : ""));
-            }
+            // Diagnostic measurements are persisted directly, never sent through playback state.
             return;
         }
+        // Added INFO coverage must not introduce new inputs to the legacy recovery policy.
+        if (diagnosticLogLevelApplied && !MpvDiagnosticsPolicy.includedByLogLevel(prefix, level, diagnosticBaseMsgLevel)) return;
         String line = MpvDiagnosticsPolicy.redactSensitive(prefix + ": " + text);
         String traceId = playbackTraceId;
         long logGeneration = propertyGeneration.get();
         boolean debug = SpiderDebug.isEnabled();
         boolean fatalFel = MpvDiagnosticsPolicy.isFatalFelLog(level, text);
-        boolean immediateCandidate = debug && MpvDiagnosticsPolicy.shouldLogNativeImmediately(level, line);
-        boolean loggedImmediately = immediateCandidate
-                && nativeLogWindow.allow(SystemClock.elapsedRealtime(), line);
         long enqueuedAtMs = debug ? SystemClock.elapsedRealtime() : 0;
         // This callback must never call MPV. Record essential native evidence before
         // a stalled UI can delay it; playback state is still confined to the main thread.
-        if (loggedImmediately) {
-            int suppressed = nativeLogWindow.takeSuppressed();
-            if (suppressed > 0) PlaybackTrace.log("mpv-native", traceId,
-                    "rate-limited %d native lines in previous window", suppressed);
-            PlaybackTrace.log("mpv-native", traceId, "%s", line);
-        }
         postToMain(() -> {
             if (released || logGeneration != propertyGeneration.get()) return;
             if (enqueuedAtMs > 0) {
@@ -1354,12 +1348,13 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             maybeRetryDtsHdAsCore(line);
             String lower = line.toLowerCase(Locale.US);
             if (lower.contains("sub") || lower.contains("font") || lower.contains("track switched") || lower.contains("mkv: select track")) appendSubtitleDiagnostic("native " + line);
-            if (!immediateCandidate && shouldDebugLogMpvLine(line)) PlaybackTrace.log("mpv", traceId, "%s", line);
+            // All subscribed messages already entered the structured diagnostic sink above.
         });
     }
 
     private void openCurrent(long generation) {
         if (!mediaReplacementCoordinator.isCurrent(generation) || mediaItem == null || mediaItem.localConfiguration == null) return;
+        diagnostics.begin(playbackTraceId);
         startMainThreadWatchdog();
         try {
             ensureInitialized();
@@ -1550,6 +1545,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             applyPostInitOptions();
             applyShaderPipeline(true);
             observeProperties();
+            syncDiagnosticLogLevel();
         }
     }
 
@@ -1687,6 +1683,12 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     }
 
     private void observeProperties() {
+        for (String property : new String[]{"mpv-version", "ffmpeg-version", "options/msg-level", "hwdec", "hwdec-interop",
+                "video-codec", "audio-codec", "current-tracks/video/decoder", "current-tracks/video/codec-profile",
+                "audio-params/channels", "audio-out-params/channels", "video-dec-params/pixelformat", "video-params/pixelformat",
+                "video-out-params/pixelformat", "audio-spdif", "options/af"}) observe(property, MPVLib.MpvFormat.MPV_FORMAT_STRING);
+        for (String property : new String[]{"volume", "speed", "audio-delay", "video-pts", "audio-pts"}) observe(property, MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
+        observe("mute", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
         observe("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
         observe("time-pos/full", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
         observe("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
@@ -1775,6 +1777,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void dispatchProperty(String property, @Nullable Object value) {
         PropertyUpdate update = new PropertyUpdate(propertyGeneration.get(), value);
+        if (SpiderDebug.isEnabled()) {
+            propertySnapshot.diagnosticUpdate(update.generation(), property, value, SystemClock.elapsedRealtime(),
+                    com.github.catvod.crawler.DebugLogStore.captureGeneration());
+            diagnostics.propertyChanged(property);
+        }
         if (!isCoalescedProperty(property)) {
             postToMain(() -> applyPropertyUpdate(property, update));
             return;
@@ -1847,6 +1854,15 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void handleProperty(String property, @Nullable Object value) {
         if (released) return;
+        if ("options/msg-level".equals(property) && value instanceof String text) {
+            // An initial mpv.conf readback or a later user change is a new restoration baseline.
+            // Our own observer acknowledgement must not become that baseline.
+            if (!text.equals(diagnosticAppliedMsgLevel)) {
+                diagnosticBaseMsgLevel = text;
+                diagnosticLogLevelApplied = false;
+            }
+            syncDiagnosticLogLevel();
+        }
         if (MpvConfigStore.CUSTOM_BUTTON_STATE_PROPERTY.equals(property)) {
             // user-data is a NODE property: MPV_FORMAT_STRING serializes it as JSON,
             // including quotes around string values. Decode before matching button IDs.
@@ -3675,6 +3691,13 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void runMainThreadWatchdog() {
         if (!mainThreadWatchdogRunning) return;
+        diagnostics.tick(false);
+        if (SpiderDebug.isEnabled() != diagnosticLogLevelApplied && diagnosticLogUpdatePending.compareAndSet(false, true)) {
+            mainHandler.post(() -> {
+                diagnosticLogUpdatePending.set(false);
+                if (!released) syncDiagnosticLogLevel();
+            });
+        }
         long nowMs = SystemClock.elapsedRealtime();
         long postedAtMs = mainThreadHeartbeatPostedAtMs;
         if (mainThreadHeartbeatPending.get() && postedAtMs > 0) {
@@ -5412,7 +5435,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private int mpvSetOptionString(String property, String value) {
         long startedAtMs = beginMpvNativeCall("set-option", property);
         try {
-            return MPVLib.setOptionString(property, value);
+            int result = MPVLib.setOptionString(property, value);
+            if ("msg-level".equals(property) && result >= 0) diagnosticBaseMsgLevel = value;
+            diagnostics.option(property, value, result, false);
+            return result;
         } finally {
             endMpvNativeCall(startedAtMs, "set-option", property);
         }
@@ -5495,6 +5521,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         long startedAtMs = beginMpvNativeCall("set-string", property);
         try {
             int result = MPVLib.setPropertyString(property, value);
+            diagnostics.option(property, value, result, true);
             if (result >= 0) propertySnapshot.acceptedWrite(property, value);
             return result;
         } finally {
@@ -5506,7 +5533,9 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         String target = command == null || command.length == 0 ? "unknown" : command[0];
         long startedAtMs = beginMpvNativeCall("command", target);
         try {
-            return MPVLib.command(command);
+            int result = MPVLib.command(command);
+            diagnostics.command(target, 0, result, "returned", startedAtMs < 0 ? -1 : SystemClock.elapsedRealtime() - startedAtMs);
+            return result;
         } finally {
             endMpvNativeCall(startedAtMs, "command", target);
         }
@@ -5516,7 +5545,9 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         String target = command == null || command.length == 0 ? "unknown" : command[0];
         long startedAtMs = beginMpvNativeCall("enqueue-command", target);
         try {
-            return MPVLib.enqueueCommand(requestId, command);
+            int result = MPVLib.enqueueCommand(requestId, command);
+            diagnostics.command(target, requestId, result, "submitted", startedAtMs < 0 ? -1 : SystemClock.elapsedRealtime() - startedAtMs);
+            return result;
         } finally {
             endMpvNativeCall(startedAtMs, "enqueue-command", target);
         }
@@ -5525,7 +5556,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private int mpvObserveProperty(String property, int format) {
         long startedAtMs = beginMpvNativeCall("observe", property);
         try {
-            return MPVLib.observeProperty(property, format);
+            int result = MPVLib.observeProperty(property, format);
+            propertySnapshot.diagnosticRegister(property, result);
+            diagnostics.registration(property, format, result);
+            return result;
         } finally {
             endMpvNativeCall(startedAtMs, "observe", property);
         }
@@ -5574,6 +5608,18 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             mpvSetOptionString(name, value);
         } catch (Throwable ignored) {
         }
+    }
+
+    private void syncDiagnosticLogLevel() {
+        if (!initialized || released) return;
+        boolean enabled = SpiderDebug.isEnabled();
+        if (enabled == diagnosticLogLevelApplied || diagnosticBaseMsgLevel == null) return;
+        String value = enabled ? MpvDiagnosticsPolicy.diagnosticLogLevel(diagnosticBaseMsgLevel) : diagnosticBaseMsgLevel;
+        // A diagnostic-only option write on the existing owner looper; never a synchronous query.
+        String previous = diagnosticAppliedMsgLevel;
+        diagnosticAppliedMsgLevel = value;
+        if (setRuntimeStringChecked("msg-level", value)) diagnosticLogLevelApplied = enabled;
+        else diagnosticAppliedMsgLevel = previous;
     }
 
     private void setRuntimeString(String name, String value) {
