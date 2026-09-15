@@ -74,6 +74,7 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
         }
         if (collector == null) return item;
         Context owner = collector.log.begin(trace, "foreground");
+        collector.log.protectedMedia(item.localConfiguration != null && item.localConfiguration.drmConfiguration != null);
         collector.seekEpoch = 0;
         // The private tag follows EventTime's media item through replace/seek/reprepare.
         // Keep an existing application tag intact; its events then explicitly lack association.
@@ -184,6 +185,14 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
                 });
             }
         }
+    }
+
+    @Override public void onTimelineChanged(EventTime time, int reason) {
+        if (time.timeline.isEmpty()) return;
+        Timeline.Window window = time.timeline.getWindow(time.windowIndex, new Timeline.Window());
+        event(time, "media.container", e -> e.observed("durationMs", window.getDurationMs() == C.TIME_UNSET ? null : window.getDurationMs())
+                .observed("seekable", window.isSeekable).observed("live", window.isLive()).observed("reason", reason)
+                .observed("source", "Media3 timeline").unknown("backend", NOT_COLLECTED));
     }
 
     @Override public void onRenderedFirstFrame(EventTime t, Object output, long time) {

@@ -40,9 +40,21 @@ final class MpvDiagnosticsPolicy {
     }
 
     static String diagnosticLogLevel(String base) {
+        return diagnosticLogLevel(base, com.github.catvod.crawler.diagnostics.DiagnosticCategories.ALL, false);
+    }
+
+    static String diagnosticLogLevel(String base, int categories, boolean deep) {
         StringBuilder result = new StringBuilder(base == null ? "all=warn" : base);
-        for (String component : new String[]{"vd", "ffmpeg/video", "ffmpeg/audio", "vo", "ao", "cplayer"}) {
-            if (!includedByLogLevel(component, 40, base)) result.append(',').append(component).append("=info");
+        for (String component : new String[]{"vd", "ffmpeg/video", "ffmpeg/audio", "vo", "ao", "cplayer", "demux", "sub"}) {
+            com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category category = switch (component) {
+                case "vd", "ffmpeg/video", "vo" -> com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category.VIDEO;
+                case "ffmpeg/audio", "ao" -> com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category.AUDIO;
+                case "demux" -> com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category.NETWORK;
+                case "sub" -> com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category.SUBTITLE;
+                default -> com.github.catvod.crawler.diagnostics.DiagnosticCategories.Category.SYSTEM;
+            };
+            if (com.github.catvod.crawler.diagnostics.DiagnosticCategories.accepts(categories, category)
+                    && !includedByLogLevel(component, deep ? 60 : 40, base)) result.append(',').append(component).append(deep ? "=debug" : "=info");
         }
         return result.toString();
     }

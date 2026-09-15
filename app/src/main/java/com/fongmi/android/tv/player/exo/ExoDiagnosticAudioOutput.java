@@ -33,6 +33,8 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     private long epoch, calls, requested, accepted, shorts, zeros, errors, maxWriteUs, lastSummaryMs, lastWriteMs;
     private long rawHead = -1, extendedHead, lastTimestampMs;
     private long firstPts = Long.MIN_VALUE, lastPts = Long.MIN_VALUE;
+    private final com.fongmi.android.tv.player.PcmDiagnosticProbe pcmProbe = new com.fongmi.android.tv.player.PcmDiagnosticProbe();
+    private final int pcmEncoding, pcmChannels;
 
     static AudioOutput wrap(AudioOutput output, AudioOutputProvider.OutputConfig config, ExoDiagnosticCollector collector) {
         return collector == null ? output : new ExoDiagnosticAudioOutput(output, config, collector);
@@ -74,7 +76,10 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
         if (collector == null) return delegate;
         return new ForwardingAudioSink(delegate) {
             private long lastMs, calls, bytes;
+            private androidx.media3.common.Format inputFormat;
+            private final com.fongmi.android.tv.player.PcmDiagnosticProbe inputProbe = new com.fongmi.android.tv.player.PcmDiagnosticProbe();
             @Override public void configure(AudioSinkConfig config) throws ConfigurationException {
+                inputFormat = config.format;
                 collector.log.emit("audio.processing", "audio-sink-config", e -> {
                     ExoDiagnosticCollector.format(e, config.format);
                     e.observed("mapping", config.outputChannelMapping == null ? null : config.outputChannelMapping.toString())
@@ -86,6 +91,8 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
                 if (!PlaybackDiagnosticCollector.enabled()) return super.handleBuffer(buffer, pts, count);
                 int position = buffer.position();
                 boolean result = super.handleBuffer(buffer, pts, count);
+                if (inputFormat != null && "audio/raw".equals(inputFormat.sampleMimeType)) inputProbe.sample(collector.log, collector.log.context(),
+                        buffer, position, buffer.position(), inputFormat.pcmEncoding, inputFormat.channelCount, "sink-before-processors", collector.log.protectedMedia());
                 calls++; bytes += buffer.position() - position;
                 long now = SystemClock.elapsedRealtime();
                 if (now - lastMs >= 5000) {
@@ -109,6 +116,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     private ExoDiagnosticAudioOutput(AudioOutput output, AudioOutputProvider.OutputConfig config, ExoDiagnosticCollector collector) {
         super(output); log = collector.log; owner = log.context();
         track = output instanceof AudioTrackAudioOutput audioTrack ? audioTrack.getAudioTrack() : null;
+        pcmEncoding = config.encoding; pcmChannels = track == null ? Integer.bitCount(config.channelMask) : track.getChannelCount();
         event("audio.output.configure", e -> e.observed("encoding", config.encoding).observed("sampleRate", config.sampleRate)
                 .observed("channelMask", config.channelMask).observed("offload", config.isOffload).observed("tunneling", config.isTunneling)
                 .observed("sessionId", output.getAudioSessionId()).observed("bufferSize", config.bufferSize).observed("bufferUnit", "bytes")
@@ -132,6 +140,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
         try {
             boolean result = super.write(buffer, units, pts);
             int consumed = buffer.position() - position;
+            pcmProbe.sample(log, owner, buffer, position, buffer.position(), pcmEncoding, pcmChannels, "audio-output-after-processors", log.protectedMedia());
             calls++; requested += remaining; accepted += consumed;
             if (consumed == 0) zeros++; else if (consumed < remaining) shorts++;
             lastWriteMs = SystemClock.elapsedRealtime(); lastPts = pts;

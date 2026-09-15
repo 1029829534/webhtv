@@ -7,6 +7,7 @@ import com.github.catvod.crawler.diagnostics.DiagnosticEvent;
 import com.github.catvod.crawler.diagnostics.DiagnosticLogBuffer;
 import com.github.catvod.crawler.diagnostics.RollingDiagnosticFile;
 import com.github.catvod.crawler.diagnostics.JournaledDiagnosticFile;
+import com.github.catvod.crawler.diagnostics.DiagnosticCategories;
 import com.github.catvod.utils.Prefers;
 
 import java.io.ByteArrayInputStream;
@@ -17,15 +18,38 @@ public class DebugLogStore {
     private static final String PREF_ENABLED = "debug_log";
     private static volatile boolean enabled;
     private static volatile DiagnosticLogBuffer buffer;
+    private static final String PREF_CATEGORIES = "debug_log_categories";
+    private static volatile int categories = DiagnosticCategories.ALL;
     private static boolean crashHandlerInstalled;
 
     public static boolean isEnabled() { return enabled; }
+    public static int categories() { return categories; }
+    public static boolean categoryEnabled(DiagnosticCategories.Category category) {
+        return enabled && DiagnosticCategories.accepts(categories, category);
+    }
+    public static boolean acceptsEvent(String name) {
+        return enabled && (categories == DiagnosticCategories.ALL || name.startsWith("mpv.")
+                || DiagnosticCategories.accepts(categories, DiagnosticCategories.event(name)));
+    }
+    public static boolean acceptsTag(String tag) {
+        return enabled && (categories == DiagnosticCategories.ALL || DiagnosticCategories.accepts(categories, DiagnosticCategories.text(tag)));
+    }
+    public static synchronized void setCategory(DiagnosticCategories.Category category, boolean value) {
+        categories = value ? categories | category.bit : categories & ~category.bit;
+        Prefers.put(PREF_CATEGORIES, categories);
+        logCategories("category-changed");
+    }
+    private static void logCategories(String reason) {
+        event(new DiagnosticEvent("diag.session.begin", "none", "process", 0, 0)
+                .observed("reason", reason).observed("config", DiagnosticCategories.summary(categories))
+                .observed("mode", "full-selected-categories").pin("diagnostic-categories"));
+    }
 
     private static synchronized DiagnosticLogBuffer create() {
         if (buffer == null) {
             DiagnosticLogBuffer.Limits limits = DiagnosticLogBuffer.Limits.standard();
-            buffer = new DiagnosticLogBuffer(limits, new JournaledDiagnosticFile(
-                    new RollingDiagnosticFile(Init.context().getCacheDir(), limits), Init.context().getFilesDir()),
+            buffer = new DiagnosticLogBuffer(limits, new com.github.catvod.crawler.diagnostics.IncidentDiagnosticFile(new JournaledDiagnosticFile(
+                    new RollingDiagnosticFile(Init.context().getCacheDir(), limits), Init.context().getFilesDir()), Init.context().getCacheDir()),
                     new DiagnosticLogBuffer.Clock() {
                         @Override public long wallMillis() { return System.currentTimeMillis(); }
                         @Override public long monotonicNanos() { return SystemClock.elapsedRealtimeNanos(); }
@@ -60,6 +84,8 @@ public class DebugLogStore {
     }
 
     public static synchronized void setEnabled(boolean value) {
+        categories = Prefers.getInt(PREF_CATEGORIES, DiagnosticCategories.ALL) & DiagnosticCategories.ALL;
+        if (!value) com.github.catvod.crawler.diagnostics.DiagnosticCapture.stop("diagnostics-disabled");
         if (value) create().start(false);
         enabled = value;
         Prefers.put(PREF_ENABLED, value);
@@ -68,6 +94,7 @@ public class DebugLogStore {
     }
 
     public static synchronized void restoreEnabled() {
+        categories = Prefers.getInt(PREF_CATEGORIES, DiagnosticCategories.ALL) & DiagnosticCategories.ALL;
         enabled = Prefers.getBoolean(PREF_ENABLED);
         if (!enabled) return;
         create().start(true);
@@ -75,6 +102,7 @@ public class DebugLogStore {
     }
 
     private static void beginCollection(String reason) {
+        logCategories(reason);
         event(new DiagnosticEvent("diag.session.begin", "none", "process", 0, 0)
                 .observed("mode", "standard").observed("reason", reason)
                 .unknown("captureStartedLate", DiagnosticEvent.Status.UNKNOWN)
@@ -90,13 +118,13 @@ public class DebugLogStore {
 
     static void add(String tag, String message, boolean critical) {
         DiagnosticLogBuffer current = buffer;
-        if (!enabled || current == null) return;
+        if (!acceptsTag(tag) || current == null) return;
         current.add(tag, message, critical);
     }
 
     public static void event(DiagnosticEvent event) {
         DiagnosticLogBuffer current = buffer;
-        if (enabled && current != null) current.event(event);
+        if (enabled && current != null && DiagnosticCategories.accepts(categories, event.category())) current.event(event);
     }
 
     public static void collectorFailure() {
@@ -136,7 +164,7 @@ public class DebugLogStore {
         DiagnosticLogBuffer current = buffer;
         if (enabled && current != null) return current.export(750);
         byte[] bytes = "调试日志未开启".getBytes(StandardCharsets.UTF_8);
-        return new DiagnosticLogBuffer.Export(new ByteArrayInputStream(bytes), bytes.length, true);
+        return new DiagnosticLogBuffer.Export(new ByteArrayInputStream(bytes), bytes.length, true, () -> new ByteArrayInputStream(bytes));
     }
 
     public static int size() {
@@ -153,6 +181,7 @@ public class DebugLogStore {
     public static long captureGeneration() { return buffer == null ? 0 : buffer.generation(); }
 
     public static synchronized void clear() {
+        com.github.catvod.crawler.diagnostics.DiagnosticCapture.stop("diagnostics-cleared");
         DiagnosticLogBuffer current = buffer;
         if (current == null) return;
         current.clear();

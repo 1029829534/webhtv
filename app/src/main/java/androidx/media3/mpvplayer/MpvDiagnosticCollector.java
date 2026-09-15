@@ -35,13 +35,20 @@ final class MpvDiagnosticCollector {
     private volatile String requestedMsgLevel;
     private volatile boolean closed;
     // Controller requests may advance before the native thread finishes the previous file.
-    private Context nativeOwner = UNRESOLVED, pendingLoadOwner;
+    private volatile Context nativeOwner = UNRESOLVED;
+    private Context pendingLoadOwner;
     private long nativeGeneration = -1, loadSequence, pendingLoadId;
     private final Map<String, MpvPropertySnapshot.DiagnosticValue> emitted = new java.util.HashMap<>();
     private final Set<String> emittedMissing = new java.util.HashSet<>();
     private MpvPropertySnapshot.TrackList emittedTracks;
+    private int categories = -1;
 
     MpvDiagnosticCollector(MpvPropertySnapshot snapshot) { this.snapshot = snapshot; }
+    boolean depthActive() {
+        Context owner = nativeOwner;
+        com.github.catvod.crawler.diagnostics.DiagnosticCapture.Session capture = com.github.catvod.crawler.diagnostics.DiagnosticCapture.current(owner.trace(), owner.generation(), owner.attempt());
+        return capture != null && capture.instance().equals(log.instanceId());
+    }
 
     static boolean propertyAllowed(String name) {
         return PROPERTIES.contains(name) || name.startsWith("video-params/") || name.startsWith("video-out-params/")
@@ -76,7 +83,8 @@ final class MpvDiagnosticCollector {
     }
 
     synchronized void nativeLog(String prefix, int level, String text) {
-        if (!PlaybackDiagnosticCollector.enabled() || text == null) return;
+        if (!PlaybackDiagnosticCollector.enabled() || text == null
+                || !DebugLogStore.categoryEnabled(com.github.catvod.crawler.diagnostics.DiagnosticCategories.nativePrefix(prefix))) return;
         capture();
         long now = SystemClock.elapsedRealtime();
         if (firstNativeMs == 0) firstNativeMs = now;
@@ -172,6 +180,9 @@ final class MpvDiagnosticCollector {
         capture();
         long now = SystemClock.elapsedRealtime();
         if (!force && now - lastTickMs < 5000) return;
+        if (categories != DebugLogStore.categories()) {
+            categories = DebugLogStore.categories(); emitted.clear(); emittedMissing.clear(); emittedTracks = null;
+        }
         lastTickMs = now;
         MpvPropertySnapshot.DiagnosticSnapshot state = snapshot.diagnosticSnapshot(capture);
         Context owner = state.generation() == nativeGeneration ? nativeOwner : UNRESOLVED;

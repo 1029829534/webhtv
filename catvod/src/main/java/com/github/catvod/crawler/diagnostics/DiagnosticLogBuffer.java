@@ -46,15 +46,24 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         long bytes();
         default long rotations() { return 0; }
         default long extraDiskBudgetBytes() { return 0; }
+        /** Constant-time cached flag, no I/O; allows a pending incident to finish in a silent tail. */
+        default boolean needsTick() { return false; }
+        default void tick() throws IOException {}
     }
 
     public static final class Export implements AutoCloseable {
+        public interface Opener { InputStream open() throws IOException; }
         public final InputStream input;
         public final long length;
         public final boolean partial;
+        private final Opener opener;
         public Export(InputStream input, long length, boolean partial) {
-            this.input = input; this.length = length; this.partial = partial;
+            this(input, length, partial, null);
         }
+        public Export(InputStream input, long length, boolean partial, Opener opener) {
+            this.input = input; this.length = length; this.partial = partial; this.opener = opener;
+        }
+        public InputStream openAgain() throws IOException { if (opener == null) throw new IOException("Snapshot cannot be reopened"); return opener.open(); }
         @Override public void close() throws IOException { input.close(); }
     }
 
@@ -340,7 +349,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         String manifest = "# av-diag-manifest {\"schemaVersion\":1,\"hashedBytes\":" + content.length + ",\"sha256\":\""
                 + RollingDiagnosticFile.hex(RollingDiagnosticFile.sha256().digest(content)) + "\",\"hashScope\":\"all-preceding-bytes\"}\n";
         byte[] bytes = (new String(content, StandardCharsets.UTF_8) + manifest).getBytes(StandardCharsets.UTF_8);
-        return new Export(new ByteArrayInputStream(bytes), bytes.length, true);
+        return new Export(new ByteArrayInputStream(bytes), bytes.length, true, () -> new ByteArrayInputStream(bytes));
     }
 
     public static String header(JsonObject health) {
@@ -357,7 +366,9 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
             ExportRequest report = null;
             synchronized (lock) {
                 while (!stopped && !clearPending && !restorePending && queue.isEmpty() && exportRequest == null) {
-                    try { lock.wait(); } catch (InterruptedException ignored) { if (stopped) return; }
+                    boolean timed = persistence.needsTick();
+                    try { lock.wait(timed ? 1000 : 0); } catch (InterruptedException ignored) { if (stopped) return; }
+                    if (timed) break;
                 }
                 if (stopped) return;
                 epoch = generation; clear = clearPending; restore = restorePending;
@@ -401,6 +412,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
                     synchronized (lock) { if (epoch == generation) lastFlushedSeq = batch.get(batch.size() - 1).seq; }
                 }
                 if (report != null && !report.future.isCancelled()) completeExport(report);
+                if (current) persistence.tick();
                 synchronized (lock) {
                     if (epoch == generation) {
                         if (!batch.isEmpty()) lastProcessedSeq = batch.get(batch.size() - 1).seq;

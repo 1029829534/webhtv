@@ -26,7 +26,9 @@ public final class DiagnosticEvent {
             "audio.route", "audio.focus", "audio.volume", "audio.output.lifecycle", "audio.error", "audio.sync",
             "mpv.init", "mpv.option", "mpv.event", "mpv.tracks", "mpv.video.path", "mpv.audio.path", "mpv.runtime",
             "mpv.decoder.attempt", "mpv.output.failure", "mpv.command.result", "mpv.collector.health", "mpv.native.output",
-            "ijk.event", "ijk.runtime", "process.recovery");
+            "ijk.event", "ijk.runtime", "process.recovery", "env.native", "config.change", "input.route", "media.container",
+            "play.resources", "diag.user-mark", "diag.comparison", "diag.capture", "diag.export", "diag.observation",
+            "video.pixel-probe", "audio.pcm-probe");
     private static final Set<String> FIELDS = Set.of("mode", "captureStartedLate", "reason", "controllerStage", "elapsedMs",
             "playerType", "decode", "headersCount", "tracksSummary", "signalSource", "video", "audio", "physicalVideo", "audibility",
             "appVersion", "versionCode", "buildTime", "buildTag", "gitRevision", "media3Version", "flavor", "abi", "process64Bit",
@@ -58,7 +60,14 @@ public final class DiagnosticEvent {
             "nativeLevel", "nativePrefix", "sourceFiltered", "nativeOverflow", "javaDropped", "lateEvents", "nodeErrors",
             "subscriptionLevel", "msgLevel", "captureGeneration", "sampleSpanMs", "registrationResult", "heartbeatAgeMs",
             "nativeHook", "unfinished", "previousRun", "exitReason", "exitStatus", "traceAvailable", "writerFailure",
-            "firstSeenMs", "lastSeenMs", "sourceStage", "propertyGeneration", "ageMs");
+            "firstSeenMs", "lastSeenMs", "sourceStage", "propertyGeneration", "ageMs", "symptom", "captureId", "expiresMs",
+            "parameter", "oldValue", "newValue", "note", "userReported", "probeIndex", "channel", "frames", "rms", "peak",
+            "zeroRatio", "clipped", "nonFinite", "luminance", "blackRatio", "changeRatio", "pixelCount", "protectedMedia",
+            "processorIndex", "processorName", "active", "inputFormat", "outputFormat", "focusChange", "focusGain",
+            "focusResult", "focusAction", "effectiveGain", "javaBytes", "nativeBytes", "lowRam", "trimLevel", "powerSave",
+            "thermalStatus", "batteryLevel", "fingerprintDigest", "library", "buildId", "loadResult", "expectedDigest",
+            "actualDigest", "manifestMatch", "backend", "seekable", "live", "retainedBeforeMs", "retainedAfterMs",
+            "requestedBeforeMs", "requestedAfterMs", "complete", "operationCount", "keyframes", "firstInputMs", "firstOutputMs");
 
     private final JsonObject root = new JsonObject();
     private final JsonObject observed = new JsonObject();
@@ -92,6 +101,14 @@ public final class DiagnosticEvent {
     public DiagnosticEvent coverage(String name, Status status) { put(coverage, name, status == Status.KNOWN ? true : null, status); return this; }
     public DiagnosticEvent pin(String key) { pinKey = label(key); return this; }
     public String pinKey() { return pinKey; }
+    public String name() { return root.get("event").getAsString(); }
+    public DiagnosticCategories.Category category() {
+        if (observed.has("nativePrefix")) {
+            JsonObject prefix = observed.getAsJsonObject("nativePrefix");
+            if (prefix.has("value")) return DiagnosticCategories.nativePrefix(prefix.get("value").getAsString());
+        }
+        return DiagnosticCategories.event(name());
+    }
     public boolean critical() { return critical || pinKey != null; }
     public boolean truncated() { return truncated; }
 
@@ -132,9 +149,11 @@ public final class DiagnosticEvent {
     }
 
     public DiagnosticEvent inferred() { root.addProperty("evidenceClass", "inferred"); return this; }
+    public DiagnosticEvent userReported() { root.addProperty("evidenceClass", "user-reported"); return this; }
 
     public String json() {
         JsonObject result = root.deepCopy();
+        result.addProperty("priority", critical() ? "critical" : "normal");
         if (observed.size() > 0) result.add("observed", observed.deepCopy());
         if (requested.size() > 0) result.add("requested", requested.deepCopy());
         if (coverage.size() > 0) result.add("collectors", coverage.deepCopy());

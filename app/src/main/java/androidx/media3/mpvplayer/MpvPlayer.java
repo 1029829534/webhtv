@@ -190,6 +190,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private String diagnosticBaseMsgLevel;
     private String diagnosticAppliedMsgLevel;
     private volatile boolean diagnosticLogLevelApplied;
+    private volatile boolean diagnosticDepthApplied;
+    private volatile int diagnosticCategoriesApplied = -1;
     private final AtomicBoolean diagnosticLogUpdatePending = new AtomicBoolean();
     private final java.util.concurrent.atomic.AtomicLong propertyGeneration =
             new java.util.concurrent.atomic.AtomicLong();
@@ -3692,7 +3694,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private void runMainThreadWatchdog() {
         if (!mainThreadWatchdogRunning) return;
         diagnostics.tick(false);
-        if (SpiderDebug.isEnabled() != diagnosticLogLevelApplied && diagnosticLogUpdatePending.compareAndSet(false, true)) {
+        if ((SpiderDebug.isEnabled() != diagnosticLogLevelApplied
+                || diagnosticLogLevelApplied && (diagnosticDepthApplied != diagnostics.depthActive()
+                || diagnosticCategoriesApplied != com.github.catvod.crawler.DebugLogStore.categories()))
+                && diagnosticLogUpdatePending.compareAndSet(false, true)) {
             mainHandler.post(() -> {
                 diagnosticLogUpdatePending.set(false);
                 if (!released) syncDiagnosticLogLevel();
@@ -5616,12 +5621,17 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private void syncDiagnosticLogLevel() {
         if (!initialized || released) return;
         boolean enabled = SpiderDebug.isEnabled();
-        if (enabled == diagnosticLogLevelApplied || diagnosticBaseMsgLevel == null) return;
-        String value = enabled ? MpvDiagnosticsPolicy.diagnosticLogLevel(diagnosticBaseMsgLevel) : diagnosticBaseMsgLevel;
+        boolean deep = enabled && diagnostics.depthActive();
+        int categories = com.github.catvod.crawler.DebugLogStore.categories();
+        if (enabled == diagnosticLogLevelApplied && (!enabled || deep == diagnosticDepthApplied && categories == diagnosticCategoriesApplied)
+                || diagnosticBaseMsgLevel == null) return;
+        String value = enabled ? MpvDiagnosticsPolicy.diagnosticLogLevel(diagnosticBaseMsgLevel, categories, deep) : diagnosticBaseMsgLevel;
         // A diagnostic-only option write on the existing owner looper; never a synchronous query.
         String previous = diagnosticAppliedMsgLevel;
         diagnosticAppliedMsgLevel = value;
-        if (setRuntimeStringChecked("msg-level", value)) diagnosticLogLevelApplied = enabled;
+        if (setRuntimeStringChecked("msg-level", value)) {
+            diagnosticLogLevelApplied = enabled; diagnosticDepthApplied = deep; diagnosticCategoriesApplied = categories;
+        }
         else diagnosticAppliedMsgLevel = previous;
     }
 

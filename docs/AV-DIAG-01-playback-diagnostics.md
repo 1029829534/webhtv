@@ -1,6 +1,6 @@
 # AV-DIAG-01：音视频全链路调试日志改造方案
 
-> 状态：2026-09-15 已按夜间评审版实施；**D0保留，D1–D4公开接口代码及双端Java编译交付，D3回调归属修正见14.9；D5未启动**。真实设备导出、实播、崩溃/洪泛及性能验收仍待用户执行，不能把编译通过称为全部方案验收完成。
+> 状态：2026-09-15 用户要求完成全文；**继续补齐D0–D5，不再以14.6–14.9的公开接口主干交付当作全量完成**。当前全量实施范围和状态见14.10；物理屏幕/扬声器等平台不可观察边界保留。
 >
 > 2026-09-14夜间评审的持续记录与查名操作边界（9.2.1、9.3.1）已合入当前实施文档；原隔离工作区仅作输入。
 >
@@ -633,6 +633,27 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - 验证：本次修改后Mobile/Leanback arm64 Java编译一次通过，24秒（`/private/tmp/avdiag-mpv-owner-compile.log`）；collector字面字段/事件schema静态校验通过（`/private/tmp/avdiag-mpv-owner-schema.log`）。diff格式与文档checkpoint在本单元收尾验证，不追加自动化测试、设备操作或性能测试。
 - 回滚：撤回本guard对应提交即可恢复上述D4状态；精确提交/tag由guard回执及`Task-Guard: AV-DIAG-01-MPV-OWNER`提交记录恢复。
 
+### 14.10 全量补齐（2026-09-15）
+
+- 授权：用户明确要求“全部实施完毕，而且要快”。包含前次遗漏的采集字段、症状/对照操作、报告/结构化筛选、受保护的限时深度探针和必要native hook；不是再次等待授权的评审。
+- 基线：`8d46751d7fd0f61bd2cb2557bb8fe99a0d33d494`，`feature/mpv-dv7-fel`；保护`app/.cxx/`70文件。App单元guard `AV-DIAG-01-COMPLETE-APP`，底层补丁/对应产物后续独立原子单元。
+- 研究与选择：复用R01–R19已读源码/平台资料；不变方案不能满足用户需求，直接替换播放器/focus owner会改变行为，因此继续采用原owner内只读hook。PixelCopy严格沿R06只做3次低分辨率统计；PCM沿R05/R12只读duplicate buffer，保护/编码流禁用，不保存媒体内容。新远程操作按R11使用本机显示的短期配对码、header token、POST、Origin和限频；保留旧TXT读取。
+- App范围：现有player/诊断、DebugLogs、DebugLogDialog、公共PlaybackActivity、Setting/App、strings、catvod日志及直接相关定向测试；唯一文档及索引。不得修改播放器选择、fallback、音量、处理顺序或输出参数以获得诊断。
+- 待补齐清单：C03/C06/C09/C10/C15上下文与资源；A05/A10实际处理链和焦点；V02/A03操作分步；S08/A14限时统计；M08/M12及native库身份；故障标记/冻结/对照、TXT可读报告与ZIP、trace/attempt/音视频/优先级筛选、远程操作访问控制；逐项覆盖表与最小验证/产物。
+- 验收：探针关闭时不扫描像素/PCM、不提升native日志；会话/代际/保护条件正确；新增远程写操作不匿名、不接受跨站请求；导出只读缓存/磁盘快照，不回调播放线程。使用定向编译/安全与预算契约校验、受影响ABI和APK打包校验；实际设备/物理输出结果只按真实证据记录。
+- 回滚：各单元独立commit/tag；默认标准诊断，深度需产品内用户主动启动，最长120秒自动恢复；必要底层补丁与其二进制同单元撤回。不升级依赖，不推送。
+- 时间目标：13:26 Asia/Shanghai起55–75分钟，14:20–14:40；既有缓存、窄hook/增量重编、验证输出只保存一次。任何真实不可控阻塞须具体报告，不用追加研究消耗时间。
+- 用户追加（13:50–13:55）：移除MPV性能页重复的“详细日志”；全局调试弹窗按播放流程/网络请求/视频画面/音频输出/字幕脚本/内核设备提供子开关，缺省全部开启、持久保存用户选择。关闭分类在采集入口生效；控制和完整性事件保留，并记录选择，避免将用户关闭误判为无错误。限时像素/PCM探针服从视频/音频分类及原主动确认、120秒上限。
+
+### 14.11 App操作、报告、受控采样交付
+
+- 已接入：默认全开的六类采集开关；本机/TV故障标记；短期配对和有界远程操作；单变量对照记录；同writer持有的前30秒/后15秒incident，标记立即落checkpoint、静默到期收尾、进程恢复保留partial；TXT尾部可读报告及流式ZIP/逐文件SHA256，单并发60秒导出预算；trace/attempt/音视频/priority网页筛选。
+- 深度：默认60秒、上限120秒、绑定具体player/trace/generation/attempt；最多3次64×36像素统计，每个PCM检查点最多3×4096 frame；不保存原图/PCM。切播放/关闭/清空/到期停止，MPV在原owner恢复日志等级并保留用户更高verbosity。受保护内容和编码直通不采样。普通日志记录完整的所选分类，旧性能verbose值已从构建MPV配置路径解除，菜单清理随下一单元。
+- 补齐公共上下文：真实native/App focus请求返回、callback/abandon；复用既有memory/system monitor记录资源，不增加proc/PSS轮询；输入route所有者及可见边界、Exo容器timeline、controller配置old/requested与重建attempt。具体底层create/configure/start、active processors及原始AudioTrack write仍在下一单元。
+- 验证：双端arm64 Java编译92秒通过；catvod诊断23项用例20秒通过（含4项新的配对失效/限频/Origin、ZIP校验/不可变快照、TXT既有manifest与伪造事件、incident即时保存/静默完成/崩溃恢复）。嵌入网页JS语法通过；新增事件字段白名单通过；`git diff --check`通过。编译首次仅遇Gradle缓存沙箱权限，授权后使用原缓存完成。
+- 证据：`/private/tmp/avdiag-complete-app-compile.log`、`/private/tmp/avdiag-complete-contracts.log`，catvod测试XML；不等同于设备实播或性能A/B。已有Room查询警告未改动。
+- 下一单元：基于当前已补丁AAR重编窄hook类并保持其他字节；MPV/FFmpeg只读事件补丁、同锁双ABI产物；完成C03库身份、设置菜单清理和APK。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -736,12 +757,12 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 
 ## 18. Recovery anchor / 后续唯一动作
 
-- Objective：依用户指定评审版实施D1–D4；验收见0.1/14.5/15节，D5深度/native独立。
-- Plan：D0保留；D1–D4公开接口代码/编译交付，范围/缺项见14.6–14.9；D3归属修正随本guard提交/tag，D5未启动。
-- Workspace：`feature/mpv-dv7-fel`；本单元基线`ac02ce84ae14332fa8bf2aab840ee4ab5a7fac2b`，guard `AV-DIAG-01-MPV-OWNER`，保护 `app/.cxx/` 原70文件。
-- Files：本次仅MpvDiagnosticCollector/MpvPlayer及本文件/索引；D1–D4文件与交付记录见14.6–14.8。
+- Objective：按用户新增授权完成全文D0–D5；验收见0.1/14.10/15节。
+- Plan：14.6–14.9主干保留；按14.10补全部可实施功能，App后续底层hook，不停止在公开接口接线。
+- Workspace：`feature/mpv-dv7-fel`；本单元基线`8d46751d7fd0f61bd2cb2557bb8fe99a0d33d494`，guard `AV-DIAG-01-COMPLETE-APP`，保护 `app/.cxx/` 原70文件。
+- Files：本单元为14.11列出的App/MPV采集接线、DebugLogDialog/DebugLogs、catvod诊断底座及唯一任务文档/索引；未修改预存`app/.cxx/`。
 - Evidence：研究R01–R19、最终AAR javap；Exo/MPV/IJK与恢复三个单元双端Java编译分别36/21/32秒通过，14.9最终修正双端编译24秒通过，schema静态检查通过；不代表实播验证。
-- Unverified：真实设备导出/播放、洪泛/崩溃和性能待用户验收；本轮不打包或安装APK，不运行用户保留自行执行的测试。
+- Unverified：真实设备导出/播放和性能A/B待用户验收；尚未实施的底层hook与APK继续推进。App新增代码已通过14.11的定向校验。
 - Residual risks：无native媒体ID的回调来源、平台输出边界、真实设备生命周期与性能；不可观察项明确未知，不冒充正常。
 - Rollback：前三单元commit/tag见14.6–14.8；本单元回滚锚点为上述D4提交。
-- Exactly one next action：由用户完成第15节实播与真实导出验收；D5深度/native按独立阶段处理。
+- Exactly one next action：关闭App原子单元后，开始Media3/MPV底层窄hook和对应产物单元。

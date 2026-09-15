@@ -21,7 +21,7 @@ public class SpiderDebug {
 
     public static void log(String tag, Throwable th) {
         if (th == null) return;
-        if (!DebugLogStore.isEnabled()) return;
+        if (!DebugLogStore.acceptsTag(tag)) return;
         String message = DiagnosticText.throwable(th);
         DebugLogStore.add(tag, message, true);
         Logger.t(safeTag(tag)).e(message);
@@ -29,14 +29,14 @@ public class SpiderDebug {
 
     public static void log(String msg) {
         if (TextUtils.isEmpty(msg)) return;
-        if (!DebugLogStore.isEnabled()) return;
+        if (!DebugLogStore.acceptsTag(TAG)) return;
         DebugLogStore.add(TAG, msg);
         Logger.t(TAG).d(DiagnosticText.clean(msg).text());
     }
 
     public static void log(String tag, String msg, Object... args) {
         if (TextUtils.isEmpty(msg)) return;
-        if (!DebugLogStore.isEnabled()) return;
+        if (!DebugLogStore.acceptsTag(tag)) return;
         String message = format(msg, args);
         DebugLogStore.add(tag, message);
         Logger.t(safeTag(tag)).d(DiagnosticText.clean(message).text());

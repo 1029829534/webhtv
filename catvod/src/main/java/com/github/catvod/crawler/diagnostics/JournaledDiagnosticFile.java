@@ -156,5 +156,5 @@ public final class JournaledDiagnosticFile implements DiagnosticLogBuffer.Persis
     }
     @Override public long bytes() { return logs.bytes() + journalBytes; }
     @Override public long rotations() { return logs.rotations(); }
-    @Override public long extraDiskBudgetBytes() { return 2L * MAX_BYTES; }
+    @Override public long extraDiskBudgetBytes() { return logs.extraDiskBudgetBytes() + 2L * MAX_BYTES; }
 }

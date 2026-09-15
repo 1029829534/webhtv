@@ -24,6 +24,7 @@ public final class SurfaceDiagnosticCollector implements SurfaceHolder.Callback 
     private PlayerView playerView;
     private View surfaceView;
     private String trace = "none", resizeOperation = "none";
+    private final PixelDiagnosticProbe pixelProbe = new PixelDiagnosticProbe();
     private final Runnable tick = new Runnable() {
         @Override public void run() { snapshot("periodic"); if (playerView != null) handler.postDelayed(this, 5000); }
     };
@@ -87,6 +88,7 @@ public final class SurfaceDiagnosticCollector implements SurfaceHolder.Callback 
         if (!PlaybackDiagnosticCollector.enabled() || playerView == null) return;
         try {
             log.baseline();
+            pixelProbe.maybeSample(playerView, trace);
             View target = surfaceView;
             if (target != null) log.emit("surface.visibility", "view-hierarchy", e -> {
                 float alpha = target.getAlpha(); ViewParent parent = target.getParent(); int depth = 0;

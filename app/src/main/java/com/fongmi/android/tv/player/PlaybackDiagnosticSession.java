@@ -88,6 +88,7 @@ public final class PlaybackDiagnosticSession {
     public synchronized void stage(String stage, String detail, long nowMs) {
         if (!active || !sink.enabled()) return;
         if (capturedGeneration != sink.generation()) capture(true, nowMs);
+        Integer oldPlayer = playerType, oldDecode = decode;
         String signalSource = null;
         Integer headers = null;
         Matcher matcher = DETAIL.matcher(detail == null ? "" : detail);
@@ -109,6 +110,12 @@ public final class PlaybackDiagnosticSession {
             attempt++;
             sink.emit(event("config.snapshot").requested("playerType", playerType).requested("decode", decode)
                     .unknown("decoder", NOT_COLLECTED).unknown("audioOutput", NOT_COLLECTED).pin(trace + "-config-" + attempt));
+        }
+        if (!java.util.Objects.equals(oldPlayer, playerType) || !java.util.Objects.equals(oldDecode, decode)) {
+            sink.emit(event("config.change").observed("oldValue", "player=" + oldPlayer + ",decode=" + oldDecode)
+                    .requested("newValue", "player=" + playerType + ",decode=" + decode)
+                    .observed("reason", stage).observed("phase", "controller-request")
+                    .unknown("result", PENDING_CALLBACK));
         }
         lastStage = stage;
         String name = switch (stage) {

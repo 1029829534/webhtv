@@ -28,8 +28,9 @@ public final class PlaybackDiagnosticCollector {
     private volatile Context current = new Context("none", 0, 0, null, "unresolved");
     private volatile int videoLevel = -1, audioLevel = -1;
     private volatile String firstError, lastError;
+    private volatile boolean protectedMedia;
     private long captureGeneration = -1;
-    private boolean ended;
+    private volatile boolean ended;
 
     public PlaybackDiagnosticCollector(String engine, String version) { this.engine = engine; this.version = version; }
     public static boolean enabled() { return DebugLogStore.isEnabled(); }
@@ -38,6 +39,11 @@ public final class PlaybackDiagnosticCollector {
         return object == null ? "none" : OBJECT_IDS.computeIfAbsent(object, key -> id(kind));
     }
     public Context context() { return current; }
+    public String instanceId() { return instance; }
+    public String engine() { return engine; }
+    public boolean ended() { return ended; }
+    public boolean protectedMedia() { return protectedMedia; }
+    public void protectedMedia(boolean value) { protectedMedia = value; }
 
     public synchronized Context begin(String trace, String role) {
         if (current.attempt() > 0) end("reprepare");
@@ -45,6 +51,7 @@ public final class PlaybackDiagnosticCollector {
         current = new Context(PlaybackTrace.normalize(trace), current.generation() + (same ? 0 : 1),
                 current.attempt() + 1, id("media"), role);
         videoLevel = audioLevel = -1; firstError = lastError = null; captureGeneration = -1; ended = false;
+        if ("foreground".equals(role)) DiagnosticControls.playback(this);
         baseline(false);
         return current;
     }
@@ -65,7 +72,7 @@ public final class PlaybackDiagnosticCollector {
     }
 
     public void emit(Context owner, String name, String source, String association, Consumer<DiagnosticEvent> facts) {
-        if (!enabled()) return;
+        if (!DebugLogStore.acceptsEvent(name)) return;
         try {
             Context ctx = owner == null ? new Context("none", 0, 0, null, "unresolved") : owner;
             DiagnosticEvent event = new DiagnosticEvent(name, ctx.trace(), instance, ctx.generation(), ctx.attempt())
@@ -120,6 +127,8 @@ public final class PlaybackDiagnosticCollector {
         if (ended) return;
         ended = true;
         Context owner = current;
+        com.github.catvod.crawler.diagnostics.DiagnosticCapture.Session depth = com.github.catvod.crawler.diagnostics.DiagnosticCapture.current(owner.trace(), owner.generation(), owner.attempt());
+        if (depth != null && depth.instance().equals(instance)) com.github.catvod.crawler.diagnostics.DiagnosticCapture.stop("playback-ended");
         emit(owner, "play.attempt.end", "engine-collector", "engine-context", e -> e
                 .observed("reason", reason).observed("closed", true)
                 .observed("videoEvidenceLevel", videoLevel < 0 ? null : videoLevel).observed("audioEvidenceLevel", audioLevel < 0 ? null : audioLevel)

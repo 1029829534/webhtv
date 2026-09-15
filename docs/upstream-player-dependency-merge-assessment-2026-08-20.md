@@ -2,7 +2,7 @@
 
 ## Recovery anchor
 
-- 2026-09-15 AV-DIAG-01按用户指定夜间评审版完成D1–D4公开接口代码交付：Exo、MPV、IJK/恢复已分阶段编译、提交/tag，D3回调归属修正及24秒双端编译结果见任务文档14.9；D5独立未启动。预存`app/.cxx/`70文件保护。实际设备导出/实播、洪泛/崩溃和性能A/B待用户验收，本轮未打包/安装或推送；编译不代表全部方案验收完成。
+- 2026-09-15 AV-DIAG-01按用户“全文实施”指示继续D0–D5：14.11完成分类开关、故障标记/冻结、限时探针、配对、TXT报告/ZIP及网页筛选，双端Java编译和23项诊断契约校验通过；底层Media3/MPV hook与产物紧接实施。D1–D4主干和14.9归属修正保留；保护预存`app/.cxx/`70文件。设备/性能结果只按真实证据记录，不推送。
 
 - 2026-09-14 插入需求：用户批准按 [AV-DIAG-01 音视频全链路诊断方案](AV-DIAG-01-playback-diagnostics.md) 从 D0 分阶段实施。基线 `2ec5afd8cc3f21bf1693b198f87018488775c660`，guard `AV-DIAG-01-D0`；原 `app/.cxx/` 70 文件保护。D0 公共日志底座代码及37项不同用例、双端 Java 编译、网页执行和三轮 exporter fixture 通过，D1–D5 未开始；设备未连接，FEL 原任务与待设备验收状态保留。唯一下一步：连接目标设备完成 D0 用户端导出及开关性能验收。此需求不合入上游提交，不改写 E/P/C 编号。
 
@@ -35,7 +35,7 @@
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
 | 外挂及容器兼容桥已获用户验收 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 默认关闭的 arm64 外挂原型已归档；2026-09-15 补齐现有 Media3 SSA sample 兼容桥和字体接线后，用户确认“可以了，打tag”。输入 14/14、JNI/包装与设备 5 项通过；容器生命周期素材的基线失败已定位并修正，用户验收后不再追加复测，详细限制保留于第 14 节。已接受复杂一核 CPU ≤40% / render+upload p95 ≤16.67 ms；MPV 独立修复保留。精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV 和产品化仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
-| 插入需求 | `AV-DIAG-01` | 通用/App，Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D1–D4公开接口代码及双端Java编译交付，D3归属修正见14.9；D5未启动，设备/崩溃/性能待用户验收 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
+| 插入需求 | `AV-DIAG-01` | 通用/App，Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | 全量实施中：App闭环和23项校验见14.11，底层hook/产物继续；设备与性能按实际结果记录 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
 | P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 新日志31首draw误超时/bind热点；9.17有界初始化与能力门控push候选本机验证通过，整体电视画面/实时性能未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |

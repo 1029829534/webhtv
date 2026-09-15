@@ -978,7 +978,7 @@ public class MpvPlayerEngine implements PlayerEngine {
                         hardwareDecodeSoftwareFallbackOption())
                 .audioSpdif(resolveAudioSpdifCodecs())
                 .multichannelPcm(MpvPerformanceSetting.isMultichannelPcm())
-                .logLevel(MpvPerformanceSetting.isVerboseLog() ? "all=v" : "all=warn")
+                .logLevel("all=warn") // Diagnostic verbosity follows DebugLogStore; mpv.conf remains a separate user baseline.
                 .demuxerMaxBytes(getDemuxerMaxBytes())
                 .demuxerMaxBackBytes(getDemuxerMaxBackBytes())
                 .cacheSeconds(getCacheTargetSeconds())

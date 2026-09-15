@@ -27,6 +27,7 @@ public final class RollingDiagnosticFile implements DiagnosticLogBuffer.Persiste
     private final AtomicBoolean exportLeased = new AtomicBoolean();
     private List<String> savedPins = List.of();
     private long bytes, rotations;
+    private volatile long exportBytes;
 
     public RollingDiagnosticFile(File directory, DiagnosticLogBuffer.Limits limits) { this.directory = directory; this.limits = limits; }
     private File segment(int index) { return new File(directory, FILE_NAME + (index == 0 ? "" : "." + index)); }
@@ -169,11 +170,12 @@ public final class RollingDiagnosticFile implements DiagnosticLogBuffer.Persiste
                     if (closed) return;
                     closed = true;
                     try { super.close(); } finally {
-                        try { delete(report); } finally { exportLeased.set(false); }
+                        try { delete(report); } finally { exportBytes = 0; exportLeased.set(false); }
                     }
                 }
             };
-            return new DiagnosticLogBuffer.Export(stream, report.length(), header.contains("\"completeness\":\"partial\""));
+            exportBytes = report.length();
+            return new DiagnosticLogBuffer.Export(stream, exportBytes, header.contains("\"completeness\":\"partial\""), () -> new FileInputStream(report));
         } catch (IOException | RuntimeException error) {
             try { delete(report); } catch (IOException ignored) {}
             exportLeased.set(false);
@@ -185,7 +187,8 @@ public final class RollingDiagnosticFile implements DiagnosticLogBuffer.Persiste
         bytes = pins().length();
         for (int i = 0; i < limits.segments(); i++) bytes += segment(i).length();
     }
-    @Override public long bytes() { return bytes; }
+    @Override public long bytes() { return bytes + exportBytes; }
+    @Override public long extraDiskBudgetBytes() { return (long) limits.segmentBytes() * limits.segments() + limits.memoryBytes() + limits.pinnedBytes() + (640L << 10); }
     @Override public long rotations() { return rotations; }
 
     static MessageDigest sha256() {

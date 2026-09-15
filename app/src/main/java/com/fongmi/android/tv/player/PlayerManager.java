@@ -5340,10 +5340,11 @@ public class PlayerManager implements ParseCallback {
         if (manager == null || audioFocusHeld) return;
         int result;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest = AudioFocusApi26.request(manager, audioFocusChangeListener);
+            audioFocusRequest = AudioFocusApi26.request(manager, audioFocusChangeListener, raw -> diagnosticNativeFocus("request", raw, 0));
             result = audioFocusRequest == null ? AudioManager.AUDIOFOCUS_REQUEST_FAILED : AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         } else {
             result = manager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            diagnosticNativeFocus("request", result, 0);
         }
         audioFocusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         if (!audioFocusHeld && SpiderDebug.isEnabled()) SpiderDebug.log("player", "native audio focus request denied type=%d", playerType);
@@ -5353,8 +5354,8 @@ public class PlayerManager implements ParseCallback {
         if (!audioFocusHeld) return;
         AudioManager manager = audioManager();
         if (manager != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) AudioFocusApi26.abandon(manager, audioFocusRequest);
-            else manager.abandonAudioFocus(audioFocusChangeListener);
+            int result = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? AudioFocusApi26.abandon(manager, audioFocusRequest) : manager.abandonAudioFocus(audioFocusChangeListener);
+            diagnosticNativeFocus("abandon", result, 0);
         }
         audioFocusRequest = null;
         audioFocusHeld = false;
@@ -5409,6 +5410,17 @@ public class PlayerManager implements ParseCallback {
             }
         }
         if (SpiderDebug.isEnabled()) SpiderDebug.log("player", "native audio focus changed type=%d change=%d resume=%s", playerType, focusChange, resumeOnAudioFocusGain);
+        diagnosticNativeFocus("callback", 0, focusChange);
+    }
+
+    private void diagnosticNativeFocus(String action, int result, int change) {
+        if (!com.github.catvod.crawler.DebugLogStore.isEnabled()) return;
+        com.github.catvod.crawler.DebugLogStore.event(new com.github.catvod.crawler.diagnostics.DiagnosticEvent("audio.focus", getPlaybackTraceId(),
+                "native-focus-controller", 0, 0).observed("focusOwner", "App/native-player").observed("focusAction", action)
+                .observed("focusGain", AudioManager.AUDIOFOCUS_GAIN).observed("focusResult", result).observed("focusChange", change)
+                .observed("usage", android.media.AudioAttributes.USAGE_MEDIA).observed("contentType", android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+                .observed("playWhenReady", player != null && player.getPlayWhenReady()).observed("active", audioFocusHeld)
+                .observed("metricScope", "controller focus session; callback result is a focus change, not a new request"));
     }
 
     private AudioManager audioManager() {
@@ -5417,7 +5429,7 @@ public class PlayerManager implements ParseCallback {
 
     private static final class AudioFocusApi26 {
 
-        private static Object request(AudioManager manager, AudioManager.OnAudioFocusChangeListener listener) {
+        private static Object request(AudioManager manager, AudioManager.OnAudioFocusChangeListener listener, java.util.function.IntConsumer observe) {
             android.media.AudioAttributes attributes = new android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
@@ -5428,11 +5440,12 @@ public class PlayerManager implements ParseCallback {
                     .setAcceptsDelayedFocusGain(false)
                     .setWillPauseWhenDucked(true)
                     .build();
-            return manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? request : null;
+            int result = manager.requestAudioFocus(request); observe.accept(result);
+            return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? request : null;
         }
 
-        private static void abandon(AudioManager manager, Object request) {
-            if (request instanceof android.media.AudioFocusRequest) manager.abandonAudioFocusRequest((android.media.AudioFocusRequest) request);
+        private static int abandon(AudioManager manager, Object request) {
+            return request instanceof android.media.AudioFocusRequest ? manager.abandonAudioFocusRequest((android.media.AudioFocusRequest) request) : AudioManager.AUDIOFOCUS_REQUEST_FAILED;
         }
     }
 
@@ -7153,6 +7166,10 @@ public class PlayerManager implements ParseCallback {
         if (traceId.equals(lastLoggedRouteTraceId)) return;
         PlaybackRoute.Resolution resolution = spec.getPlaybackRoute();
         PlaybackTrace.log("playback-route", traceId, "%s", resolution.logSummary());
+        DiagnosticControls.forTrace(traceId, "input.route", "resolved-playback-route", e -> e
+                .observed("inputRoute", resolution.route().name()).observed("source", resolution.owner().name())
+                .observed("reason", resolution.evidence().name()).observed("input", resolution.logSummary())
+                .observed("metricScope", "resolved local route; external proxy upstream is not observed"));
         lastLoggedRouteTraceId = traceId;
     }
 
