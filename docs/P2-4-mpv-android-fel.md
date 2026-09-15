@@ -1,6 +1,136 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.18）
+## Recovery anchor（当前：9.19，方案评审）
+
+- 目标：根据新日志32完成Vulkan描述符绑定高耗时的跨项目最佳实践方案；保留完整BL硬解/EL软解/NLQ、10bit、逐帧录制、同步与退出。整体电视实时性能仍未验收，本轮只更新本任务文档和评估索引。
+- 基线 `feature/mpv-dv7-fel` / `57211803d507ab1b6b6a0ee02c626a7f5909eebc`；已有诊断tag `recovery/P2-4-fel-wait-diagnostics/20260916053516-57211803d507`。本轮guard `P2-4-fel-descriptor-review` / assessment，保护104个既有 `app/.cxx/` 脏文件；不修改生产代码、二进制、依赖或用户播放设置，不推送。
+- 05:28 TV64诊断候选已在电视生效。新日志32与在线快照的2429条去重事件完全一致；持续实例604次warm map均值38.880ms，bind34.675ms / 线程CPU0.980ms；16个有效等待样本runqueue中位2.144ms、acquire均none、主动切换均3次。push明确不支持；大量等待仍未归因到某个驱动锁、ioctl或GPU fence。
+- 已读Vulkan规范、Khronos/Arm样例、ANGLE代码与测试、Filament、锁定libplacebo/FFmpeg、GStreamer、Mesa，以及论文、博文、论坛和PR。推荐9.19-A：相同描述符内容不重复更新，每帧仍fresh bind/record；B为失败后的最小归因，C为有条件的graphics暂存候选。A/B/C本轮均未实施。
+- 原始日志、去重事件、统计、阅读源码与下载清单位于 `/private/tmp/webhtv-tv-fel-log32/`。首次播放另有BL连续8次无进展失败，不能由描述符方案自动关闭。唯一下一步：交付本节方案，下一实施单元限定为A的单变量候选及像素/电视性能裁决，不直接启动B/C架构变更。
+
+## 9.19 新日志32：描述符绑定等待的跨项目最佳实践评审（2026-09-16）
+
+### 9.19.1 推荐结论与边界
+
+**先实施“相同描述符内容不重复更新，每帧仍重新绑定、重新录制”的窄候选，验证它能否消除驱动在bind阶段延迟处理的工作；不能提前承诺它解决34ms等待。若等待不降，停止沿缓存数量/线程数反复试错，进入外部图像与普通图像的最小对照。GPU暂存改为图形管线是后续候选，不与第一步捆绑。**
+
+本轮响应用户新增的深度研究要求，覆盖论文、帖子、博文、文档、issues、跨项目代码，并检查当前调用链。它是方案评审，不是依赖升级或生产代码实施。05:55 Asia/Shanghai开始，预计20–30分钟（资料与源码15–20分钟、方案与核验5–10分钟），目标06:15–06:25。最便宜决定性核验为日志统计、源码/引用与文档一致性；本轮不构建、不安装、不运行设备测试。
+
+### 9.19.2 日志已经证明什么
+
+输入 `/Users/macbookpro/Downloads/webhtv-debug-log (32).txt`，5088054字节、6148行，SHA256=`a7f0f3d0257e77891ea22c6adf8e79e1501fba2455e6a83abe1fbbbd74312ae6`，与9.5的同名旧日志不同。只读在线地址 `http://192.168.1.5:9978/debug/logs` 的TXT快照SHA256=`5c47147da04c462a37a8d8137b94f28c9be364130f444df169c4aec08489606c`。两份导出并非逐字节相同，但按 `(processRunId, captureGeneration, seq)` 去重后2429条事件的集合和内容完全一致；先去重再按时间排序，不能重复统计pinned/history。
+
+设备为TCL Smart TV Pro / MT9655 / Android14 / TV64 / 4逻辑核；buildTime=`202609160528`，实际加载libmpv SHA256=`3e3732114fdd2527bbe95cce9b635087f0a67034a50c23a59c28c6c47fc5fa05`。APK内旧基线/dirty来自提交前构建，不代表装错包。用户明确电视不能连接ADB，下一步不依赖ADB。
+
+| 观测 | 数值与意义 |
+| --- | --- |
+| Vulkan能力 | API/device API均1.3.247；Mali-G57，vendor=`0x13b5`，device=`0x90910010`，driver=`0xb001000`；`push-supported=0 push-enabled=0 extension-query-result=0`。强行开push不是修复 |
+| 图像格式 | `source format=0`即VK_FORMAT_UNDEFINED，`external format=0xf0`，output format=64；BL硬解、EL软解、raw YUV/NLQ已进入。源是厂商不透明外部格式，不能直接解释成P010/RGBA |
+| 持续实例 | `player-20` / `p-11ock86-2`；604次warm map，均值38.880ms，其中bind34.675ms、bind线程CPU0.980ms、descriptor update0.049ms。这是跨seek的每调用累计均值，不是稳态帧率 |
+| 有效等待样本 | 持续实例16个，另一起播实例1个。持续实例bind17.190–79.066ms、中位35.222ms；线程CPU中位0.993ms；runqueue中位2.144ms、最大38.477ms。调度影响部分长尾，不能一概排除CPU争用 |
+| 样本边界 | 17个样本均`sched-error=0/0 rusage-error=0/0 acquire=0/0`、主动切换均3次。持续实例probe中位0.270ms、最大3.881ms。没有可观察的输入acquire fd，不等于没有隐式同步 |
+| GPU/资源 | copy均值21.293ms（605个样本），最后已知render pass均值26.348ms；605次提交/完成/异步归还，最终pending=0，fence timeout/release failure均0。两项GPU统计不是同帧完整关键路径，不能直接相加声称47.6ms整帧时间 |
+| 播放后果 | native显示跳过记录已到240；最后一段`frame-drop-count=98`、avsync约4.404s，期间seek，计数不得相加。`decoder-frame-drop-count`最后已知0，不能用它否定显示掉帧 |
+| 独立失败 | `player-8`从约25秒恢复，BL解出6帧后连续8次无进展失败；首draw在失败附近。描述符方案不能自动关闭这个起播问题 |
+
+`fel_api_begin/end`直接包围bind；慢调用日志阈值100ms，上述17个样本均低于阈值，不能用该分支解释它们的3次主动切换。但schedstat/rusage快照有开销与更新粒度，**wall−CPU−runqueue不是精确驱动等待；“3次主动切换”也不能直接命名为3个futex、3个plane或3次Binder事务。**当前证据支持大量非执行/非排队等待，未证明其内部原因。
+
+### 9.19.3 本地调用链与实际缺口
+
+权威生产输入是 `third_party/patches/mpv-android-fel.patch`。下列源码路径相对于应用补丁后的mpv，当前副本位于 `build/mpv-native/mpv-android/buildscripts/deps/mpv/`。
+
+| 文件/符号 | 已有实现与决定 |
+| --- | --- |
+| `video/out/hwdec/hwdec_aimagereader_vk_stable.c::aimagereader_vk_stable_map` | poll完成任务→缓存AHB输入/独立输出→hold libplacebo输出→prepare/submit→release给libplacebo→独立sync fd归还源；不把GPU调用移到持有VO/core锁的区域 |
+| `find_input/create_input/destroy_input/invalidate_input_recordings` | 已有AHB缓存，销毁/移除输入会失效关联记录，防止同地址/同槽冒充同一资源；不是缺少AHB缓存 |
+| `recording_matches/select_recording/prepare_conversion` | 最多128条懒分配记录，匹配input/output、crop/尺寸/query，跳过pending；**hit后仍update两项descriptor，再fresh record**。当前复用的是对象槽，还没有复用descriptor内容 |
+| `update_conversion_descriptor` | 两个紧凑binding：外部YCbCr combined sampler和storage image，无动态UBO或大批稀疏binding。update快不排除工作被延后到bind，但延后目前只是待证假设 |
+| `record_conversion` | 每帧reset/begin(ONE_TIME)、当前ownership barrier、bind、push当前UV、dispatch、release barrier、end；画面回跳后已禁用replay，新方案必须保持 |
+| `submit_conversion/finish_output/release_fel_source_async` | acquire/available/ready/source-release/fence职责分离；command/descriptor在copy完成后复用，output像素另外受render semaphore/frame lease保护。cache hit不能替代同步 |
+| `hwdec_aimagereader_vk_stable.comp/create_output_image` | 16×8 compute采样raw YUV写独立output；UV除法已移到CPU，output usage=SAMPLED+STORAGE。可研究等价fragment暂存，但不能回到长期保留MediaCodec源 |
+| `third_party/mpv-player-jni/tests/fel_vk_cache_test.c` | 1200帧fresh bind/record、pending/失效/失败等真实函数测试已有；Vulkan调用用host桩，并不验证厂商驱动像素或电视性能 |
+
+构建图不变：mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`；FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`；libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`；mpv-android builder `99a60ad2141d5ace94453590903c2c6b9a0a2443`。均为已覆盖基线，没有新合并提交。
+
+### 9.19.4 阅读证据：结论、适用性与限制
+
+以下访问日期均为2026-09-16。A=规范/实际源码与测试，B=项目或厂商解释，C=跨项目实验/未独立验证报告，D=线索。代码按完整revision只读参考，不引入依赖；原始正文、源码、检索结果及SHA256清单保存在本轮证据目录。
+
+| 来源/固定身份 | 实际阅读与支持结论 | WebHTV适配与限制 |
+| --- | --- | --- |
+| [Vulkan descriptorsets](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/descriptorsets.adoc)，`f84d432d5b8912362f96f581f29bbc4f3c8c7843`；A | `vkUpdateDescriptorSets/vkCmdBindDescriptorSets`：descriptor可在bind的host执行期到shader执行间被消费；相关update可使非update-after-bind的已录制命令失效；pending期间不能覆盖/释放 | bind不保证只是无成本拷贝句柄；不能将update移到bind后。相同资源描述可复用，新command仍需绑定，像素内容与descriptor内容分开管理 |
+| [同版memory](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/memory.adoc)及[resources](https://github.com/KhronosGroup/Vulkan-Docs/blob/f84d432d5b8912362f96f581f29bbc4f3c8c7843/chapters/resources.adoc)；A | Android外部格式、VUID02396–02398/09457；UNDEFINED源不能任意mutable重解释/添加TRANSFER用途，GL与VK采样结果未必完全相同 | 否决将0xf0强当P010、直接copy/blit或随意拆plane。GL普通samplerExternalOES不证明raw YUV精度等价 |
+| [Khronos/Arm descriptor management](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/performance/descriptor_management/README.adoc)及[descriptor_set.cpp](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/framework/core/descriptor_set.cpp)，`ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1`；A/B | 内容作key复用set，避免相同信息重复update、每帧pool reset/free；测性能排除validation干扰 | 支持A；其44→27ms来自大量draw的CPU负载，本机只有一次bind/两个binding且线程CPU约1ms，**不套用38%收益**；动态UBO建议不适用 |
+| [ANGLE ProgramExecutableVk.cpp](https://github.com/google/angle/blob/314cb711e226dc1b911f3233992c1d51053cc821/src/libANGLE/renderer/vulkan/ProgramExecutableVk.cpp)、[vk_helpers.cpp](https://github.com/google/angle/blob/314cb711e226dc1b911f3233992c1d51053cc821/src/libANGLE/renderer/vulkan/vk_helpers.cpp)，`314cb711e226dc1b911f3233992c1d51053cc821`；A | `updateTexturesDescriptorSet/getOrAllocateDescriptorSet`仅miss写descriptor；image/sampler serial作key；`DynamicDescriptorPool`维护LRU、引用与延后回收 | 最直接的内容缓存参考；保留WebHTV有界槽和移除失效，不复制ANGLE的大型可增长pool/GL状态机 |
+| [ANGLE VulkanPerformanceCounterTest.cpp](https://github.com/google/angle/blob/314cb711e226dc1b911f3233992c1d51053cc821/src/tests/gl_tests/VulkanPerformanceCounterTest.cpp)、[AHB实现](https://github.com/google/angle/blob/314cb711e226dc1b911f3233992c1d51053cc821/src/libANGLE/renderer/vulkan/android/HardwareBufferImageSiblingVkAndroid.cpp)，同revision；A | `TextureDescriptorsAreShared`检查跨program复用；`initializeImpl`先查普通/external格式能力 | 借鉴测试与能力分流，但普通纹理测试不等于MediaCodec改写AHB的像素测试；本机UNDEFINED源不满足普通格式优先的条件 |
+| [Filament VulkanDescriptorSetCache.cpp](https://github.com/google/filament/blob/fa4e346ab2eb0db36f84e8ae2e8ca71040a94b71/filament/backend/src/vulkan/VulkanDescriptorSetCache.cpp)，`fa4e346ab2eb0db36f84e8ae2e8ca71040a94b71`；A | `commit`检查layout/上次绑定，`commands->acquire/referencedBy`保留资源；update与bind分离 | 借鉴引用/状态边界；不能跨新command照搬“set相同就不bind”。当前每帧一次bind，没有同command重复bind可删 |
+| 锁定libplacebo `src/vulkan/gpu_pass.c::vk_pass_run/set_ds`、`context.c::device_init/finalize_context`；A | 普通路径每次update/bind，完成callback归还set，缺空闲set另有poll慢路径；自动启用可用push扩展 | 成熟实现并非都采用内容缓存；原样复制不会消除热点。其set池等待发生在bind外，不能解释本机单个原生bind计时 |
+| 锁定FFmpeg `libavutil/vulkan.c::ff_vk_exec_start/ff_vk_exec_bind_shader/update_set_pool_write`；A | 每执行上下文有set，fence结束后回收依赖，ONE_TIME录制、显式绑定 | 支持对象复用与逐帧命令/同步并存；其无限fence等待不适合照搬到WebHTV可取消链路 |
+| [GStreamer descriptor cache](https://github.com/GStreamer/gstreamer/blob/765564f3ecb3ffb066d14ac24c28e81623102788/subprojects/gst-plugins-bad/gst-libs/gst/vulkan/gstvkdescriptorcache.c)、[fullscreen quad](https://github.com/GStreamer/gstreamer/blob/765564f3ecb3ffb066d14ac24c28e81623102788/subprojects/gst-plugins-bad/gst-libs/gst/vulkan/gstvkfullscreenquad.c)，`765564f3ecb3ffb066d14ac24c28e81623102788`；A | `prepare_draw_internal/fill_command_buffer_internal/submit_final_unlocked`复用pipeline/view/framebuffer，fence延后释放，graphics处理视频图像 | C的视频实现参考。descriptor cache首先是对象池，不能误称ANGLE同类内容hash；不复制GLib运行时或颜色策略 |
+| [Mesa PanVK descriptor state](https://github.com/chaotic-cx/mesa-mirror/blob/5c142e46f3f6e752ed745fd48912ebb8fad67145/src/panfrost/vulkan/panvk_vX_cmd_desc_state.c)，Mesa25.1.0 `5c142e46f3f6e752ed745fd48912ebb8fad67145`；A | `CmdBindDescriptorSets2KHR/cmd_desc_state_bind_sets`维护set/offset/dirty state，所读路径没有显式GPU fence等待 | 普通绑定可主要是CPU状态操作，值得做外部图像对照；PanVK不是电视闭源驱动，不能据此断言内部原因或直接移植 |
+| [Granite作者博文](https://themaister.net/blog/2019/04/20/a-tour-of-granites-vulkan-backend-part-3/)，2019-04-20；B | `hash→VkDescriptorSet→vkCmdBindDescriptorSets`、布局专属pool、闲置回收；讨论persistent set组合数量代价 | 支持内容复用与bind分开；不复制固定“8帧后回收”的经验值，必须以实际fence/lease为准 |
+| [NVIDIA Vulkan Dos and Don’ts](https://developer.nvidia.com/blog/vulkan-dos-donts/)、[Advanced API Performance: Descriptors](https://developer.nvidia.com/blog/advanced-api-performance-descriptors/)，访问日正文；B | 减少descriptor创建/复制，紧凑layout、push constants、复用command pool；并行录制需任务图 | 本地两个binding和push UV已覆盖部分建议。百万descriptor阈值、bindless和桌面多线程收益不外推到4核电视一次bind |
+| [Khronos/Arm async compute](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/performance/async_compute/README.adoc)、[layout transitions](https://github.com/KhronosGroup/Vulkan-Samples/blob/ad5dd381b11fe2e28fdb2d14d52b0aac9b0b9ef1/samples/performance/layout_transitions/README.adoc)，同Samples revision；A/B | Mali上compute/vertex资源与fragment依赖可能形成空档；color attachment与正确layout有机会保留tile优化 | 支持研究C，反对盲加队列；静态场景transaction elimination、AFBC或压缩收益在本机未测，不套用sample百分比 |
+| [Khronos论坛讨论](https://community.khronos.org/t/most-common-vulkan-mistakes-vs-the-world/6861)，2016-05-18，含Sascha Willems回复；C | 讨论预录制命令的适用范围，不能把静态样例建议推广到所有动态引擎 | 与现代代码共同支持保留逐帧录制；老论坛不是当前驱动性能证据 |
+| [MoltenVK PR2822](https://github.com/KhronosGroup/MoltenVK/pull/2822)，head=`fd8ea9dbb1963af3642d912bad651f018434c922`，base=`4aaf714aa1b3e78e26ecfcefa9c75e9a576c500b`；C | 已读实际patch、复现代码与报告，区分resource-use cache/实际argument-buffer binding；提交者报告validation零错误仍可能像素错误 | **访问时open、未合并，非维护者已确认修复**；针对Metal/GTK，不移植到Mali。只借鉴缓存边界和像素复现方法 |
+| [WebGPU Dispatch Overhead论文](https://arxiv.org/html/2604.02344v1)，arXiv2604.02344v1，§3.3/3.6/4.4/7.2/7.8；C | 区分单次同步与批量dispatch、框架/API/GPU时间及跨后端限制 | 仅借鉴测量设计，不拿24–36μs当Android bind目标；正文“0.56ms低于0.095ms”存在数值矛盾，未采信其外推结论 |
+| [Mìmir CUDA/Vulkan互操作论文](https://arxiv.org/html/2504.20937v1)，arXiv2504.20937v1，§3.4/4.1/4.3；C | 共享外部内存、交替buffer、显式同步；取消同步可能使计算/渲染争用恶化 | 借鉴对象寿命/内容版本分离并保留同步；CUDA点云不是MediaCodec FEL，9×/12×收益不外推，不引入CUDA |
+
+检索覆盖GitHub精确AHB+bind、Mali+gralloc+slow、跨项目bind stall、Stack Overflow与论文索引；未找到直接复现并修复本机 `Mali-G57 / externalFormat=0xf0 / bind阻塞` 的成熟补丁。Stack Overflow主要结果为粒子批处理，与一次视频dispatch不符；IEEE2022相关论文仅取得索引摘要，未取得全文，未作为设计依据。Google/DDG遇跳转/验证，已改读官方代码、论坛、OpenAlex/arXiv正文，失败页面不计为已读证据。剩余内部归因需要目标设备对照，继续泛搜不能代替它。
+
+### 9.19.5 方案比较与选择
+
+| 方案 | 能改变的工作 | 本项目限制/风险 | 决定 |
+| --- | --- | --- | --- |
+| 不改 | 保留可复现基线 | 继续约35ms bind和掉帧 | 留作对照，非完成方案 |
+| 原样套用libplacebo/FFmpeg | 普通路径仍update/bind，push依赖能力 | 不自动改变外部图像驱动路径，可能丢本地取消/归还保护 | 不整体移植，借鉴生命周期原则 |
+| A：内容缓存+fresh bind/record | 减少相同descriptor写入及其可能触发的延迟工作 | 直接可省只有0.05ms，大收益待证；须验证AHB循环改写像素 | **首选单变量候选** |
+| 旧command/绑定命令跨帧重放 | 减少bind/record | 已有画面回跳，旧命令不能冒充当前内容/ownership | 不重启，也不改名为secondary缓存绕过 |
+| update template、pool/reset调整 | 优化更新/管理成本 | 本地update/reset微秒级，已有有界复用 | 暂不做，不能解释34ms |
+| 强开push、bindless、descriptor buffer、新bind入口 | 换绑定机制 | push明确不支持，其他feature/YCbCr能力未证实；新入口不保证不同驱动实现 | 不作此电视修复，不因Vulkan1.3假定可用 |
+| 增加EL线程/录制线程/队列 | 可能重叠等待 | EL实际5线程/4逻辑核；新pool所有权、取消和CPU争用成本 | 无可重叠关键路径证据前不做 |
+| B：外部图像最小对照 | 分清AHB/YCbCr路径与通用绑定/队列压力 | 需要独立有界复现，不能抢当前播放资源 | A无效后只做这一条归因 |
+| C：graphics shader暂存 | 改变storage写入和compute/fragment依赖 | 仍要bind，等待可能不变；需格式、像素、queue/barrier适配 | 有条件候选，单独评审 |
+| 强制P010/直接copy、普通GL RGB、CPU回读、关FEL | 绕过当前路径 | 格式/精度不成立或降低功能性能 | 不采用；GL raw-YUV路径需另外证明扩展与等价性 |
+
+### 9.19.6 最小实施单元A
+
+优化的是**资源引用描述的重复更新**，不缓存视频内容，不缓存逐帧acquire/release，不重放command。当前`recording_matches`比descriptor实际key更严格，第一步保留现有crop/尺寸/query条件，避免重写cache结构。
+
+1. 仅显式FEL、普通set、有效完整cache hit且上一copy完成时，复用已写好的两个binding，仍每帧调用`record_conversion`。缓存身份包括image view的对象代际、sampler/YCbCr转换、pipeline layout、descriptor imageLayout；移除/重建必须失效，不能仅凭AHB地址/槽号。
+2. miss/cold/fallback继续写当前descriptor；push路径每个新command继续push完整binding。保留pending排除、输出重建/源移除失效与失败回退；成功record后才标有效，不得命中后返回旧command。不增加像素池或cache上限。
+3. 每帧继续reset/begin、bind pipeline/set、当前UV push、dispatch、barrier/query和当前semaphore提交。descriptor的copy生命周期与output的render semaphore/frame lease分开；更新前确认无pending，不能靠update-after-bind补救错误顺序。
+4. 沿现有FEL日志补充有限的content-hit/write/rebind/fresh-command计数和bind/map分布，区分“少写了descriptor”与“bind真的变快”。日志关闭时不新增采样、线程、磁盘或主线程工作，不导出用户节目像素。
+
+预期范围为FEL补丁stable mapper、相关现有host测试/校验、两ABI libmpv及本任务/产物说明；日志沿既有分类，不必新增Java通路。lock、FFmpeg/libplacebo/JNI、Exo、公共API和用户设置保持原合同；普通视频和push设备保持原路径。实际实施另按必要文件声明guard，本轮文档范围不自动授权架构变更。
+
+**可证伪条件：**若write下降但bind/map分布未改善，则“重复update引发bind延迟处理”假设在本机不成立，不能把调用次数改善报成卡顿修复，不继续在同一假设下扩pool/加日志/调线程。若出现旧帧/回跳，即便规范允许内容复用也否决候选，恢复逐帧写入并进入B。
+
+### 9.19.7 A无效后的分流
+
+**B只裁决一个问题：等待是否依赖不透明外部图像。**独立有界复现比较原生Vulkan图像、稳定持有且不再被生产者改写的真实AHB、正常逐帧更新的MediaCodec AHB；三组均fresh command，另区分仅录制和真实提交。普通图像与AHB的格式/YCbCr必然不同，因此只能定位路径类别，不能直接命名内部锁。
+
+无ADB时可由候选中的定向复现通过既有Web日志输出；必须由用户主动启动，不能自动暂停节目或抢surface buffer。统一分辨率/输出格式、warm-up/次数，分别统计录制、线程CPU、GPU和完成等待；批量微基准最终同步放在批末，组间设时限/取消出口。它不改变生产路径每帧必要的同步，不借测试取消源归还/依赖。设备不给驱动栈权限就保留未知，不能用读取失败证明无等待。
+
+普通图像也慢则先检查实际启用的validation/layer、通用驱动锁和并发队列压力；只有动态AHB慢则检查生产者交接/外部图像实现；稳定AHB也慢则重点检查外部格式/YCbCr绑定路径。17个样本尚不能完成三分法，不应据此直接宣称GPU硬件不够。
+
+**C优先评估等价graphics shader暂存。**借鉴GStreamer fullscreen pass，以相同raw-YUV sampler写独立10bit color attachment，复用pipeline/render pass/framebuffer；保持UV中心、crop、分量顺序、full-range、chroma filter和NLQ输入。查询目标格式COLOR_ATTACHMENT+SAMPLED能力，不满足保留compute。完整覆盖输出可用loadOp=DONT_CARE，但输出供后续渲染，storeOp必须保留内容，不能照抄丢弃输出的带宽建议。
+
+C需适配graphics queue/stage、source foreign ownership、output layout和双向semaphore，保留独立source release及有界buffer。它可能改善storage写入/流水线空档，也可能完全不改变AHB bind等待；不预称AFBC或固定收益。先做单一等价pass，不同时改EL、分辨率、精度、同步或线程；不能回到直接长期持有MediaCodec表面，否则重新引入buffer耗尽。
+
+### 9.19.8 验收、采用标准与回滚
+
+- **代码门槛：**现有真实函数host用例1200帧仍有1200次fresh bind/record/dispatch；hit减少write，miss/重建必须write。覆盖同地址新资源、pending、crop/尺寸/query变化、分配失败、record失败；保留既有lease/归还/取消验证。
+- **像素门槛：**用可辨认帧号/交替图案的受控素材，验证同一AHB循环写入、回收、seek/重播/暂停重绘都显示当前内容，再用原FEL片验证raw YUV/NLQ、位深和画面。host桩、PTS一致、fresh计数、validation零错误均不替代像素验证；不自动回读/导出用户节目。
+- **A的性能裁决：**基线为本节05:28候选，保留候选commit/APK/libmpv哈希。同电视/素材/设置/日志类别/散热条件至少3组对照；初始化单列，持续区间不seek。看bind/record/map的中位、p95/最大值以及GPU copy、A/V和显示掉帧。只有write约0.05ms下降不算实质改善；以bind中位至少下降20%、map中位同步下降且p95无回归为A采用目标，未达标不继续把A作为主要修复路线。
+- **整体FEL门槛：**A阶段改善不等于需求完成。原23.976fps片稳定段需接近片源帧率、显示丢帧比例低于0.5%、A/V差不超过200ms且不持续累积，并关闭独立起播失败。保留完整FEL、10bit、色彩、音频/字幕、可取消seek/退出，不降画质换达标。报告重复测量分布和未满足项，不能只挑最快一轮。
+- **构建边界：**未来代码单元只按同锁增量构建两个受影响ARM ABI，检查ELF/公开导出、其他18库不变，打包所需TV64并核对包内库/签名；仅相关修改或不确定结果才重试。本轮没有构建或安装。
+- **生命周期/成本：**A不增加像素池、EL线程、持续采样、运行时依赖；cold/seek/退出不能新增等待周期。不能把bind耗时挪到别的阶段当成变快。C另外记录framebuffer/pipeline内存、包体差额并验证新queue/layout契约。
+- **回滚：**`57211803d507ab1b6b6a0ee02c626a7f5909eebc`及9.18既有tag是诊断基线，不是性能合格基线。未来A/C各成原子source/patch/两libmpv/产物说明提交和annotated tag；失败成套恢复对应父提交，保留证据，不移动旧tag、不推送。文档评审tag只代表方案快照。
+
+本轮产出为可评审方案，A/B/C尚未实施，电视卡顿未标记为已修复。下一单元为A及像素/电视性能裁决，再依据结果进入B或验收，只有证据支持时才另行评审C。
+
+## 历史恢复记录（9.18）
 
 - 目标：继续定位电视 FEL 严重掉帧；本单元补齐无 ADB 的等待来源诊断，保留完整 BL 硬解/EL 软解/NLQ、10bit、逐帧录制、同步与退出。它是诊断候选，不是电视性能修复验收。
 - 基线 `feature/mpv-dv7-fel` / `206a57e0e337304a8b78712c487ef245d7cb0fa0`，guard `P2-4-fel-wait-diagnostics` / upstream。启动时保护 104 个既有脏文件，均属 `app/.cxx/`；不修改或移动这些文件，不升级锁定依赖，不推送。
