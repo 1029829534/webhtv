@@ -762,6 +762,82 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 
 安装包标记构建时的完整基线Git revision及`dirty`状态，产物hash如上；不为写入提交后hash再做一次整包构建。当前代码提交/恢复tag可通过guard回执与本单元提交记录唯一定位。
 
+### 14.15 PR #107 爬虫日志与 Web 日志页（2026-09-15）
+
+用户已授权参考 [PR #107](https://github.com/fish2018/webhtv/pull/107) 实现 QuickJS/Python 爬虫日志，不直接采用 PR 代码；同时修复手机/电脑日志页顶部空间、滚动后操作不可达和控件重叠。这是本任务的追加单元，不重开已完成的播放器/native 阶段。
+
+基线：`feature/mpv-dv7-fel` / `5acbb05afff34235d66bc1a6f3d7f67427e2a239`；guard `AV-DIAG-01-CRAWLER-WEB`，保护预存 `app/.cxx/` 70 文件。16:42 CST 声明预计 25 分钟（研究 5、实现 13、验证/构建/收尾 7），目标 17:07 CST。范围只含日志桥接、Web 页、相关验证和本文/索引；不改爬虫执行方式、播放器、依赖、签名或 CNB 发布。
+
+#### 决策证据（访问日 2026-09-15）
+
+| 来源 / 等级 | revision / 实际读取 | 结论、适用性与决策影响 |
+| --- | --- | --- |
+| PR #107 / A（代码） | base `784b90420d646eb6c7ddcc63ad622a92c65b02b4`，head `3e383c6ed5537d008024f223bc670794aeb4dcf8`；API正文、diff/patch及相关方法；API无评论/代码评审评论 | PR把QuickJS四回调和Python self.log转给SpiderDebug.log、Web按tag归Console。当前facade本身写Logcat，照搬会重复输出/丢失级别；普通print不经过self.log。 |
+| 本地调用链 / A | 上述基线的 `quickjs/.../Spider.createCtx` → `Console`；`chaquo/Loader` → `app.spider`/`SourceFileLoader` → `base.Spider.log`；`SpiderDebug` → `DebugLogStore` → `DiagnosticLogBuffer`；`DebugLogs` | Console在evaluate前已注册；Python app导入前适合一次性安装桥接。复用现有异步sink、脱敏、generation和分类，不另建writer。 |
+| Chaquopy官方文档/源码 / A | [sys/Android](https://chaquo.com/chaquopy/doc/current/android.html#sys)，当日正文；[16.1.0 stream.py](https://github.com/chaquo/chaquopy/blob/16.1.0/product/runtime/src/main/python/java/android/stream.py)、同版 `java/android/__init__.py` | stdout/stderr已有行缓冲Logcat owner，stderr为WARN；native fd不在sys流可见范围。用公开TextIO委托保留原输出，不依赖或修改私有类；本地Chaquopy17.0.0不升级。 |
+| CPython / A | [v3.10.18 logging.StreamHandler](https://github.com/python/cpython/blob/v3.10.18/Lib/logging/__init__.py)，构造/emit/flush/setStream | 默认写sys.stderr，logging仍拥有formatter/异常；额外root handler会影响basicConfig/重复日志，因此不添加handler、不改logging配置。 |
+| pytest成熟实现/测试 / B、A | [8.4.2 TeeCaptureIO](https://github.com/pytest-dev/pytest/blob/8.4.2/src/_pytest/capture.py)、[test_capture.py](https://github.com/pytest-dev/pytest/blob/8.4.2/testing/test_capture.py) 的tee-sys、Unicode、原输出检查 | 借鉴tee保留原流write返回值/异常语义；测试用无限缓冲不适合App，采用每线程有界行缓冲、明确截断、关闭时不保留文本。不复制代码。 |
+| MDN技术文档 / B | [position](https://developer.mozilla.org/en-US/docs/Web/CSS/position)，sticky/scrolling ancestor正文 | 现有main的overflow-x:hidden会影响sticky滚动祖先；顶部须正确固定，tabs独立横滚，输入框规则排除checkbox。 |
+
+相关提交处置（仅用户指定日志功能进入候选范围）：
+
+| 完整 commit | 内容 | 处置 |
+| --- | --- | --- |
+| `cd30288078162c6266fe62303032eb144554336c` | QuickJS Console桥接 | 手工重实现：只新增sink通道、保留级别，避免第二次Logcat输出 |
+| `636ff64b2ced0433c67bd1faf689a55393585b96` | Python self.log桥接 | 补充/替代：一次性TextIO tee覆盖self.log、print及标准流logging/traceback |
+| `7ac206819f6e60be04f26e8e6312014fa87f88b8` | Console tab包含爬虫 | 手工重实现：来源与显式级别、错误筛选和安全转义 |
+| `e452bdbdefb74ff8891057b2ea02ede2f612c8d1`、`83b61ba3ee9d0ad8a8b5fa5f319c7e1e2735c3b2` | XBPQ地址及变量修复 | 不适用此次需求；其余PR签名/站源/构建改动不在授权单元内 |
+
+已检查相关patch的后续同文件变更，无本需求的维护者讨论/revert证据（评论接口为空）。算法论文/编码器benchmark与此次TextIO和布局决策无关，不扩大搜索。
+
+#### 方案、验收与回滚
+
+- 不改动：继续缺少爬虫输出和可达操作区，不能满足需求。原样PR：改动少但重复Logcat、无级别、仅self.log，也未解决布局，因此拒绝直接合并。
+- 采用窄适配：SpiderDebug新增仅写调试sink的Console入口，先检查总开关/分类，再保留显式级别；QuickJS保持原Logcat owner。Python在app/爬虫导入前安装一次tee，原流仍负责输出；每线程缓存上限、flush和generation隔离；采集异常不打断爬虫。不添加logging handler，不把stderr等同error，不用当前影片伪造异步爬虫归属。
+- 爬虫收集跟随“网络请求”分类（默认全开）；Console tab区分QuickJS/Python。Web/TXT/ZIP仍用已有脱敏/轮转/完整性机制。超长单行保留有界前缀、显式截断，不能任意拆散凭据而绕过脱敏。
+- 顶部合并为一个固定操作区，分类单行横滑；“地址说明”位于开关后，诊断操作/结构筛选按需展开；搜索限宽，解释checkbox和暂停独立布局。展开面板在小屏限制高度并自行滚动，保留全部配对/导出/诊断操作。
+- Java/Python/HTML变更不改ABI/依赖ownership/播放器；启用日志有新增有界开销，不宣称零开销。Python native fd、主动替换sys.stdout的脚本、安装前已持有原流的第三方handler不冒充已覆盖。
+- 决定性验证：Python原流/分段/线程/禁用/generation/洪泛/异常契约；Java编译及分类/错误保留；真实生成网页在手机/桌面宽度的顶部固定、无重叠、tabs横滚、Console/错误/搜索/暂停交互。只构建mobile/leanback arm64 debug，保留 `-PexoAssPrototype=true` 并隔离CMake，设备体验由用户验收。
+- 回滚：整体revert本单元commit至上述基线；已有tag `recovery/AV-DIAG-01-COMPLETE-NATIVE/20260915162159-5acbb05afff3`。不push。
+
+#### 17:29 用户 UI/UX 反馈后的布局决策
+
+用户截图中诊断表单、配对和类别换行挤占正文，要求使用折叠/tab/抽屉/弹窗，按UI/UX最佳实践重排。首轮本地浮层的浏览器检查也发现 `popup outside viewport`，不能交付；改用独立于页面高度的视口级面板。原17:07目标因用户反馈与布局调整失效，17:30重新估计15分钟、目标17:45；不重跑已经通过的Python/分类检查。
+
+新增证据均于2026-09-15经代理读取正文/实际源码：
+
+- [Chrome DevTools ConsoleView.ts](https://github.com/ChromeDevTools/devtools-frontend/blob/main/front_end/panels/console/ConsoleView.ts) 当日main快照，B：`console-main-toolbar`仅保留主要操作；`console-show-settings-toolbar=false`和默认隐藏sidebar体现按需揭示设置。采用这种职责分层，不引入其组件依赖。
+- [Carbon Data table usage](https://carbondesignsystem.com/components/data-table/usage/)，B：toolbar承载主要按钮/搜索/筛选，展开用于小空间中的大量信息；依操作频率整理，而非把所有控件缩小后平铺。
+- [WAI-ARIA APG modal dialog](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)，A：背景不可交互、焦点进入/圈定面板、Escape/可见关闭按钮、关闭返回触发控件。优先HTML dialog，保留不支持showModal时的焦点/遮罩降级。
+- [APG Tabs](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/)，A：一次展示一个panel，选中态、左右/Home/End键和对应标签关系；适用于面板内筛选/诊断/工具三个同级区域。
+- [WCAG 2.2 Target size](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)，A：最小24×24及间距；本任务手机主操作采用44px目标，不靠缩小点击区域节省空间。
+
+最终结构：默认顶部两行（状态与搜索/暂停/工具入口；单行横滚分类），手机搜索按需展开，桌面搜索限宽；筛选/诊断/工具放入一个带三页签的面板，手机底部sheet、桌面右侧drawer。地址说明按钮紧跟关闭采集，展开在工具页内；解释选项放筛选页，避免与暂停争夺主工具栏宽度。面板独立滚动、关闭后回到原日志位置，分类/关键词/结构筛选生效时显示状态提示，不嵌套弹窗或重排原日志内容。
+
+#### 最终实现和验证（2026-09-15 17:56 CST）
+
+本单元实现完成：QuickJS四级Console和Python标准流接入统一sink；默认全开的网络分类生效，错误保留、原Logcat唯一输出、脱敏/轮转沿用现有实现。Python在app/爬虫导入前一次性安装，真实self.log、普通print及标准流logging/traceback可见。现有 `app/proguard-rules.pro:62` 保留 `com.github.catvod.crawler.**`，Java反射入口不需要新增规则。
+
+Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；Console靠前显示。一个三页签工具面板承载结构筛选、解释显示、配对/诊断、下载/采集管理、地址说明；手机底部sheet、桌面右侧drawer。关键词和高级筛选数量可见，提供重置。面板内滚动、点击遮罩/关闭/Escape、Tab焦点循环/恢复、页签方向键及旧浏览器降级均已实现。
+
+| 验证 | 结果 / 证据 |
+| --- | --- |
+| Python实际方法/流契约 | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s chaquo/src/test/python -v`，7项通过，0.006秒；覆盖真实base.Spider.log、print/writelines/flush、原输出/异常/返回值、分线程、禁用/generation/分类、100k长行、采集异常、一次安装与logging级别；`/private/tmp/pr107-python-tests.log` |
+| Java分类契约 | `:catvod:testDebugUnitTest --tests com.github.catvod.crawler.diagnostics.CrawlerLogCategoryTest`，1项通过；QuickJS/Python/Java爬虫统一网络类别且默认全开 |
+| 真实Java生成页 + Chrome | `scripts/verify_crawler_web_logs.py` 生成实际HTML；用已安装Chrome运行产出的browser.cjs，320×640、390×844、844×390、1440×900全部通过；手机顶部93px、桌面83px。单行分类、触控区域、正文宽度、头部固定、Console/错误/关键词/暂停、安全转义、面板视口边界、焦点/返回/Escape、页签、配对、结构筛选、无showModal降级通过；`/private/tmp/pr107-web/browser-result.json`、`/private/tmp/pr107-web-check.log` |
+| 可视核对 | 已检查 `logs-390.png`、`drawer-390.png`、`drawer-1440.png`，默认正文可见，面板按区域展示；预览目录 `/private/tmp/pr107-web/`。宿主JVM输出编码修正为UTF-8，避免测试夹具把中文变成问号；不是Android产品字体问题 |
+| 最终双端APK | 保留 `-PexoAssPrototype=true` 与CMake隔离init-script；最后一次相关焦点修正后增量构建57秒成功，未重跑已通过且未变的Python/分类检查；`/private/tmp/pr107-final-build.log` |
+| 包内与治理 | 两APK均包含 `webhtv_logging.pyc`、新drawer的DEX内容、`lib/arm64-v8a/libexo_ass.so`；BuildConfig的Exo ASS仍开启。checkpoint verifier 0错误/0警告；预存app/.cxx由guard保护。最终收尾使用本guard原子提交和唯一annotated tag，不push |
+
+最终产物（未安装设备，用户实测/性能A/B不冒充通过）：
+
+| 变体 | 路径 | SHA-256 |
+| --- | --- | --- |
+| 手机arm64 debug | `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | `ec6f44be454ea45dede31ca2f9e508015c0cddffcd27f2e551699983f5027e79` |
+| 电视arm64 debug | `app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk` | `00a23b8285b81e853d56bcecf63d279b57611ba7502abb21471df948e955c3cb` |
+
+前一轮浮层越界已由视口级dialog替代，Chrome在末尾Tab移出焦点的问题已加显式循环修正；最终浏览器检查全部通过。没有进一步更改播放器/native、业务爬虫执行或签名/CNB发布。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -865,12 +941,12 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 
 ## 18. Recovery anchor / 后续唯一动作
 
-- Objective：按用户新增授权完成全文D0–D5；验收见0.1/14.10/15节。
-- Plan：D0–D5实现与产物补齐，逐项覆盖见14.13；用户设备/性能验收与软件验证分开记录。
-- Workspace：`feature/mpv-dv7-fel`；本单元基线`180811f16073271ba1cb6a4f2f889008966facd3`，guard `AV-DIAG-01-COMPLETE-NATIVE`，保护 `app/.cxx/` 原70文件。
-- Files：当前单元为App诊断/设置/buildConfig、Media3窄hook及两个AAR、MPV/FFmpeg补丁和双ABI产物、构建/验证脚本、唯一任务文档/索引；guard范围保持，保护预存`app/.cxx/`。
-- Evidence：14.11 App提交及tag已完成；双端Java92秒、23项契约20秒通过。14.14记录当前Media3重编、双ABI native/ELF、双端APK/DEX/asset一致性及生产ELF/ZIP解析对照。CSD/PTS最终相关增量构建以交付记录为准，不重跑无关用例。
+- Objective：D0–D5已交付；当前追加PR #107爬虫日志与紧凑固定Web操作区，验收见14.15。
+- Plan：14.15实现、定向检查和最终双端APK完成；两行顶部+三页签面板已通过四种视口及键盘/配对检查。
+- Current unit：`feature/mpv-dv7-fel` / `5acbb05afff34235d66bc1a6f3d7f67427e2a239`；guard `AV-DIAG-01-CRAWLER-WEB`；保护 `app/.cxx/` 原70文件。
+- Files：`DebugLogs.java`、QuickJS Console、SpiderDebug/DiagnosticCategories、Chaquo Loader/webhtv_logging、针对性Python/JUnit/浏览器检查、本文/索引；无native或依赖修改。
+- Evidence：`/private/tmp/pr107-python-tests.log` 7项、category JUnit 1项、`/private/tmp/pr107-web/browser-result.json` 四视口通过；`/private/tmp/pr107-final-build.log` 最终双端57秒成功；产物哈希见14.15。
 - Unverified：真实设备导出/播放与性能A/B由用户验收，不记录为通过；本轮没有新增ADB/设备操作。
-- Residual risks：无native媒体ID的回调来源、平台输出边界、真实设备生命周期与性能；不可观察项明确未知，不冒充正常。
-- Rollback：本单元回滚到`180811f16073271ba1cb6a4f2f889008966facd3`及`recovery/AV-DIAG-01-COMPLETE-APP/20260915141054-180811f16073`。
-- Exactly one next action：用户安装14.14的最终APK进行实际复现，并用日志弹窗标记症状、导出报告；收到具体反馈后再处理对应缺陷，不重启研究或重复已通过检查。
+- Residual risks：真实手机/电视体验和性能由用户实测；Python native fd、脚本主动替换标准流或提前缓存旧流的第三方handler不在此桥接可见范围；不伪造异步爬虫媒体归属。
+- Rollback：本单元回滚到`5acbb05afff34235d66bc1a6f3d7f67427e2a239`及`recovery/AV-DIAG-01-COMPLETE-NATIVE/20260915162159-5acbb05afff3`。
+- Exactly one next action：安装14.15最终APK，验收实际站源日志及手机/桌面浏览器使用体验。

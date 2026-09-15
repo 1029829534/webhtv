@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-15追加需求完成：PR #107日志能力手工实现，QuickJS/Python归入Console；Web改为两行固定顶部及筛选/诊断/工具三页签，手机底部sheet、桌面右侧drawer。7项Python、分类JUnit、四种浏览器视口/焦点/配对检查、最终双端APK通过，未安装设备。研究、提交处置、产物哈希、验收/回滚见[AV-DIAG-01第14.15节](AV-DIAG-01-playback-diagnostics.md)。guard `AV-DIAG-01-CRAWLER-WEB`，基线 `5acbb05afff34235d66bc1a6f3d7f67427e2a239`，保护 `app/.cxx/`。
+
 - 2026-09-15 AV-DIAG-01全文实现及产物补齐：14.11完成默认全开的分类开关、故障标记/冻结、限时探针、配对、TXT/ZIP及筛选；14.12–14.14完成Media3 owner hook、FFmpeg实际选择/操作、MPV AudioTrack、库身份、观察门控、重复“详细日志”移除及同锁产物。逐项覆盖和真实软件验证见唯一任务文档；设备/性能由用户实测，保护预存`app/.cxx/`70文件，不推送。
 
 - 2026-09-14 插入需求：用户批准按 [AV-DIAG-01 音视频全链路诊断方案](AV-DIAG-01-playback-diagnostics.md) 从 D0 分阶段实施。基线 `2ec5afd8cc3f21bf1693b198f87018488775c660`，guard `AV-DIAG-01-D0`；原 `app/.cxx/` 70 文件保护。D0 公共日志底座代码及37项不同用例、双端 Java 编译、网页执行和三轮 exporter fixture 通过，D1–D5 未开始；设备未连接，FEL 原任务与待设备验收状态保留。唯一下一步：连接目标设备完成 D0 用户端导出及开关性能验收。此需求不合入上游提交，不改写 E/P/C 编号。

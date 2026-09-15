@@ -15,6 +15,23 @@ public class SpiderDebug {
         return DebugLogStore.isEnabled();
     }
 
+    /** Capture only: the runtime remains the sole owner of its Logcat/stdout output. */
+    public static void console(String tag, String level, String message) {
+        if (!DebugLogStore.acceptsTag(tag) || message == null || message.isEmpty()) return;
+        String severity = switch (level == null ? "" : level.toUpperCase(Locale.ROOT)) {
+            case "DEBUG", "LOG" -> "DEBUG";
+            case "WARN", "WARNING" -> "WARN";
+            case "ERROR", "FATAL" -> "ERROR";
+            case "STDERR" -> "STDERR"; // A stream is not a severity (logging.info can use stderr).
+            default -> "INFO";
+        };
+        try {
+            DebugLogStore.add(tag, "[" + severity + "] " + message, severity.equals("ERROR"));
+        } catch (RuntimeException ignored) {
+            DebugLogStore.collectorFailure();
+        }
+    }
+
     public static void log(Throwable th) {
         log(TAG, th);
     }
