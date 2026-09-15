@@ -1304,7 +1304,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     public void endFile(int reason, int error, String errorText) {
-        diagnostics.end(reason, error);
+        diagnostics.endFile(reason, error);
         postToMain(() -> handleEndFile(reason, error, errorText));
     }
 
@@ -5532,11 +5532,14 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private int mpvCommand(String[] command) {
         String target = command == null || command.length == 0 ? "unknown" : command[0];
         long startedAtMs = beginMpvNativeCall("command", target);
+        long diagnosticLoadId = "loadfile".equals(target) ? diagnostics.loadRequested() : 0;
+        int result = -1;
         try {
-            int result = MPVLib.command(command);
+            result = MPVLib.command(command);
             diagnostics.command(target, 0, result, "returned", startedAtMs < 0 ? -1 : SystemClock.elapsedRealtime() - startedAtMs);
             return result;
         } finally {
+            if (diagnosticLoadId != 0) diagnostics.loadReturned(diagnosticLoadId, result);
             endMpvNativeCall(startedAtMs, "command", target);
         }
     }

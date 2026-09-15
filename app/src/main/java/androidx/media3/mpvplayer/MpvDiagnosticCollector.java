@@ -18,6 +18,7 @@ import static com.github.catvod.crawler.diagnostics.DiagnosticEvent.Status.*;
 
 /** Native callbacks and watchdog only publish cached facts. Never calls MPV or waits for the UI. */
 final class MpvDiagnosticCollector {
+    private static final Context UNRESOLVED = new Context("none", 0, 0, null, "unresolved");
     static final String STANDARD_COMPONENTS = ",vd=info,ffmpeg/video=info,ffmpeg/audio=info,vo=info,ao=info,cplayer=info";
     private static final Set<String> PROPERTIES = Set.of("time-pos", "time-pos/full", "duration", "duration/full", "pause", "paused-for-cache",
             "idle-active", "eof-reached", "vid", "aid", "sid", "hwdec", "hwdec-current", "hwdec-interop", "video-codec", "audio-codec",
@@ -33,6 +34,9 @@ final class MpvDiagnosticCollector {
     private volatile String lastVideoFailure;
     private volatile String requestedMsgLevel;
     private volatile boolean closed;
+    // Controller requests may advance before the native thread finishes the previous file.
+    private Context nativeOwner = UNRESOLVED, pendingLoadOwner;
+    private long nativeGeneration = -1, loadSequence, pendingLoadId;
     private final Map<String, MpvPropertySnapshot.DiagnosticValue> emitted = new java.util.HashMap<>();
     private final Set<String> emittedMissing = new java.util.HashSet<>();
     private MpvPropertySnapshot.TrackList emittedTracks;
@@ -54,12 +58,24 @@ final class MpvDiagnosticCollector {
     }
 
     synchronized void begin(String trace) {
-        closed = false; log.begin(trace, "foreground"); lastVideoFailure = null;
+        closed = false; log.begin(trace, "foreground");
         emitted.clear(); emittedMissing.clear(); emittedTracks = null;
         if (PlaybackDiagnosticCollector.enabled()) { capture(); health(); }
     }
 
-    void nativeLog(String prefix, int level, String text) {
+    synchronized long loadRequested() {
+        Context owner = log.context();
+        // The public START_FILE callback has no playlist entry ID. Never guess across
+        // overlapping attempts, including load commands whose return has not arrived.
+        pendingLoadOwner = pendingLoadOwner == null || pendingLoadOwner == owner ? owner : UNRESOLVED;
+        return pendingLoadId = ++loadSequence;
+    }
+
+    synchronized void loadReturned(long requestId, int result) {
+        if (result < 0 && pendingLoadId == requestId) pendingLoadOwner = null;
+    }
+
+    synchronized void nativeLog(String prefix, int level, String text) {
         if (!PlaybackDiagnosticCollector.enabled() || text == null) return;
         capture();
         long now = SystemClock.elapsedRealtime();
@@ -80,7 +96,7 @@ final class MpvDiagnosticCollector {
             String safe = DiagnosticText.clean(bounded).text();
             lastVideoFailure = safe.substring(0, Math.min(240, safe.length()));
         }
-        log.emit(log.context(), boundary ? "mpv.decoder.attempt" : "mpv.native.output", "mpv-log-callback", "client-context; log-media-unconfirmed", e -> {
+        log.emit(nativeOwner, boundary ? "mpv.decoder.attempt" : "mpv.native.output", "mpv-log-callback", "native-load-start-context; log-media-unconfirmed", e -> {
             e.severity(severity).observed("nativePrefix", prefix).observed("nativeLevel", level).observed("count", sourceSeq)
                     .observed("stage", stage).message(bounded);
             if (boundary) e.inferred().pin(cacheId + "-last-boundary");
@@ -90,12 +106,19 @@ final class MpvDiagnosticCollector {
         if (videoFailure || level <= 30) { partialFailure(); health(); }
     }
 
-    void event(int event, long propertyGeneration) {
+    synchronized void event(int event, long propertyGeneration) {
+        if (event == MPVLib.MpvEvent.MPV_EVENT_START_FILE) {
+            nativeOwner = pendingLoadOwner == null ? UNRESOLVED : pendingLoadOwner;
+            pendingLoadOwner = null; nativeGeneration = propertyGeneration; lastVideoFailure = null;
+            emitted.clear(); emittedMissing.clear(); emittedTracks = null;
+        } else if (event == MPVLib.MpvEvent.MPV_EVENT_QUEUE_OVERFLOW) {
+            // A dropped start/end boundary invalidates media association until a new load.
+            nativeOwner = UNRESOLVED; pendingLoadOwner = null; lastVideoFailure = null;
+        }
         if (!PlaybackDiagnosticCollector.enabled()) return;
         capture();
         if (event == MPVLib.MpvEvent.MPV_EVENT_QUEUE_OVERFLOW) nativeOverflow++;
-        if (event == MPVLib.MpvEvent.MPV_EVENT_START_FILE) lastVideoFailure = null;
-        log.emit("mpv.event", "mpv-event-callback", e -> e.observed("value", event).observed("propertyGeneration", propertyGeneration)
+        log.emit(nativeOwner, "mpv.event", "mpv-event-callback", "native-load-start-context", e -> e.observed("value", event).observed("propertyGeneration", propertyGeneration)
                 .observed("stage", event == MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART ? "playback-restart; not frame-present" : "native-event"));
         health();
     }
@@ -108,7 +131,7 @@ final class MpvDiagnosticCollector {
                 .unknown("result", PENDING_CALLBACK));
     }
 
-    void propertyChanged(String property) {
+    synchronized void propertyChanged(String property) {
         if (!PlaybackDiagnosticCollector.enabled()) return;
         if (property.equals("vid") || property.equals("aid") || property.equals("track-list")) { capture(); partialFailure(); health(); }
     }
@@ -120,14 +143,28 @@ final class MpvDiagnosticCollector {
     }
 
     void command(String operation, long id, int result, String phase, long elapsedMs) {
-        log.emit("mpv.command.result", "mpv-command-api", e -> e.observed("operation", operation).observed("operationId", id)
+        boolean reply = "completed".equals(phase);
+        log.emit(reply ? UNRESOLVED : log.context(), "mpv.command.result", "mpv-command-api",
+                reply ? "operation-id-only; media-unconfirmed" : "controller-request", e -> e.observed("operation", operation).observed("operationId", id)
                 .observed("errorCode", result).observed("phase", phase).observed("durationMs", elapsedMs));
     }
 
-    void end(int reason, int error) {
+    synchronized void end(int reason, int error) {
         if (closed) return;
-        log.emit("mpv.event", "mpv-end-file", e -> e.observed("reason", reason).observed("errorCode", error));
-        tick(true); log.end("end-file:" + reason); closed = true;
+        log.emit("mpv.event", "mpv-controller-end", e -> e.observed("reason", reason).observed("errorCode", error));
+        if (nativeOwner == log.context()) tick(true);
+        log.end("controller-end:" + reason); closed = true;
+    }
+
+    synchronized void endFile(int reason, int error) {
+        log.emit(nativeOwner, "mpv.event", "mpv-end-file", "native-load-start-context", e -> e
+                .observed("reason", reason).observed("errorCode", error).observed("propertyGeneration", nativeGeneration));
+        tick(true);
+        // begin() already closed an older controller attempt. Its late native end
+        // remains evidence for that owner and must never close the new attempt.
+        if (nativeOwner == log.context() && !closed) {
+            log.end("end-file:" + reason); closed = true;
+        }
     }
 
     synchronized void tick(boolean force) {
@@ -137,10 +174,11 @@ final class MpvDiagnosticCollector {
         if (!force && now - lastTickMs < 5000) return;
         lastTickMs = now;
         MpvPropertySnapshot.DiagnosticSnapshot state = snapshot.diagnosticSnapshot(capture);
+        Context owner = state.generation() == nativeGeneration ? nativeOwner : UNRESOLVED;
         for (Map.Entry<String, Integer> registration : state.registrations().entrySet()) {
             if (!propertyAllowed(registration.getKey()) || state.values().containsKey(registration.getKey())) continue;
             if (!force && !emittedMissing.add(registration.getKey())) continue;
-            log.emit("mpv.runtime", "mpv-property-observer-cache", e -> e.observed("property", registration.getKey())
+            log.emit(owner, "mpv.runtime", "mpv-property-observer-cache", "native-load-start-context", e -> e.observed("property", registration.getKey())
                     .observed("registrationResult", registration.getValue())
                     .unknown("value", registration.getValue() < 0 ? NOT_SUPPORTED : NOT_COLLECTED));
         }
@@ -156,7 +194,7 @@ final class MpvDiagnosticCollector {
                     : property.startsWith("audio-") || property.equals("current-ao") || property.equals("volume") || property.equals("mute")
                     ? "mpv.audio.path" : property.startsWith("video-") || property.startsWith("hwdec") || property.equals("current-vo")
                     ? "mpv.video.path" : "mpv.runtime";
-            log.emit(event, "mpv-property-observer-cache", e -> {
+            log.emit(owner, event, "mpv-property-observer-cache", "native-load-start-context", e -> {
                 e.observed("property", property).observed("ageMs", age).observed("propertyGeneration", value.generation());
                 if (value.value() == null) e.unknown("value", UNAVAILABLE);
                 else if ((property.startsWith("time-pos") || property.equals("avsync")) && age > 15000) e.unknown("value", STALE);
@@ -164,7 +202,7 @@ final class MpvDiagnosticCollector {
             });
         }
         if (state.tracksObserved() && state.tracks().valid() && (force || emittedTracks != state.tracks())) for (Map<String, Object> track : state.tracks().entries()) {
-            log.emit("mpv.tracks", "track-list-observer", e -> e.observed("trackId", scalar(track.get("id")))
+            log.emit(owner, "mpv.tracks", "track-list-observer", "native-load-start-context", e -> e.observed("trackId", scalar(track.get("id")))
                     .observed("trackType", scalar(track.get("type"))).observed("selected", scalar(track.get("selected")))
                     .observed("flags", "default=" + scalar(track.get("default")) + ",forced=" + scalar(track.get("forced")) + ",albumart=" + scalar(track.get("albumart")))
                     .observed("codecs", scalar(track.get("codec"))));
@@ -178,11 +216,12 @@ final class MpvDiagnosticCollector {
     private void partialFailure() {
         if (lastVideoFailure == null) return;
         MpvPropertySnapshot.DiagnosticSnapshot state = snapshot.diagnosticSnapshot(capture);
+        if (nativeOwner == UNRESOLVED || state.generation() != nativeGeneration) return;
         Object vid = value(state, "vid"), aid = value(state, "aid");
         boolean videoAvailable = state.tracksObserved() && state.tracks().valid()
                 && state.tracks().entries().stream().anyMatch(track -> "video".equals(track.get("type")) && !Boolean.TRUE.equals(track.get("albumart")));
         boolean partial = videoAvailable && "no".equals(String.valueOf(vid)) && selected(aid);
-        log.emit("mpv.output.failure", "native-error-and-observer-cache", e -> e.inferred()
+        log.emit(nativeOwner, "mpv.output.failure", "native-error-and-observer-cache", "native-load-start-context; log-media-unconfirmed", e -> e.inferred()
                 .observed("videoAvailable", state.tracksObserved() ? videoAvailable : null)
                 .observed("videoSelected", vid == null ? null : selected(vid)).observed("audioSelected", aid == null ? null : selected(aid))
                 .observed("videoPartialFailure", partial ? true : null).observed("lastError", lastVideoFailure)
@@ -199,9 +238,9 @@ final class MpvDiagnosticCollector {
     private void health() {
         if (!PlaybackDiagnosticCollector.enabled()) return;
         MpvPropertySnapshot.DiagnosticSnapshot state = snapshot.diagnosticSnapshot(capture);
-        Context owner = log.context();
+        Context owner = state.generation() == nativeGeneration ? nativeOwner : UNRESOLVED;
         DiagnosticEvent event = new DiagnosticEvent("mpv.collector.health", owner.trace(), cacheId, owner.generation(), owner.attempt())
-                .source("mpv", "runtime-properties", owner.role(), "cached-collector", "client-context", owner.mediaId(), owner.mediaId(), nativeSeq.get(), SystemClock.elapsedRealtimeNanos())
+                .source("mpv", "runtime-properties", owner.role(), "cached-collector", "native-load-start-context", owner.mediaId(), log.context().mediaId(), nativeSeq.get(), SystemClock.elapsedRealtimeNanos())
                 .observed("captureGeneration", capture).observed("nativeOverflow", nativeOverflow).observed("javaDropped", 0)
                 .observed("lateEvents", state.lateEvents()).observed("nodeErrors", state.nodeErrors())
                 .observed("firstSeenMs", firstNativeMs == 0 ? null : firstNativeMs).observed("lastSeenMs", lastNativeMs == 0 ? null : lastNativeMs)

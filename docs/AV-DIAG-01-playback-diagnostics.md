@@ -1,6 +1,6 @@
 # AV-DIAG-01：音视频全链路调试日志改造方案
 
-> 状态：2026-09-15 用户明确要求按夜间评审版实施；**D0保留，D1/D2公开接口采集代码及双端编译完成，继续D3/D4，D5未启动**。唯一任务记录，设备与性能验收不以编译通过代替。
+> 状态：2026-09-15 已按夜间评审版实施；**D0保留，D1–D4公开接口代码及双端Java编译交付，D3回调归属修正见14.9；D5未启动**。真实设备导出、实播、崩溃/洪泛及性能验收仍待用户执行，不能把编译通过称为全部方案验收完成。
 >
 > 2026-09-14夜间评审的持续记录与查名操作边界（9.2.1、9.3.1）已合入当前实施文档；原隔离工作区仅作输入。
 >
@@ -622,7 +622,16 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - 已实现：`JournaledDiagnosticFile`包装原RollingDiagnosticFile；原writer在私有files目录维护最多16个实例、64KiB journal及临时替换文件，普通进展最多每秒一次、开始/结束/崩溃优先。cache清理后仍可从journal恢复旧run/trace/attempt及unfinished状态，旧记录经字段脱敏并进入TXT；磁盘预算包含journal。
 - 已实现：DebugLogStore与原Java uncaught handler串联，最多150ms best-effort排队刷写后必定交还原handler；从后台线程读取自身ApplicationExitInfo摘要及最多8KiB ANR文本前缀，缺少trace/API明确unavailable/not-supported。native平台二进制trace仅报告可用性及字节边界，不伪造Java堆栈。
 - 验证：Mobile/Leanback arm64最终Java编译32秒通过（`/private/tmp/avdiag-recovery-compile.log`）；schema静态检查、diff格式和上游checkpoint检查均通过（0错误/0警告）。未进行设备、崩溃注入、真实用户端导出或性能A/B；这些验收仍归用户执行。
-- 收尾发现：D3原生end-file按client当前context记录，在快速换源超时/晚回调情况下需补固定native attempt归属。D4独立提交后，执行一个仅诊断归属的窄修正；不扩展播放行为。
+- 提交：`ac02ce84ae14332fa8bf2aab840ee4ab5a7fac2b`，tag `recovery/AV-DIAG-01-RECOVERY/20260915125623-ac02ce84ae14`，未推送。
+
+### 14.9 D3 原生回调尝试归属收尾
+
+- guard `AV-DIAG-01-MPV-OWNER`，基线为上述D4提交；仅修改MpvDiagnosticCollector/MpvPlayer及本文件/索引，保护原`app/.cxx/`70文件。复用R07/R13及既定不可变Context设计，不改变播放控制、恢复策略或native。
+- 证据：openCurrent会先创建新controller attempt，旧end-file在stop timeout后仍可能到达。原collector取当前Context并关闭它，会把旧文件终态写入新尝试。
+- 修正：在loadfile调用前保存请求Context，START_FILE在native事件线程固定该次owner；后续原生日志、事件、属性/轨道快照、局部失败与health使用该owner和property generation。新controller请求不重绑旧回调；只有native owner仍等于当前attempt时，原生end-file才关闭当前记录。controller stop/release另外记录请求来源。
+- 无法归属时明确未知：START_FILE没有公开playlist entry ID，重叠的不同attempt、无App加载请求的START_FILE和queue overflow不猜媒体；START_FILE之前的初始化日志也不使用新controller媒体冒充来源。原生日志本身仍标`log-media-unconfirmed`，async reply只凭operationId关联请求，不借用当前媒体。诊断锁内不调用MPV、文件IO或等待UI。
+- 验证：本次修改后Mobile/Leanback arm64 Java编译一次通过，24秒（`/private/tmp/avdiag-mpv-owner-compile.log`）；collector字面字段/事件schema静态校验通过（`/private/tmp/avdiag-mpv-owner-schema.log`）。diff格式与文档checkpoint在本单元收尾验证，不追加自动化测试、设备操作或性能测试。
+- 回滚：撤回本guard对应提交即可恢复上述D4状态；精确提交/tag由guard回执及`Task-Guard: AV-DIAG-01-MPV-OWNER`提交记录恢复。
 
 ## 15. 验收矩阵：如何证明日志真的够用
 
@@ -728,11 +737,11 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 ## 18. Recovery anchor / 后续唯一动作
 
 - Objective：依用户指定评审版实施D1–D4；验收见0.1/14.5/15节，D5深度/native独立。
-- Plan：D0保留；D1–D4公开接口代码/双端编译完成，范围/缺项见14.6–14.8；最后补D3晚到end-file的尝试归属。
-- Workspace：`feature/mpv-dv7-fel`，HEAD `88780d4dc8a197fc9bb5e767f450e1847e50a35d`；guard `AV-DIAG-01-RECOVERY`，保护 `app/.cxx/` 原70文件。
-- Files：ExoDiagnosticCollector/CodecAdapter/AudioOutput、PlaybackDiagnosticCollector、SurfaceDiagnosticCollector、SystemAudioDiagnosticCollector；现有ExoUtil/runtime selector/vendor audio provider/engine/公共Activity、DiagnosticEvent及本文件/索引。
-- Evidence：研究R01–R19、最终AAR javap；双端最终Java编译36秒通过、schema静态检查通过，不代表实播验证。
-- Unverified：新代码、真实设备导出/播放/性能；不运行用户已要求自行执行的测试。
-- Residual risks：来源关联、输出生命周期、native过滤/缓存、平台边界；使用只读装饰与明确未知状态。
-- Rollback：上述HEAD；本单元commit/tag由guard回执记录。
-- Exactly one next action：D4 guard收尾后补D3 native回调不可变attempt归属，进行一次受影响Java编译并提交/tag。
+- Plan：D0保留；D1–D4公开接口代码/编译交付，范围/缺项见14.6–14.9；D3归属修正随本guard提交/tag，D5未启动。
+- Workspace：`feature/mpv-dv7-fel`；本单元基线`ac02ce84ae14332fa8bf2aab840ee4ab5a7fac2b`，guard `AV-DIAG-01-MPV-OWNER`，保护 `app/.cxx/` 原70文件。
+- Files：本次仅MpvDiagnosticCollector/MpvPlayer及本文件/索引；D1–D4文件与交付记录见14.6–14.8。
+- Evidence：研究R01–R19、最终AAR javap；Exo/MPV/IJK与恢复三个单元双端Java编译分别36/21/32秒通过，14.9最终修正双端编译24秒通过，schema静态检查通过；不代表实播验证。
+- Unverified：真实设备导出/播放、洪泛/崩溃和性能待用户验收；本轮不打包或安装APK，不运行用户保留自行执行的测试。
+- Residual risks：无native媒体ID的回调来源、平台输出边界、真实设备生命周期与性能；不可观察项明确未知，不冒充正常。
+- Rollback：前三单元commit/tag见14.6–14.8；本单元回滚锚点为上述D4提交。
+- Exactly one next action：由用户完成第15节实播与真实导出验收；D5深度/native按独立阶段处理。
