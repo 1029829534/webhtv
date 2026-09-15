@@ -610,6 +610,19 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - M08/M09：保留查名失败原severity/prefix/原文和独立事件身份，查名结果与实际create/configure/start分开；缺选择器内部原因明确native-hook-required。有video轨、vid=no及audio选中并伴视频init错误时报告videoPartialFailure，保留音频是否实际发声的未知边界。
 - 验证：MPV接线及日志级别恢复/跨文件缓存补齐后的Mobile/Leanback arm64 Java编译通过，日志 `/private/tmp/avdiag-mpv-final-compile.log`；schema、live路径不再引用nativeLogWindow及diff检查通过。未运行用户保留自行执行的native入口洪泛/静默尾部fixture、设备导出或性能A/B；不能把编译称作T03/T05/T21已验收。
 - 用时超过10–15分钟估计：原恢复策略输入隔离与原生回调代际/关闭恢复需补齐；后续仅推进D4必要实现，不增加native研究或测试范围。
+- 提交：`88780d4dc8a197fc9bb5e767f450e1847e50a35d`，tag `recovery/AV-DIAG-01-MPV/20260915123353-88780d4dc8a1`，未推送。
+
+### 14.8 D4 IJK 与恢复公开接口交付
+
+- 12:34起，预计15–20分钟；guard `AV-DIAG-01-RECOVERY`，基线为上述D3提交。范围：IjkSimplePlayer/IjkPlayerEngine、PreviousProcessExitLogger/App、诊断持久化及本文件/索引。
+- IJK只接入现有原始info/error和状态刷新，原生AudioTrack/OpenSL内部状态保持不可观察；实际stream选择与旧UI默认首轨表示分开。
+- journal由原日志writer写入App私有持久目录，大小有界，普通进展限频；保存已记录的run/trace/attempt、终态/错误/输出进展。next boot读取旧journal并随TXT导出，保留旧run身份；关闭/清空同时删除。
+- Java崩溃仅排队有界摘要并短时best-effort flush，随后交给原handler；系统退出信息在后台读取自身公开API，trace缺失明确未知，不更改已有恢复/重启策略。
+- 已实现：IJK原始info/error、实际stream选轨、视频/音频render-start、解码名称/类型、输出FPS（明确计量口径）、缓存字节、系统音量/可发现设备及生命周期。普通快照复用现有状态刷新，每5秒最多一轮；OpenSL/AudioTrack实际write/head/route缺项保持native-hook-required。
+- 已实现：`JournaledDiagnosticFile`包装原RollingDiagnosticFile；原writer在私有files目录维护最多16个实例、64KiB journal及临时替换文件，普通进展最多每秒一次、开始/结束/崩溃优先。cache清理后仍可从journal恢复旧run/trace/attempt及unfinished状态，旧记录经字段脱敏并进入TXT；磁盘预算包含journal。
+- 已实现：DebugLogStore与原Java uncaught handler串联，最多150ms best-effort排队刷写后必定交还原handler；从后台线程读取自身ApplicationExitInfo摘要及最多8KiB ANR文本前缀，缺少trace/API明确unavailable/not-supported。native平台二进制trace仅报告可用性及字节边界，不伪造Java堆栈。
+- 验证：Mobile/Leanback arm64最终Java编译32秒通过（`/private/tmp/avdiag-recovery-compile.log`）；schema静态检查、diff格式和上游checkpoint检查均通过（0错误/0警告）。未进行设备、崩溃注入、真实用户端导出或性能A/B；这些验收仍归用户执行。
+- 收尾发现：D3原生end-file按client当前context记录，在快速换源超时/晚回调情况下需补固定native attempt归属。D4独立提交后，执行一个仅诊断归属的窄修正；不扩展播放行为。
 
 ## 15. 验收矩阵：如何证明日志真的够用
 
@@ -715,11 +728,11 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 ## 18. Recovery anchor / 后续唯一动作
 
 - Objective：依用户指定评审版实施D1–D4；验收见0.1/14.5/15节，D5深度/native独立。
-- Plan：D0保留；D1/D2及D3公开接口代码/双端编译完成，范围/缺项见14.6/14.7；D4待接续。
-- Workspace：`feature/mpv-dv7-fel`，HEAD `57656c06bdb4e13de3cbaf8f573dc76212e7d718`；guard `AV-DIAG-01-MPV`，保护 `app/.cxx/` 原70文件。
+- Plan：D0保留；D1–D4公开接口代码/双端编译完成，范围/缺项见14.6–14.8；最后补D3晚到end-file的尝试归属。
+- Workspace：`feature/mpv-dv7-fel`，HEAD `88780d4dc8a197fc9bb5e767f450e1847e50a35d`；guard `AV-DIAG-01-RECOVERY`，保护 `app/.cxx/` 原70文件。
 - Files：ExoDiagnosticCollector/CodecAdapter/AudioOutput、PlaybackDiagnosticCollector、SurfaceDiagnosticCollector、SystemAudioDiagnosticCollector；现有ExoUtil/runtime selector/vendor audio provider/engine/公共Activity、DiagnosticEvent及本文件/索引。
 - Evidence：研究R01–R19、最终AAR javap；双端最终Java编译36秒通过、schema静态检查通过，不代表实播验证。
 - Unverified：新代码、真实设备导出/播放/性能；不运行用户已要求自行执行的测试。
 - Residual risks：来源关联、输出生命周期、native过滤/缓存、平台边界；使用只读装饰与明确未知状态。
 - Rollback：上述HEAD；本单元commit/tag由guard回执记录。
-- Exactly one next action：D3 guard收尾后实施D4 IJK最小同等采集及私有journal/退出信息恢复。
+- Exactly one next action：D4 guard收尾后补D3 native回调不可变attempt归属，进行一次受影响Java编译并提交/tag。

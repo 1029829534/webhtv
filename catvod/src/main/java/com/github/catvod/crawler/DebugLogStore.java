@@ -6,6 +6,7 @@ import com.github.catvod.Init;
 import com.github.catvod.crawler.diagnostics.DiagnosticEvent;
 import com.github.catvod.crawler.diagnostics.DiagnosticLogBuffer;
 import com.github.catvod.crawler.diagnostics.RollingDiagnosticFile;
+import com.github.catvod.crawler.diagnostics.JournaledDiagnosticFile;
 import com.github.catvod.utils.Prefers;
 
 import java.io.ByteArrayInputStream;
@@ -16,20 +17,46 @@ public class DebugLogStore {
     private static final String PREF_ENABLED = "debug_log";
     private static volatile boolean enabled;
     private static volatile DiagnosticLogBuffer buffer;
+    private static boolean crashHandlerInstalled;
 
     public static boolean isEnabled() { return enabled; }
 
     private static synchronized DiagnosticLogBuffer create() {
         if (buffer == null) {
             DiagnosticLogBuffer.Limits limits = DiagnosticLogBuffer.Limits.standard();
-            buffer = new DiagnosticLogBuffer(limits, new RollingDiagnosticFile(Init.context().getCacheDir(), limits),
+            buffer = new DiagnosticLogBuffer(limits, new JournaledDiagnosticFile(
+                    new RollingDiagnosticFile(Init.context().getCacheDir(), limits), Init.context().getFilesDir()),
                     new DiagnosticLogBuffer.Clock() {
                         @Override public long wallMillis() { return System.currentTimeMillis(); }
                         @Override public long monotonicNanos() { return SystemClock.elapsedRealtimeNanos(); }
                         @Override public int processId() { return android.os.Process.myPid(); }
                     });
+            installCrashHandler();
         }
         return buffer;
+    }
+
+    private static void installCrashHandler() {
+        if (crashHandlerInstalled) return;
+        Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        if (previous == null) return;
+        try {
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            try {
+                if (enabled) {
+                    event(new DiagnosticEvent("process.recovery", "none", "process", 0, 0).severity("error")
+                            .observed("reason", "java-uncaught").observed("javaClass", error.getClass().getName())
+                            .message(error.getMessage()).pin("process-crash"));
+                    add("process-crash", com.github.catvod.crawler.diagnostics.DiagnosticText.throwable(error), true);
+                    DiagnosticLogBuffer current = buffer;
+                    if (current != null) current.flushBestEffort(150);
+                }
+            } catch (Throwable ignored) {
+                // The original crash handler always retains ownership of termination/reporting.
+            } finally { previous.uncaughtException(thread, error); }
+        });
+        crashHandlerInstalled = true;
+        } catch (RuntimeException ignored) { collectorFailure(); }
     }
 
     public static synchronized void setEnabled(boolean value) {

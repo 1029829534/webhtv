@@ -45,6 +45,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         Export export(String header, List<String> pinned) throws IOException;
         long bytes();
         default long rotations() { return 0; }
+        default long extraDiskBudgetBytes() { return 0; }
     }
 
     public static final class Export implements AutoCloseable {
@@ -160,6 +161,22 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
 
     public void collectorFailure() { synchronized (lock) { collectorFailures++; version++; } }
 
+    /** Crash path only. Releases the producer lock while waiting and never does caller-thread I/O. */
+    public void flushBestEffort(long timeoutMs) {
+        if (Thread.currentThread() == writer) return;
+        long deadline = System.nanoTime() + Math.min(150, Math.max(0, timeoutMs)) * 1_000_000;
+        synchronized (lock) {
+            long target = sequence;
+            lock.notifyAll();
+            while (enabled && lastProcessedSeq < target) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) break;
+                try { lock.wait(Math.max(1, remaining / 1_000_000)); }
+                catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+    }
+
     public void collectorHealth(String id, DiagnosticEvent event, boolean partial, long captureGeneration) {
         if (!enabled) return;
         try {
@@ -260,7 +277,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
         health.addProperty("queueLimitBytes", limits.queueBytes); health.addProperty("queueHighWatermark", highWatermark);
         health.addProperty("memoryBytes", memoryBytes); health.addProperty("memoryLimitBytes", limits.memoryBytes);
         health.addProperty("pinnedBytes", pinnedBytes); health.addProperty("pinnedLimitBytes", limits.pinnedBytes);
-        health.addProperty("diskBytes", persistedBytes); health.addProperty("diskLimitBytes", (long) limits.segmentBytes * limits.segments + limits.pinnedBytes);
+        health.addProperty("diskBytes", persistedBytes); health.addProperty("diskLimitBytes", (long) limits.segmentBytes * limits.segments + limits.pinnedBytes + persistence.extraDiskBudgetBytes());
         health.addProperty("droppedNormal", droppedNormal); health.addProperty("droppedCritical", droppedCritical);
         health.addProperty("evictedMemory", evictedMemory); health.addProperty("evictedPinned", evictedPinned);
         health.addProperty("truncated", truncated); health.addProperty("writeFailures", writeFailures);
@@ -390,6 +407,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
                         persistedBytes = persistence.bytes();
                         rotatedSegments = persistence.rotations();
                         lastWriterProgressNanos = clock.monotonicNanos(); version++;
+                        lock.notifyAll();
                     }
                 }
             } catch (Exception error) {
@@ -400,6 +418,7 @@ public final class DiagnosticLogBuffer implements AutoCloseable {
                         if (!batch.isEmpty()) lastProcessedSeq = batch.get(batch.size() - 1).seq;
                         version++;
                     }
+                    lock.notifyAll();
                 }
                 if (report != null) report.future.completeExceptionally(error);
             }
