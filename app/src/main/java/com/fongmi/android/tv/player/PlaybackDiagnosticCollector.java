@@ -64,6 +64,7 @@ public final class PlaybackDiagnosticCollector {
         if (!enabled() || captureGeneration == DebugLogStore.captureGeneration()) return;
         if (captureGeneration != -1) { videoLevel = audioLevel = -1; firstError = lastError = null; }
         captureGeneration = DebugLogStore.captureGeneration();
+        NativeLibraryDiagnostics.request();
         emit(current, "diag.session.begin", "engine-collector", "engine-context", e -> e
                 .observed("mode", "standard").observed("captureStartedLate", late)
                 .observed("engineInstance", instance).observed("captureGeneration", captureGeneration)
@@ -72,7 +73,16 @@ public final class PlaybackDiagnosticCollector {
     }
 
     public void emit(Context owner, String name, String source, String association, Consumer<DiagnosticEvent> facts) {
-        if (!DebugLogStore.acceptsEvent(name)) return;
+        emit(owner, name, source, association, null, facts);
+    }
+
+    public void emitNative(Context owner, String name, String source, String association, String prefix, Consumer<DiagnosticEvent> facts) {
+        emit(owner, name, source, association, prefix == null ? "" : prefix, facts);
+    }
+
+    private void emit(Context owner, String name, String source, String association, String nativePrefix, Consumer<DiagnosticEvent> facts) {
+        if (nativePrefix == null ? !DebugLogStore.acceptsEvent(name) : !DebugLogStore.isEnabled()
+                || !DebugLogStore.categoryEnabled(com.github.catvod.crawler.diagnostics.DiagnosticCategories.nativePrefix(nativePrefix))) return;
         try {
             Context ctx = owner == null ? new Context("none", 0, 0, null, "unresolved") : owner;
             DiagnosticEvent event = new DiagnosticEvent(name, ctx.trace(), instance, ctx.generation(), ctx.attempt())
@@ -96,6 +106,10 @@ public final class PlaybackDiagnosticCollector {
         if (!enabled() || error == null) return;
         String errorId = id("error");
         if (owner == current) { if (firstError == null) firstError = errorId; lastError = errorId; }
+        if (domain.startsWith("video") || domain.startsWith("audio"))
+            emit(owner, domain.startsWith("video") ? "video.error" : "audio.error", domain, "exception-chain", e -> e
+                    .severity("error").observed("errorId", errorId).observed("stage", stage)
+                    .observed("javaClass", error.getClass().getName()).message(error.getMessage()));
         Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         Throwable cause = error;
         for (int depth = 0; cause != null && depth < 8 && visited.add(cause); depth++, cause = cause.getCause()) {

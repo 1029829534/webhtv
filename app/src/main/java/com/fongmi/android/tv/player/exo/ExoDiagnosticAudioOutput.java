@@ -35,6 +35,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     private long firstPts = Long.MIN_VALUE, lastPts = Long.MIN_VALUE;
     private final com.fongmi.android.tv.player.PcmDiagnosticProbe pcmProbe = new com.fongmi.android.tv.player.PcmDiagnosticProbe();
     private final int pcmEncoding, pcmChannels;
+    private final com.fongmi.android.tv.player.OutputProgressDiagnostic audioProgress = new com.fongmi.android.tv.player.OutputProgressDiagnostic(false);
 
     static AudioOutput wrap(AudioOutput output, AudioOutputProvider.OutputConfig config, ExoDiagnosticCollector collector) {
         return collector == null ? output : new ExoDiagnosticAudioOutput(output, config, collector);
@@ -74,6 +75,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
 
     static AudioSink sink(AudioSink delegate, ExoDiagnosticCollector collector) {
         if (collector == null) return delegate;
+        Media3DiagnosticBridge.bind(delegate, collector.log, null, PlaybackDiagnosticCollector.id("audio-sink"));
         return new ForwardingAudioSink(delegate) {
             private long lastMs, calls, bytes;
             private androidx.media3.common.Format inputFormat;
@@ -88,7 +90,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
                 super.configure(config);
             }
             @Override public boolean handleBuffer(ByteBuffer buffer, long pts, int count) throws InitializationException, WriteException {
-                if (!PlaybackDiagnosticCollector.enabled()) return super.handleBuffer(buffer, pts, count);
+                if (!DebugLogStore.acceptsEvent("audio.processing")) return super.handleBuffer(buffer, pts, count);
                 int position = buffer.position();
                 boolean result = super.handleBuffer(buffer, pts, count);
                 if (inputFormat != null && "audio/raw".equals(inputFormat.sampleMimeType)) inputProbe.sample(collector.log, collector.log.context(),
@@ -116,6 +118,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     private ExoDiagnosticAudioOutput(AudioOutput output, AudioOutputProvider.OutputConfig config, ExoDiagnosticCollector collector) {
         super(output); log = collector.log; owner = log.context();
         track = output instanceof AudioTrackAudioOutput audioTrack ? audioTrack.getAudioTrack() : null;
+        Media3DiagnosticBridge.bind(track, log, owner, outputId);
         pcmEncoding = config.encoding; pcmChannels = track == null ? Integer.bitCount(config.channelMask) : track.getChannelCount();
         event("audio.output.configure", e -> e.observed("encoding", config.encoding).observed("sampleRate", config.sampleRate)
                 .observed("channelMask", config.channelMask).observed("offload", config.isOffload).observed("tunneling", config.isTunneling)
@@ -132,7 +135,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     }
 
     @Override public boolean write(ByteBuffer buffer, int units, long pts) throws WriteException {
-        if (!PlaybackDiagnosticCollector.enabled()) return super.write(buffer, units, pts);
+        if (!DebugLogStore.acceptsEvent("audio.output.write")) return super.write(buffer, units, pts);
         long generation = DebugLogStore.captureGeneration();
         if (generation != diagnosticGeneration) { diagnosticGeneration = generation; resetEpoch(); lastSummaryMs = 0; }
         int position = buffer.position(), remaining = buffer.remaining();
@@ -161,7 +164,7 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
     }
 
     private void sample(boolean force) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!DebugLogStore.acceptsEvent("audio.output.write")) return;
         long now = SystemClock.elapsedRealtime();
         if (!force && now - lastSummaryMs < 5000) return;
         lastSummaryMs = now;
@@ -182,6 +185,10 @@ final class ExoDiagnosticAudioOutput extends ForwardingAudioOutput {
             if (delta > 0x7fffffffL) { epoch++; extendedHead = 0; delta = 0; }
             else extendedHead += delta;
             boolean first = rawHead < 0; rawHead = raw;
+            audioProgress.sample(log, owner, epoch, now, extendedHead,
+                    track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING ? "audio-paused-or-stopped"
+                            : accepted == 0 ? "no-audio-payload-observed" : null,
+                    "actual AudioTrack playhead during writes; not acoustic audibility");
             long change = delta;
             event("audio.output.playhead", e -> {
                 e.observed("headRaw", raw).observed("headFrames", extendedHead)

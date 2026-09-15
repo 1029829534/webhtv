@@ -33,6 +33,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
     private volatile long callbacks;
     private boolean hasFrameListener;
     private long firstPts = Long.MIN_VALUE, lastPts = Long.MIN_VALUE, lastInputMs, lastOutputMs, lastSummaryMs;
+    private long lastDecodedPts = Long.MIN_VALUE;
 
     static MediaCodecAdapter.Factory factory(MediaCodecAdapter.Factory delegate, ExoDiagnosticCollector collector) {
         return config -> {
@@ -47,6 +48,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
                     .observed("stage", "create-configure-start aggregate").observed("phase", "begin")
                     .unknown("operation", NOT_OBSERVABLE).pin(decoderId + "-attempt"));
             mediaFormat(log, owner, config.mediaFormat, decoderId, video ? "video.configure" : "audio.decoder.output");
+            Object previousDiagnosticOwner = Media3DiagnosticBridge.enter(log, owner, decoderId, config.codecInfo.name, video);
             try {
                 MediaCodecAdapter adapter = delegate.createAdapter(config);
                 log.emit(owner, event, "codec-adapter-factory", "engine-at-create; media-unconfirmed", e -> e
@@ -62,6 +64,8 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
                         .unknown("operation", NOT_OBSERVABLE).pin(decoderId + "-failure"));
                 log.error(owner, video ? "video-codec" : "audio-codec", "create-configure-start aggregate", error);
                 throw error;
+            } finally {
+                androidx.media3.common.util.PlaybackDiagnostics.leave(previousDiagnosticOwner);
             }
         };
     }
@@ -122,7 +126,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
     }
 
     static void mediaFormat(PlaybackDiagnosticCollector log, Context owner, MediaFormat format, String id, String event) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!DebugLogStore.acceptsEvent(event)) return;
         String[] keys = {"mime", "width", "height", "max-width", "max-height", "profile", "level", "color-standard", "color-range",
                 "color-transfer", "rotation-degrees", "max-input-size", "operating-rate", "priority", "low-latency", "crop-left",
                 "crop-right", "crop-top", "crop-bottom", "stride", "slice-height", "sample-rate", "channel-count", "pcm-encoding"};
@@ -139,15 +143,39 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
             }
         }
         int count = 0, bytes = 0;
+        boolean protectedCsd = log.protectedMedia();
+        boolean digestComplete = !protectedCsd && owner == log.context();
+        java.security.MessageDigest digest = null;
+        if (digestComplete) try { digest = java.security.MessageDigest.getInstance("SHA-256"); }
+        catch (java.security.NoSuchAlgorithmException ignored) { digestComplete = false; }
         for (int i = 0; i < 8; i++) {
             try {
                 java.nio.ByteBuffer csd = format.getByteBuffer("csd-" + i);
-                if (csd != null) { count++; bytes += csd.remaining(); }
-            } catch (RuntimeException ignored) { DebugLogStore.collectorFailure(); }
+                if (csd != null) {
+                    count++; int length = csd.remaining();
+                    bytes = (int) Math.min(Integer.MAX_VALUE, (long) bytes + length);
+                    if (bytes > 65536) digestComplete = false;
+                    if (digestComplete) {
+                        digest.update((byte) i);
+                        digest.update(new byte[]{(byte)(length >>> 24), (byte)(length >>> 16), (byte)(length >>> 8), (byte)length});
+                        digest.update(csd.duplicate()); // Never consume the codec's original buffer.
+                    }
+                }
+            } catch (RuntimeException ignored) { digestComplete = false; DebugLogStore.collectorFailure(); }
+        }
+        String digestValue = null;
+        if (digestComplete && count > 0) {
+            StringBuilder text = new StringBuilder(64);
+            for (byte value : digest.digest()) text.append(Character.forDigit((value >>> 4) & 15, 16)).append(Character.forDigit(value & 15, 16));
+            digestValue = text.toString();
         }
         int csdCount = count, csdBytes = bytes;
-        log.emit(owner, event, "codec-mediaformat", "adapter-configuration", e -> e.observed("decoderId", id)
-                .observed("csdCount", csdCount).observed("csdBytes", csdBytes).unknown("csdDigest", NOT_COLLECTED));
+        String csdDigest = digestValue;
+        log.emit(owner, event, "codec-mediaformat", "adapter-configuration", e -> {
+            e.observed("decoderId", id).observed("csdCount", csdCount).observed("csdBytes", csdBytes);
+            if (csdDigest != null) e.observed("csdDigest", csdDigest);
+            else e.unknown("csdDigest", protectedCsd ? PERMISSION_DENIED : csdCount == 0 ? NOT_APPLICABLE : NOT_COLLECTED);
+        });
     }
 
     @Override public void queueInputBuffer(int index, int offset, int size, long pts, int flags) {
@@ -159,7 +187,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
         input(0, pts, flags, true);
     }
     private void input(int size, long pts, int flags, boolean secure) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!DebugLogStore.acceptsEvent(video ? "video.sample.summary" : "audio.decoder.output")) return;
         captureWindow();
         inputs++; bytes += size; if (secure) encrypted++;
         if ((flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) eos++;
@@ -173,9 +201,10 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
     }
     @Override public int dequeueOutputBufferIndex(MediaCodec.BufferInfo info) {
         int result = super.dequeueOutputBufferIndex(info);
-        if (result >= 0 && PlaybackDiagnosticCollector.enabled()) {
+        if (result >= 0 && DebugLogStore.acceptsEvent(video ? "video.output.summary" : "audio.decoder.output")) {
             captureWindow();
             outputs++; lastOutputMs = SystemClock.elapsedRealtime();
+            if ((info.flags & (MediaCodec.BUFFER_FLAG_CODEC_CONFIG | MediaCodec.BUFFER_FLAG_END_OF_STREAM)) == 0) lastDecodedPts = info.presentationTimeUs;
             if (outputs == 1) emit(video ? "video.first-output" : "audio.decoder.output", e -> e
                     .observed("stage", "first-output-buffer").observed("firstPtsUs", info.presentationTimeUs));
             summary(false);
@@ -190,7 +219,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
     @Override public void releaseOutputBuffer(int index, boolean render) { super.releaseOutputBuffer(index, render); released(render); }
     @Override public void releaseOutputBuffer(int index, long time) { super.releaseOutputBuffer(index, time); released(true); }
     private void released(boolean render) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!DebugLogStore.acceptsEvent(video ? "video.output.summary" : "audio.decoder.output")) return;
         captureWindow();
         if (render) {
             submitted++;
@@ -219,7 +248,7 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
         try { super.flush(); lifecycle("flush", "success"); }
         catch (RuntimeException error) { log.error(owner, "codec", "flush", error); throw error; }
         epoch++; inputs = bytes = outputs = submitted = discarded = encrypted = eos = regressions = callbacks = 0;
-        firstPts = lastPts = Long.MIN_VALUE; lastInputMs = lastOutputMs = 0;
+        firstPts = lastPts = lastDecodedPts = Long.MIN_VALUE; lastInputMs = lastOutputMs = 0;
     }
     @Override public void release() {
         summary(true);
@@ -230,10 +259,13 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
         emit(video ? "video.flush-reuse-release" : "audio.decoder.attempt", e -> e.observed("operation", operation).observed("result", result));
     }
     private void summary(boolean force) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!DebugLogStore.acceptsEvent(video ? "video.output.summary" : "audio.decoder.output")) return;
         long now = SystemClock.elapsedRealtime();
         if (!force && now - lastSummaryMs < 5000) return;
         lastSummaryMs = now;
+        emit("audio.sync", e -> e.observed("video", video).observed("lastPtsUs", lastDecodedPts == Long.MIN_VALUE ? null : lastDecodedPts)
+                .observed("lastAgeMs", lastOutputMs == 0 ? null : now - lastOutputMs)
+                .observed("metricScope", "decoder output PTS; correlate by owner/epoch; not physical presentation time"));
         emit(video ? "video.sample.summary" : "audio.decoder.output", e -> e.observed("inputBuffers", inputs)
                 .observed("bytes", bytes).observed("encryptedBuffers", encrypted).observed("eosBuffers", eos)
                 .observed("ptsRegressions", regressions).observed("firstPtsUs", firstPts == Long.MIN_VALUE ? null : firstPts)
@@ -254,6 +286,6 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
         if (generation == diagnosticGeneration) return;
         diagnosticGeneration = generation; epoch++;
         inputs = bytes = outputs = submitted = discarded = encrypted = eos = regressions = callbacks = 0;
-        firstPts = lastPts = Long.MIN_VALUE; lastInputMs = lastOutputMs = lastSummaryMs = 0;
+        firstPts = lastPts = lastDecodedPts = Long.MIN_VALUE; lastInputMs = lastOutputMs = lastSummaryMs = 0;
     }
 }

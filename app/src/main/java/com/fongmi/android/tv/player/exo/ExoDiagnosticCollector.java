@@ -34,6 +34,7 @@ import static com.github.catvod.crawler.diagnostics.DiagnosticEvent.Status.*;
 /** Public Media3 hooks, separate from PlaybackAnalyticsListener's compatibility/UI state. */
 public final class ExoDiagnosticCollector implements AnalyticsListener {
     private static final Map<ExoPlayer, WeakReference<ExoDiagnosticCollector>> PLAYERS = new WeakHashMap<>();
+    private static final Map<Context, WeakReference<PlaybackDiagnosticCollector>> MEDIA = new WeakHashMap<>();
     final PlaybackDiagnosticCollector log = new PlaybackDiagnosticCollector("exo", "1.11.0-alpha01-fongmi");
     private WeakReference<ExoPlayer> player = new WeakReference<>(null);
     private Handler handler;
@@ -41,10 +42,12 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
     private DecoderCounters videoCounters, audioCounters;
     private Context videoOwner, audioOwner;
     private long seekEpoch;
+    private final com.fongmi.android.tv.player.OutputProgressDiagnostic videoProgress = new com.fongmi.android.tv.player.OutputProgressDiagnostic(true);
 
     void attach(ExoPlayer value) {
         player = new WeakReference<>(value);
         synchronized (PLAYERS) { PLAYERS.put(value, new WeakReference<>(this)); }
+        Media3DiagnosticBridge.bind(value, log, null, log.instanceId());
         value.addAnalyticsListener(this);
         handler = new Handler(value.getApplicationLooper());
         handler.postDelayed(tick, 5000);
@@ -74,12 +77,20 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
         }
         if (collector == null) return item;
         Context owner = collector.log.begin(trace, "foreground");
+        synchronized (MEDIA) { MEDIA.put(owner, new WeakReference<>(collector.log)); }
         collector.log.protectedMedia(item.localConfiguration != null && item.localConfiguration.drmConfiguration != null);
         collector.seekEpoch = 0;
         // The private tag follows EventTime's media item through replace/seek/reprepare.
         // Keep an existing application tag intact; its events then explicitly lack association.
         if (item.localConfiguration == null || item.localConfiguration.tag != null) return item;
         return item.buildUpon().setTag(owner).build();
+    }
+
+    static PlaybackDiagnosticCollector mediaLog(Context owner) {
+        synchronized (MEDIA) {
+            WeakReference<PlaybackDiagnosticCollector> value = MEDIA.get(owner);
+            return value == null ? null : value.get();
+        }
     }
 
     private static Context owner(Timeline timeline, int windowIndex) {
@@ -128,6 +139,18 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
                         .unknown("physicalDisplay", NOT_OBSERVABLE));
                 counters(videoOwner, videoCounters, true);
                 counters(audioOwner, audioCounters, false);
+                log.emit(owner, "audio.sync", "media3-player-clock", "current-timeline", e -> e
+                        .observed("positionMs", current.getCurrentPosition()).observed("speed", current.getPlaybackParameters().speed)
+                        .observed("seekEpoch", seekEpoch).observed("property", "avsync").unknown("value", NOT_OBSERVABLE)
+                        .observed("metricScope", "player media clock; decoder PTS recorded separately, not a physical A/V sync measurement"));
+                Format selected = current.getVideoFormat();
+                String gate = !current.isPlaying() ? "paused-buffering-or-suppressed"
+                        : owner != videoOwner || videoCounters == null ? "video-owner-or-counter-unavailable"
+                        : selected == null || selected.frameRate < 1 ? "no-motion-video-or-unknown-cadence"
+                        : videoCounters.queuedInputBufferCount == 0 ? "no-video-input-observed" : null;
+                videoProgress.sample(log, owner, seekEpoch, SystemClock.elapsedRealtime(),
+                        videoCounters == null ? Double.NaN : videoCounters.renderedOutputBufferCount, gate,
+                        "renderer submitted buffers; known cadence >= 1 fps; three 5-second samples");
                 SystemAudioDiagnosticCollector.snapshot(log, owner);
             }
         } catch (RuntimeException ignored) { com.github.catvod.crawler.DebugLogStore.collectorFailure(); }

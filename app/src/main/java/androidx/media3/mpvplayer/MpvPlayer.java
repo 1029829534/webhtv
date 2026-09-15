@@ -1314,6 +1314,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     public void logMessage(String prefix, int level, String text) {
         if (released) return;
         diagnostics.nativeLog(prefix, level, text);
+        if (MpvDiagnosticCollector.isHook(text)) return;
         int performanceKind = MpvDiagnosticsPolicy.felPerformanceKind(prefix, level, text);
         if (performanceKind >= 0) {
             // Diagnostic measurements are persisted directly, never sent through playback state.
@@ -1688,9 +1689,12 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         for (String property : new String[]{"mpv-version", "ffmpeg-version", "options/msg-level", "hwdec", "hwdec-interop",
                 "video-codec", "audio-codec", "current-tracks/video/decoder", "current-tracks/video/codec-profile",
                 "audio-params/channels", "audio-out-params/channels", "video-dec-params/pixelformat", "video-params/pixelformat",
-                "video-out-params/pixelformat", "audio-spdif", "options/af"}) observe(property, MPVLib.MpvFormat.MPV_FORMAT_STRING);
+                "video-out-params/pixelformat", "audio-spdif", "options/af", "file-format"}) observe(property, MPVLib.MpvFormat.MPV_FORMAT_STRING);
         for (String property : new String[]{"volume", "speed", "audio-delay", "video-pts", "audio-pts"}) observe(property, MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
         observe("mute", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe("seeking", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe("seekable", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe("current-edition", MPVLib.MpvFormat.MPV_FORMAT_INT64);
         observe("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
         observe("time-pos/full", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);
         observe("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE);

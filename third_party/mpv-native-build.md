@@ -280,6 +280,17 @@ P2-2 在现有 `mpv-dovi-profile7-hdr10-base-layer.patch` 内完成 Profile 7 HD
 
 当前状态、实际资产 SHA-256、验证结果与回滚以 [P2-4-mpv-android-fel.md](../docs/P2-4-mpv-android-fel.md) 第9.14节为准。早先NODE可靠性单元替换过两 ABI 的 `libmpv.so` 和 `libplayer.so`；本轮以`1620bac1566727f4067eda631647a11652082e74`为基线，**仅重编/替换两份libmpv，其余18库（含JNI）逐字节不变**。host计时/所有权契约、23项Java定向测试、双ABI/ELF/导出、两个debug APK各10库/签名/封装结构通过。GPU区间可能含依赖等待，pass缓存不是整帧墙钟，线程数也不等于CPU利用率；目标电视画质、可靠性、性能与生命周期仍须新日志验证，不以构建通过标记任务完成。
 
+## AV-DIAG-01 诊断窄补丁（2026-09-15）
+
+本单元不改变`mpv-native-lock.json`版本及既有DV/字幕/音频/网络补丁，追加：
+
+- `third_party/patches/ffmpeg-mediacodec-diagnostics.patch`：实际查名访问/拒绝/profile比较、查询失败stage、Java提前返回/NDK by-MIME与真实create/configure/start；SHA256 `bf3ad167b8811f661e2c47f33f6ec41e2887125727caa115f3553e814a1710e9`。
+- `third_party/patches/mpv-playback-diagnostics.patch`：原AudioTrack内的配置/重建、原始write结果和单位、已有head/timestamp缓存、低频actual route；跨输出生命周期独立编号；SHA256 `0a62ef78d2cdce3a8e3d843319b364d644a70bda13291452640d86a12c2a136c`。INFO关闭时不做新增写入统计/时间采样。
+
+当前锁定输入：framework `99a60ad2141d5ace94453590903c2c6b9a0a2443`、MPV `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`，NDK29/API24。两ARM ABI从同一缓存补丁链增量构建，随后`bash scripts/build_mpv_native.sh --abi all --stage-only --install`；不reset已应用补丁的缓存，不重编未改变contract的`libplayer.so`。
+
+`verify_mpv_native_assets.sh --require-elf`已通过，包含新增lookup/write marker和原命名空间/依赖门禁；arm64 libmpv SHA256 `8213150b467bc2dd9501bbd8e484ac8db04f537ebc8276133a845c18fda1b01a`，armv7 `2a0e1f749b8d57377da086a5c150db588b90cf65b656eddce36e6a3ba194709d`。完整实现、产物/验证日志、设备验收边界及原子回滚仅记录在[AV-DIAG-01](../docs/AV-DIAG-01-playback-diagnostics.md)的14.12–14.14；没有将构建通过记为设备实播通过。
+
 ## 提交前验证
 
 至少构建一个快速 Release：

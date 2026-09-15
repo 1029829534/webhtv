@@ -1,6 +1,6 @@
 # AV-DIAG-01：音视频全链路调试日志改造方案
 
-> 状态：2026-09-15 用户要求完成全文；**继续补齐D0–D5，不再以14.6–14.9的公开接口主干交付当作全量完成**。当前全量实施范围和状态见14.10；物理屏幕/扬声器等平台不可观察边界保留。
+> 状态：2026-09-15 **D0–D5实现与对应产物已补齐**，覆盖索引见14.13，软件验证及交付记录见14.14。设备实播、T01–T25和性能A/B由用户实测，不记作已通过；物理屏幕/扬声器等平台不可观察边界保留。
 >
 > 2026-09-14夜间评审的持续记录与查名操作边界（9.2.1、9.3.1）已合入当前实施文档；原隔离工作区仅作输入。
 >
@@ -15,7 +15,7 @@
 - 原设计交付：`/private/tmp/webhtv-av-diagnostics-2026-09-13/AV-DIAG-01-音视频全链路调试日志改造方案.md`。相关已读取资料保存于同目录 `evidence/`，实施验证也保存在该临时目录；当前任务文档位于仓库 `docs/AV-DIAG-01-playback-diagnostics.md`。
 - 已归档为 `docs/AV-DIAG-01-playback-diagnostics.md`，原临时文档及证据快照保留。`AV-DIAG-01` 是用户插入需求标识，不占用、改写既有上游 E/P/C 任务编号；D0–D5 的后续工作均续写本文件。
 - 范围：Exo/Media3、其 FFmpeg/nextlib 扩展、MPV、仍可用的 IJK，以及公共播放/Surface/AudioManager/日志导出层。网络、代理、DRM、字幕/LUT、生命周期作为解码和输出故障的必要上下文，不扩展成全量抓包或系统监控。
-- 非目标：本轮修复模拟器黑屏、改默认硬解/软解策略、自动切播放器、自动更改直通、升级依赖、重新构建 native、读取其他 App 日志或要求用户打开 ADB。
+- 原评审非目标：修复模拟器黑屏、改默认硬解/软解策略、自动切播放器、自动更改直通、升级依赖、读取其他 App 日志或要求用户打开 ADB。14.10的全文实施授权包含必要的native诊断hook和同锁重编；不改变原播放策略。
 - 夜间复核基线：`5cde3c015258f620f264d5f3ffe0a437c2ea3d48`。原工作区有活动 guard `E4-LIBASS-stage1` 及 ASS 相关既有改动，本轮全部保护；在 `/private/tmp/webhtv-avdiag-review-20260914`、分支 `assessment/av-diag-01-log-review-20260914` 中仅修改本文件，guard 为 `AV-DIAG-01-review-20260914`。不改变原工作区的 HEAD、索引、文件或任务状态。
 - 持续输出补充：用户随后要求明确持续记录方式；在同一隔离分支、基线 `2ac420f8c038e5a6016cc0169cd80b8b4c8608d3` 上，仅细化9.2.1和T21，guard `AV-DIAG-01-continuous-log`。这是后续实施的设计约束，未修改现有日志代码。
 
@@ -654,6 +654,114 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 - 证据：`/private/tmp/avdiag-complete-app-compile.log`、`/private/tmp/avdiag-complete-contracts.log`，catvod测试XML；不等同于设备实播或性能A/B。已有Room查询警告未改动。
 - 下一单元：基于当前已补丁AAR重编窄hook类并保持其他字节；MPV/FFmpeg只读事件补丁、同锁双ABI产物；完成C03库身份、设置菜单清理和APK。
 
+### 14.12 底层观察点与产物
+
+- 基线：`180811f16073271ba1cb6a4f2f889008966facd3`，恢复tag `recovery/AV-DIAG-01-COMPLETE-APP/20260915141054-180811f16073`。guard `AV-DIAG-01-COMPLETE-NATIVE`；14:12 Asia/Shanghai；继续保护`app/.cxx/`70文件。
+- 精确源码：读取当前已提交common/exoplayer sources.jar的AudioFocusManager、AudioProcessingPipeline、AudioTrackAudioOutput、同步/异步codec adapter、ExoPlayerImpl/Internal及extractor adapter。与R12相同API所有者，focus已在common并由ExoPlayerImplInternal管理；不新增焦点请求者。codec只包装原API调用并原样抛回异常；原始AudioTrack写统计与payload/header单位分开，处理链在configure/flush时采集。
+- 采用方案：common中的可关闭只读observer，App负责固定owner/attempt关联、有界聚合/脱敏；当前AAR选择性重编类，不改变其他class字节，保留ASS和现有所有扩展。对比不改无法获必要内部字段，替换整个sink/focus owner会改变行为，故拒绝。FFmpeg/MPV在当前已打补丁缓存上追加独立补丁；保留原查名排序、fallback、AO/VO参数及所有本地DV/字幕补丁。
+- 范围：guard内App设置/诊断接线、common/exoplayer两个AAR/source/metadata、构建脚本和独立补丁、MPV两ARM ABI的受影响产物、唯一任务文档/索引。构建缓存为临时编译输入，不提交、不reset其已有修改。
+- 验收/回滚：新增hook关闭时不做字符串/媒体扫描；错误码/生命周期不被改写；两ABI同输入、ELF依赖不变；App双端打包；这一提交连同补丁/二进制可整体回滚到本节基线。继续复用R01–R19，不扩展研究。
+- 已完成源码和接线：Media3 `PlaybackDiagnostics`/`Media3DiagnosticBridge`记录原owner内的焦点请求、duck倍率、实际active处理链、codec分步和AudioTrack原始返回；`ForwardingExtractor.init`把真实output绑定到创建MediaItem时的不可变Context，保留底层implementation和全部既有ASS/DV extractor行为。关闭音频分类后跳过新增逐buffer统计。
+- Media3产物：`scripts/build_media3_diagnostics.py`从上述完整已提交基线选择性重编common/exoplayer，两模块未修改的class字节逐一保持；新补丁、AAR、sources、module/checksum和media-lock一起更新。编译临时副本仅去除AAR未携带的package-private SOURCE-retention注解，发布sources保留。构建输出见`/private/tmp/avdiag-media3-build.log`，已通过，不重复重编。
+- MPV/FFmpeg：保留同一source lock及所有本地补丁；查名实际访问/拒绝原因/profile比较、查询失败具体stage、Java提前返回/NDK by-MIME和create/configure/start结果均进入原av_log桥。App兼容AVClass文本前缀，新增hook不进入旧恢复分类器。AudioTrack记录真实写入返回及bytes/int16/float单位、配置/路由/已有head和timestamp缓存；outputId使用进程内递增编号，避免重建后复用。两ABI FFmpeg、MPV首轮成功；最后outputId/JNI异常清理修改只需增量重链MPV。
+- C03：后台只读自身可执行映射，支持APK内未提取SO；解析实际ELF ABI/GNU build-id/SHA256、对照MPV asset或APK条目，不把“包里存在”当成已加载。不创建native context。构建注入Git完整revision＋dirty/clean状态、MPV/FFmpeg/libplacebo/framework源锁，避免提交前包伪装成提交后精确版本。
+- 观察告警：复用既有5秒样本，连续3次且至少15秒无进展才生成只读`diag.observation`；暂停/缓冲/seek/suppression、无选中motion video、未知或低帧率、无有效输出指标均门控。AudioTrack只观察PLAYING且有已接受payload的playhead；不据此断言物理无声、不触发恢复。MPV新增file-format/seekable/current-edition缓存；A/V clock口径明确。
+- 用户设置：六类默认全开和持久选择沿用14.11；已删除MPV“详细日志”的菜单、value/action、getter/setter和preset残留。正常启用即收集所选分类完整的标准诊断；像素/PCM主动限时捕获仍独立。
+- 最后覆盖核对：非保护、当前owner的CSD按index/length/bytes计算SHA-256，总读取上限64 KiB，只读duplicate；保护内容、超预算、旧owner或读取失败保留明确状态。adapter输出PTS与输入PTS分别记录，flush/capture重置；新增统计服从对应分类。
+
+### 14.13 已实现覆盖索引
+
+同一事件内的具体字段仍以其`status/source/association`为准；此表表示采集能力已接入，不表示每台设备、每个后端都能返回所有字段，更不表示物理输出已验证。
+
+| ID | 实现落点及证据 |
+| --- | --- |
+| C01 | `PlaybackDiagnosticSession/Collector`：开关、迟开、版本、身份、分类选择及可用边界 |
+| C02 | `Setting.logDebugEnvironment`：构建Git/revision状态、设备/API/ABI、fingerprint摘要；资源补充见C15 |
+| C03 | `NativeLibraryDiagnostics`：实际可执行映射、ELF ABI/build-id/SHA256、APK/asset对照、加载失败；未加载库不伪装成功 |
+| C04 | `SurfaceDiagnosticCollector`及既有MPV输出日志：display/mode/HDR与已有后端信息；不创建额外GPU context |
+| C05 | `PlaybackDiagnosticSession`及MPV配置入口：当前播放配置及来源 |
+| C06 | `PlayerManager`配置变化与`MpvDiagnosticCollector.option`：请求、old/new、原始返回和重建attempt |
+| C07 | `PlaybackTrace/Session`：请求/解析结果、资源分类、匿名媒体身份及输入路由 |
+| C08 | Exo load事件、既有网络日志与MPV observer：Range/响应头摘要、字节/耗时及缓存；不可见上游不补造数据 |
+| C09 | `PlaybackDiagnosticSession`：direct/App/外部loopback owner及可见网络边界 |
+| C10 | Media3 extractor owner hook/timeline及MPV `file-format/seekable/current-edition`：实际容器实现与媒体身份 |
+| C11 | Exo tracks、MPV track-list、IJK选轨快照：available/support/selected与格式 |
+| C12 | Exo DRM analytics与媒体保护标记：会话/keys/error阶段；不采license正文或key |
+| C13 | 公共PlaybackActivity/PlayerManager与各内核collector：生命周期、暂停、抑制和来源 |
+| C14 | Exo player/adapter及MPV observer：播放时钟、独立decoder输出PTS、seek epoch和speed |
+| C15 | 复用既有memory/system/recovery monitor：资源、trim/温控/省电与线程延迟；不增加proc/PSS轮询 |
+| C16 | `PlaybackDiagnosticCollector.end`：音视频分别记录最后证据层及错误；保留物理输出未知 |
+| C17 | `DiagnosticLogBuffer/RollingDiagnosticFile`及collector health：队列、seq、轮转、flush、丢失、写失败、迟到与未结束 |
+| V01 | `ExoDiagnosticCodecAdapter.selector`：本次selector返回的候选顺序与能力/策略来源；不把独立枚举当实际尝试 |
+| V02 | Media3同步/异步codec原API hook：create/configure/start分步及原异常，绑定factory operation owner |
+| V03 | `ExoDiagnosticCodecAdapter.mediaFormat`：配置白名单、surface关联与受保护/有界CSD摘要 |
+| V04 | adapter output-format及analytics input/reuse：输入输出格式分层、复用结果 |
+| V05 | adapter queue聚合：bytes/input/加密/EOS/PTS范围与回退；不复制sample |
+| V06 | adapter dequeue/release及DecoderCounters：解码输出、提交、丢弃、drop各自口径 |
+| V07 | first-input、first-output、release及Media3 first-frame回调分别标记 |
+| V08 | 包装原有Media3 frame-render listener；没有该listener时明确未采集，不抢占tunneling回调 |
+| V09 | adapter flush/release/reuse及epoch；生命周期错误保留原异常 |
+| V10 | 独立`video.error`关联`diag.error`的有界cause/stack链，不累加播放策略故障次数 |
+| S01 | 公共SurfaceHolder附加观察器：create/change/destroy与尺寸/有效性 |
+| S02 | 公共UI与codec adapter绑定/解绑、old/new surface；native侧保留原owner输出日志 |
+| S03 | fixed/layout请求、operation与之后actual holder callback分别记录 |
+| S04 | view/祖先可见性、alpha、窗口/附着状态；TextureView不替换播放器listener |
+| S05 | `SurfaceDiagnosticCollector`：video/artwork/shutter等来源与selectedVideo状态 |
+| S06 | Exo effects请求及MPV原后端/滤镜日志；requested不冒充applied或色彩正确 |
+| S07 | display/frame-rate请求与当前实际显示mode分别记录 |
+| S08 | `PixelDiagnosticProbe`：主动限时、最多3次64×36统计、PixelCopy原始返回和保护门控 |
+| A01 | Exo输入/轨道Format、MPV current-track、IJK选轨：原始/当前音频路径 |
+| A02 | codec selector与实际AudioOutputProvider支持查询：解码与输出能力分开 |
+| A03 | Media3/FFmpeg codec原操作：create/configure/start及原错误；音频不套用视频成功状态 |
+| A04 | adapter与AudioOutput输入：编码/PCM格式和独立decoder输出PTS；不把AudioOutput接受量当decoder帧数 |
+| A05 | `AudioProcessingPipeline` configure/flush owner hook：active处理器顺序、输入输出格式；MPV AF配置由observer取得 |
+| A06 | 实际provider返回对象与MPV AO配置：outputId、encoding/mask/buffer、offload/tunnel及来源 |
+| A07 | AudioOutput payload统计与AudioTrack原始API返回分层；MPV保留bytes/int16/float单位、短写/0/错误与耗时 |
+| A08 | Exo真实AudioTrack head/timestamp/epoch；MPV复用AO现有head/timestamp缓存，validity不伪造 |
+| A09 | `SystemAudioDiagnosticCollector`与实际AudioTrack路由：discovered/preferred/actual角色分开，MPV在原AO内低频取得actual |
+| A10 | Media3原AudioFocusManager与App/native原focus owner：请求返回、callback、duck gain及player command，不新增请求者 |
+| A11 | player、AudioOutput、MPV与系统音量/静音分别采集；系统不可见mute/外部AVR音量保留未知 |
+| A12 | 实际AudioOutput生命周期及MPV recreate；新AudioTrack使用新的进程内outputId |
+| A13 | `audio.error/diag.error`：初始化、write、codec异常与raw错误码分离，保留当时owner |
+| A14 | `PcmDiagnosticProbe`：主动限时、每检查点最多3×4096 frames、逐声道数值，保留原buffer position；保护/编码流禁用 |
+| A15 | `audio.sync`：Exo独立decoder输出PTS/player clock/epoch，MPV实际avsync/delay；不把decoder PTS差当物理同步误差 |
+| M01 | 实际加载映射/库摘要、源锁构建注入与mpv/FFmpeg版本observer |
+| M02 | 白名单option原始set返回、requested与readback；分类/限时日志覆盖到期恢复，保留用户更高verbosity |
+| M03 | 原native事件入口、source seq、start-file owner与end reason/error |
+| M04 | 有界track-list NODE解析，available/selected/default/albumart及实际轨选择 |
+| M05 | hwdec requested/current、interop、codec/VO/GPU与分层video参数缓存 |
+| M06 | decoder/输出音频参数、AO、volume/mute、AF和SPDIF配置；native实际配置补充A06–A08 |
+| M07 | position/PTS/cache/pause/idle及各类drop独立字段，不混为重缓冲计数或物理FPS |
+| M08 | FFmpeg实际选择器访问/拒绝/profile比较、查询失败stage及真实create/configure/start；识别AVClass日志前缀 |
+| M09 | 有视频但初始化失败后vid=no且audio仍选中，报告videoPartialFailure及原错误；audio selected不冒充有声 |
+| M10 | commandId、提交/返回/完成、耗时与generation；无法确认媒体归属时明确unresolved |
+| M11 | observer注册、NONE/unavailable、age、NODE/late/native overflow与源端过滤边界；静默时可从缓存导出 |
+| M12 | 原native VO/interop失败进入结构化sink；新增AudioTrack owner hook，非AudioTrack后端不伪造write/head |
+
+- D4 IJK最小覆盖已接入原info/error/decoder/track/FPS/cache及公共focus/route/volume；OpenSL ES内部write/head按9.4明确不可见，不建立新的JNI/音频owner。
+- 5/10/11/12节的产品闭环已接入：症状标记、前30秒/后15秒incident、崩溃恢复partial、有界短期配对/POST/Origin/限频、对照步骤、TXT可读报告、流式ZIP/校验和、网页结构筛选、队列及轮转损失状态。真实症状判读仍需用户提供同次复现导出，不能用fixture声称实机闭环。
+- 无输出观察默认采用三个5秒采样、至少15秒，复用现有定时器；文中5秒/3秒为候选阈值，并非已确认的设备故障期限。合法暂停、缓冲、seek、抑制、封面/音频only、未知cadence均门控，观察不触发任何恢复动作。
+
+### 14.14 软件验证、产物与验收边界
+
+- App前一原子单元：`180811f16073271ba1cb6a4f2f889008966facd3`；tag `recovery/AV-DIAG-01-COMPLETE-APP/20260915141054-180811f16073`。14.11的23项契约验证不重复运行。
+- Media3选择性重编common/exoplayer成功，保留全部无关class字节；`/private/tmp/avdiag-media3-build.log`保存完整输入hash和结果。APK包含新`PlaybackDiagnostics/Media3DiagnosticBridge`定义，确保新AAR可达。
+- 两ABI FFmpeg及MPV构建成功，最后outputId修改仅增量重链MPV；`scripts/verify_mpv_native_assets.sh --require-elf`通过，日志`/private/tmp/avdiag-final-elf-check.log`。保留同锁、命名空间、DT_NEEDED及JNI contract；未重编`libplayer.so`。
+- 双端arm64 Debug首轮构建6分22秒通过，显式`-PexoAssPrototype=true`保留已经验收的ASS字体能力，使用既有CMake隔离init-script保护`app/.cxx/`。随后仅因补齐CSD/输出PTS这个相关Java改动增量打包，最终双端构建28秒通过；未构建全ABI/App矩阵。
+- 包内核验：两APK的10个MPV asset逐个与最终工作树SHA256一致；libass存在且构建flag开启；五个新增诊断类的DEX **class definition**存在，不仅搜索类名引用。原生库身份生产解析器以两ABI的真实ELF对照llvm-readelf，验证GNU build-id存在/缺失、ABI、SHA256；STORED APK fixture验证真实映射条目和未映射排除。当前libmpv没有GNU build-id，使用实际SHA256并保留build-id缺失；首次验证脚本错误地假设必有build-id，已修正参考预期并增加有build-id的NDK C++库对照，未修改生产解析器或重跑APK断言。
+- 最后Java增量之后，仅针对新APK重新核对包内六个诊断class definitions、更新的PTS代码、libass和10个MPV asset，均通过；不重复原生ELF、解析器或23项契约检查。验证文件：`/private/tmp/avdiag-final-apk-build.log`、`/private/tmp/avdiag-final-apk-content.log`、`/private/tmp/avdiag-final-artifacts.log`、`/private/tmp/avdiag-final-parser-check.log`、`/private/tmp/avdiag-final-artifacts.json`；不包含伪造的设备实播结果。
+- Media3 AAR SHA256：common `81339bd78814f83987c2d3dd07dfbfd16b32ae34aabd23616abf4938a77bc696`；exoplayer `47f90bd4fc52567738847ceb59c435ddeb6d35b987866d6899de87de3170bdf6`。source/metadata/checksum与media-lock同单元交付。
+- 原生关键SHA256：arm64 libmpv `8213150b467bc2dd9501bbd8e484ac8db04f537ebc8276133a845c18fda1b01a`、libmvcodec `3720c16422139d874f1954e6851330530b6767056f527062c37d4d197cb44c1d`；armv7 libmpv `2a0e1f749b8d57377da086a5c150db588b90cf65b656eddce36e6a3ba194709d`、libmvcodec `fd283848a22160964511e819992fe76aca4e37cbb4ac69e3817a63951a805e25`。
+- 仍然明确的验收边界：用户自行进行设备实播、TV遥控器操作、T01–T25和性能A/B；本轮未用ADB安装/操作。编译与ELF检查不能替代这些结果，不宣称“零开销”或物理音画正常。常规缺回调/未知后端、旧owner、保护内容、日志关闭/迟开等状态持续保留在导出中。
+- 原子回滚：当前guard `AV-DIAG-01-COMPLETE-NATIVE`将App适配、三份窄补丁、两个AAR及两ABI原生产物一起提交并生成唯一`recovery/AV-DIAG-01-COMPLETE-NATIVE/…`本地annotated tag。不push；撤销该单元可恢复到14.12基线且保留14.11分类/导出等App功能。
+
+| 最终安装包（arm64 Debug） | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 188388733 | `d35d0a46d648b66f716cb76eea378cfadf3f6c0bdf916553d1b3d186b188d88d` |
+| `app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk` | 176524458 | `e19d8fb0f4feefe45ca9361cace6da333507b50ca0d82cc01eea2c9cb05d0885` |
+
+安装包标记构建时的完整基线Git revision及`dirty`状态，产物hash如上；不为写入提交后hash再做一次整包构建。当前代码提交/恢复tag可通过guard回执与本单元提交记录唯一定位。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -758,11 +866,11 @@ TV界面支持焦点移动、一次按键标记症状、查看/复制局域网�
 ## 18. Recovery anchor / 后续唯一动作
 
 - Objective：按用户新增授权完成全文D0–D5；验收见0.1/14.10/15节。
-- Plan：14.6–14.9主干保留；按14.10补全部可实施功能，App后续底层hook，不停止在公开接口接线。
-- Workspace：`feature/mpv-dv7-fel`；本单元基线`8d46751d7fd0f61bd2cb2557bb8fe99a0d33d494`，guard `AV-DIAG-01-COMPLETE-APP`，保护 `app/.cxx/` 原70文件。
-- Files：本单元为14.11列出的App/MPV采集接线、DebugLogDialog/DebugLogs、catvod诊断底座及唯一任务文档/索引；未修改预存`app/.cxx/`。
-- Evidence：研究R01–R19、最终AAR javap；Exo/MPV/IJK与恢复三个单元双端Java编译分别36/21/32秒通过，14.9最终修正双端编译24秒通过，schema静态检查通过；不代表实播验证。
-- Unverified：真实设备导出/播放和性能A/B待用户验收；尚未实施的底层hook与APK继续推进。App新增代码已通过14.11的定向校验。
+- Plan：D0–D5实现与产物补齐，逐项覆盖见14.13；用户设备/性能验收与软件验证分开记录。
+- Workspace：`feature/mpv-dv7-fel`；本单元基线`180811f16073271ba1cb6a4f2f889008966facd3`，guard `AV-DIAG-01-COMPLETE-NATIVE`，保护 `app/.cxx/` 原70文件。
+- Files：当前单元为App诊断/设置/buildConfig、Media3窄hook及两个AAR、MPV/FFmpeg补丁和双ABI产物、构建/验证脚本、唯一任务文档/索引；guard范围保持，保护预存`app/.cxx/`。
+- Evidence：14.11 App提交及tag已完成；双端Java92秒、23项契约20秒通过。14.14记录当前Media3重编、双ABI native/ELF、双端APK/DEX/asset一致性及生产ELF/ZIP解析对照。CSD/PTS最终相关增量构建以交付记录为准，不重跑无关用例。
+- Unverified：真实设备导出/播放与性能A/B由用户验收，不记录为通过；本轮没有新增ADB/设备操作。
 - Residual risks：无native媒体ID的回调来源、平台输出边界、真实设备生命周期与性能；不可观察项明确未知，不冒充正常。
-- Rollback：前三单元commit/tag见14.6–14.8；本单元回滚锚点为上述D4提交。
-- Exactly one next action：关闭App原子单元后，开始Media3/MPV底层窄hook和对应产物单元。
+- Rollback：本单元回滚到`180811f16073271ba1cb6a4f2f889008966facd3`及`recovery/AV-DIAG-01-COMPLETE-APP/20260915141054-180811f16073`。
+- Exactly one next action：用户安装14.14的最终APK进行实际复现，并用日志弹窗标记症状、导出报告；收到具体反馈后再处理对应缺陷，不重启研究或重复已通过检查。

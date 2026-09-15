@@ -59,7 +59,11 @@ public final class MPVLib {
 
     public static synchronized boolean ensureLoaded(Context context) {
         if (loaded) return true;
-        if (loadError != null) return false;
+        if (loadError != null) {
+            com.fongmi.android.tv.player.NativeLibraryDiagnostics.failure("mpv-bundle", loadError);
+            return false;
+        }
+        String loadingLibrary = "mpv-bundle";
         try {
             Context app = context.getApplicationContext();
             String abi = chooseAbi(app.getAssets());
@@ -71,9 +75,13 @@ public final class MPVLib {
             String bundleId = getBundleId(app, abi);
             boolean refreshBundle = !bundleId.equals(readMarker(marker));
             for (String lib : LOAD_ORDER) copyLibrary(app.getAssets(), abi, lib, dir, refreshBundle);
-            for (String lib : LOAD_ORDER) System.load(new File(dir, System.mapLibraryName(lib)).getAbsolutePath());
+            for (String lib : LOAD_ORDER) {
+                loadingLibrary = System.mapLibraryName(lib);
+                System.load(new File(dir, loadingLibrary).getAbsolutePath());
+            }
             loadedAbi = abi;
             loaded = true;
+            com.fongmi.android.tv.player.NativeLibraryDiagnostics.request();
             try {
                 writeMarker(marker, bundleId);
             } catch (IOException e) {
@@ -82,6 +90,7 @@ public final class MPVLib {
             return true;
         } catch (Throwable e) {
             loadError = e;
+            com.fongmi.android.tv.player.NativeLibraryDiagnostics.failure(loadingLibrary, e);
             Log.e(TAG, "Unable to load bundled MPV native libraries", e);
             return false;
         }
