@@ -1,6 +1,66 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.20，描述符内容复用实施）
+## Recovery anchor（当前：9.21，日志33否决整体性能验收）
+
+- Objective：核对用户07:21 TV64候选的三次复现，区分起播重建、统计的重缓冲、持续Vulkan等待；完整FEL、10bit及既有非FEL行为仍为合同。
+- Current unit：`feature/mpv-dv7-fel` / `44dd3f1386ac47c5d9e2007b9d2b32dfa0f72d8e`；guard `P2-4-fel-log33-review` / assessment，仅本文和评估索引，保护104个既有 `app/.cxx/` 文件。
+- Evidence：`/private/tmp/webhtv-fel-log33-0odn5fr1/`；源日志7337143字节，SHA256=`52fa2af93a6397dbbbfe185d3644a49203f0524779ad7f9ee314a513d8d83c23`。3829条唯一结构化事件、927条重复保留事件已分离；三组平均map为37.514/38.712/41.497ms，写入减少未关闭等待。一次2563ms重缓冲发生于App直出→FEL重建，全部已记录cache pause为false、buffering state为100。
+- Status：A的本机实现已生效，整体FEL性能验收失败；三组均有seek，不能将跨seek均值/末128次分位冒充严格稳态A/B。新起播路径修正和9.19-B尚属下一阶段方案；当前无代码/native改动、无新APK。
+- Rollback：当前代码仍为上述HEAD及`recovery/AV-DIAG-01-WEB-ACTIONS/20260916072655-44dd3f1386ac`；A可由父提交成套撤销，但不能把旧诊断基线称为性能合格版本。
+- Exactly one next action：批准下一阶段后先修复按实际选中DV7轨道在创建VO/decoder之前确定FEL路径的时序，再按9.19-B执行有界外部图像对照；保留电视实际验收门槛，不直接跳到C。
+
+## 9.21 日志33：起播重复初始化、重缓冲来源及A的实际结果（2026-09-16）
+
+07:38 Asia/Shanghai开始只读定位；07:49确定文档范围与约5分钟收尾目标。用户本次提供的是已安装候选的失败反馈，不能继续把A称为卡顿修复。以下事实来自同一份导出和当前源码；不重复已完成的上游研究或native构建。
+
+### 身份、去重与三次结果
+
+设备仍为TCL Smart TV Pro / MT9655 / Android14 / arm64。App buildTime=`202609160721`；`env.native`记录实际可执行映射的libmpv SHA256=`240935cf90a8ff660bc11cf8f3d20ef2be228ee559317db952af1ee1d1a1a62d`，manifest匹配，即9.20候选。构建时源码标记为`ed3d710ef551210278920ba4cd25e8dda6e19ad6`+dirty，与提交前打包一致，不是装错库。
+
+输入`/Users/macbookpro/Downloads/webhtv-debug-log (33).txt`，8615行、7337143字节。按`(processRunId,captureGeneration,seq)`去重得到3829条结构化事件，排除927条快照/保留段重复；传统日志另按`logSeq`去重。统计产物见证据目录`summary.json`、`events.json`、`raw-events.json`、`performance-summary.json`。文件大小本身不能证明日志导致卡顿，未采集关闭日志的同设备对照。
+
+| 播放trace | warm map次数 / 均值 | descriptor写入 / fresh命令 | 最后128次bind p50 / p95 / max | GPU copy均值 |
+| --- | --- | --- | --- | --- |
+| `p-11s7zee-1` | 497 / 37.514ms | 65 / 498 | 26.945 / 72.738 / 151.135ms | 21.193ms |
+| `p-11s92mr-2` | 469 / 38.712ms | 63 / 470 | 27.030 / 80.283 / 141.418ms | 21.508ms |
+| `p-11sa4pb-3` | 450 / 41.497ms | 75 / 451 | 23.710 / 59.415 / 107.234ms | 21.202ms |
+
+1419次fresh命令中实际写入203次，内容命中1216次，省去约85.7%的逐帧写入；每帧仍fresh bind/record，未启用replay。三组warm bind平均32.906/34.798/36.554ms，线程CPU每次约0.97/0.98/0.99ms。上一日志32的map平均38.880ms、bind平均34.675ms；这份日志不支持有稳定、实质的整体改善。末窗口与之前稀疏等待样本的p50不是同一统计口径，不能据27ms相对35ms就宣称达到20%门槛。
+
+38个等待样本的runqueue长尾仍存在：三组中位4.096/1.207/3.708ms、最大20.646/70.565/50.319ms；不能排除调度争用，也不能把剩余等待直接命名为某个厂商锁。copy约21ms及渲染pass最后已知均值约24–26ms仍是独立成本；这些GPU/CPU重叠阶段不相加成帧墙钟时间。
+
+持续掉帧确有证据：三组`frame-drop-count`采样峰值103/124/144，`decoder-frame-drop-count`已知值均为0；A/V偏差峰值4.310/6.073/5.265秒。播放包含seek、计数会重置，因此不是三组累计掉帧或严格稳态分位。`estimated-vf-fps`约23.976反映帧时间戳，不能冒充实际显示帧率。A的主要性能假设在本设备未得到支持，整体验收不通过。
+
+### 起播和那一次“本地重缓冲”
+
+三组均出现`actual=surface/mediacodec_embed fel=false`→识别原始DV7→`rebuild reason=manual-dv7-fel-output`→`actual=vulkan/gpu-next fel=true`。第一组07:34:01.803–02.850依次报MediaCodec启动失败、`Could not open codec`及无可用HEVC解码器；07:34:07.418重新创建后硬解成功。FEL GPU冷初始化分别306/1113/84ms，不足以单独解释全部起播延迟。
+
+- 第一组请求07:33:59.683，App记录第一帧13.312秒；FEL的native `playback-restart`在07:34:09.932，主线程处理到07:34:12.869，相隔约2.94秒。该信号本身不证明物理呈现，不能将全部延迟算作shader编译。
+- 第二组07:34:53.479在直出尝试后收到`playback-restart`，输出尺寸属性仍0，尺寸来自轨道元数据；App提前记录3.035秒“首帧”。07:34:54.028才决定启用FEL，随后重建并于07:34:58.647重启播放，相对原请求约8.14秒。
+- 恰好这次重建，在07:34:56.141将重缓冲计数从0加到1，07:34:58.701完成，累计2563ms。第二组采集的`paused-for-cache`全部false、`cache-buffering-state`全部100，后续缓存时长仍有1.544–21.590秒。证据定位的是内部重启等待被通用READY→BUFFERING逻辑计为重缓冲，没有证据说明本地文件读不动或发生网络等待。
+- 第三组App记录首帧8.887秒，仍先直出再重建。三组后续seek都单列，不把seek等待重复算成此2563ms事件。
+
+源码对应：`MpvPlayerEngine.resetDv7HandlingForNewItem()`将实际FEL输出清零，`buildPlayer()`先选直出；`updateDv7FelOutputForCurrentItem()`等待track-list原始profile。`PlayerManager.evaluateMpvAutoOutput()`/`prepareMpvFelOutput()`识别后调用`rebuildAndRestartMpv()`，销毁/创建播放器并重新loadfile。`MpvPlayer.handleEvent(MPV_EVENT_PLAYBACK_RESTART)`直接报告READY，`PlayerManager.PlayerListener.onPlaybackStateChanged()`随之完成起播统计。`PlaybackAnalyticsListener`在everReady之后收到BUFFERING便记录重缓冲；这些是不同事件语义，不是掉帧字段与重缓冲字段串用。
+
+### 下一阶段窄方案、成熟依据与验收
+
+沿用9.19已经完成的Khronos/Arm/ANGLE/Filament/libplacebo/FFmpeg/GStreamer及论文、issue证据；本次不凭新猜测直接重写graphics暂存。对新增起播时序问题实际补读了锁定mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`+本地补丁树的`DOCS/man/input.rst::on_preloaded/on_loaded`、`player/loadfile.c`和`player/video.c::reinit_video_chain_src`，访问2026-09-16，A类证据。[锁定源码中的mpv生命周期文档](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/DOCS/man/input.rst)明确：on_preloaded已有可用轨道、尚未选择轨道/建立decoder；实际链路在选择轨道和on_loaded之后才建立VO/decoder。可沿现有媒体生命周期一次决定输出，无需先播放错误路径来探测。资料不保证把任意运行时选项移到hook均安全，下一代码单元仍须核对实际选中轨道、VO复用及取消。
+
+| 路线 | 决定及约束 |
+| --- | --- |
+| 保持A并继续增加缓存/线程 | 不作为主要修复：平均等待未改善，新的线程/缓存没有证据支持 |
+| 原样套mpv钩子或在App全局强制FEL/GPU | 不采用：App往返hook会增加退出/取消状态，盲目全局启用会影响普通视频；当前native部分core/VO门控只看FEL标志，不能提前无条件置true |
+| 起播窄适配 | 推荐先实施：显式FEL意图与实际激活分离，在已选择真实DV7轨道、创建VO/decoder前一次配置FEL链路；保留非DV7原路线。App同步实际结果，避免再次销毁重载；通用缓存重缓冲继续使用真实缓存事件，内部重新配置单独归因 |
+| 9.19-B外部图像对照 | A没有解决等待，进入已拟定的普通Vulkan图像/稳定AHB/动态MediaCodec AHB三分法，fresh record及submit分开测；仅用户主动启动、有界、可取消、结果走现有Web日志。它是定位工具，不承诺播放性能收益 |
+| 9.19-C graphics暂存 | 继续等待B裁决；不将“copy+render很贵”直接当作格式、精度、队列/同步等价的证明 |
+
+建议按两个独立恢复单元实施。起播单元预计当前agent代码/定向验证20–30分钟，同锁双ABI/TV64打包10–15分钟、文档/tag约5分钟；B涉及独立资源与取消生命周期，实施前先固化具体入口/资源预算，电视运行必须由用户主动启动。上述是后续实施估计，非本轮已执行工作或性能承诺。
+
+起播验收：同一样片只创建所需VO/decoder并load一次，不先出现MediaCodec直出失败，不由元数据尺寸/音频restart提前判视频首帧；内部配置不增加缓存型重缓冲。DV5/DV8/普通视频/纯音频、手选轨道、seek/切片/重复播放/退出、FEL保真和非FEL准入保持。最小验证为真实路径顺序/旧代码负例及必要Java策略用例，再同锁双ABI、ELF/18库边界和TV64内容/签名；真实起播和画面由电视验证。持续性能门槛继续使用9.19.8，不随起播改善而降低。
+
+四仓固定版本见9.19.3；无新增上游合并候选。下一代码范围需包含实际改动的App输出/统计适配、FEL patch及对应native函数、定向测试、两份libmpv与本任务/索引；保持其他18库/锁/JNI契约。回滚到本轮基线`44dd3f1386ac47c5d9e2007b9d2b32dfa0f72d8e`，保留已经验收的日志页改动。当前交付为日志验收结论和后续方案，起播新时序、B、C均未实施；按仓库新阶段批准规则进入下一代码单元。
+
+## 历史恢复记录（9.20，描述符内容复用实施）
 
 - 目标：实施用户2026-09-16“优化”批准的9.19-A；仅相同描述符内容省去重复写入，每帧重新绑定/录制/提交，保留完整FEL、10bit、同步与源归还。交付可核对身份的TV64候选；像素与电视性能仍须实播裁决，不将调用次数下降称为卡顿修复。
 - 基线 `feature/mpv-dv7-fel` / `5f6fd1a75c210eac2571e7939a4e5451f23e84e3`，恢复tag `recovery/P2-4-fel-descriptor-review/20260916062200-5f6fd1a75c21`。guard `P2-4-fel-descriptor-content` / upstream，保护104个既有 `app/.cxx/` 文件；不推送。
