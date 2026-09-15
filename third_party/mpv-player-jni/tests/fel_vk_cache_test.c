@@ -11,12 +11,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define INPUT_CACHE_SIZE 8
 #define FEL_INPUT_CACHE_SIZE 32
 #define FEL_RECORD_CACHE_SIZE 128
 #define FEL_ORDER_CAPACITY 8
+#define FEL_LATENCY_SAMPLES 128
 #define STABLE_WORKGROUP_X 16
 #define STABLE_WORKGROUP_Y 8
 #define MPMAX(a, b) ((a) > (b) ? (a) : (b))
@@ -56,6 +58,7 @@ struct vk_recording {
     VkDescriptorSet descriptor;
     struct vk_input *input;
     struct vk_output *output;
+    VkImageView input_view, output_view;
     AImageCropRect crop;
     uint32_t width, height;
     uint64_t last_used;
@@ -69,6 +72,10 @@ enum fel_api_op {
     FEL_API_BARRIER_OUT, FEL_API_PUSH_DESCRIPTORS, FEL_API_COUNT,
 };
 struct fel_api_clock { int64_t wall, cpu; };
+struct fel_latency_window {
+    uint64_t ns[FEL_LATENCY_SAMPLES];
+    unsigned count, next;
+};
 struct fel_order_event {
     uint64_t serial;
     double requested_pts, mapped_pts;
@@ -105,8 +112,13 @@ struct aimagereader_vk_stable {
     uint64_t recording_serial, recording_hits, recording_misses;
     uint64_t recording_evictions, recording_invalidations, recording_fallbacks;
     uint64_t recording_cold;
+    uint64_t descriptor_content_hits, descriptor_writes, descriptor_rebinds;
     uint64_t input_hits, input_misses, input_evictions, input_removals;
     struct mp_fel_perf_stat fel_api_wall[FEL_API_COUNT], fel_api_cpu[FEL_API_COUNT];
+    struct fel_latency_window fel_bind_window, fel_record_window, fel_map_window;
+    int64_t fel_map_started, fel_map_cpu_started, fel_map_checkpoint;
+    struct mp_fel_perf_stat fel_map_warm, fel_map_cold, fel_map_cpu;
+    struct mp_fel_perf_stat fel_map_stages[MP_FEL_PERF_COUNT];
     uint64_t submitted_outputs, fresh_commands, fel_order_count, fel_pts_differences;
     struct fel_order_event fel_order[FEL_ORDER_CAPACITY], fel_last_pts_difference;
     double fel_active_pts;
@@ -127,6 +139,11 @@ static void fel_wait_probe_end(struct aimagereader_vk_stable *p,
 
 static struct fel_api_clock fel_api_begin(struct aimagereader_vk_stable *);
 static void fel_api_end(struct aimagereader_vk_stable *, enum fel_api_op, struct fel_api_clock);
+static void fel_latency_add(struct fel_latency_window *, uint64_t);
+static int fel_latency_compare(const void *, const void *);
+static void fel_latency_summary(const struct fel_latency_window *, uint64_t [3]);
+static void fel_perf_checkpoint(struct aimagereader_vk_stable *, enum mp_fel_perf_stage);
+static void fel_perf_finish_map(struct aimagereader_vk_stable *);
 static void trace_fel_frame_order(struct aimagereader_vk_stable *, char, int, int, uint64_t, double, double);
 static void format_fel_frame_order(struct aimagereader_vk_stable *, char *, size_t);
 static void invalidate_input_recordings(struct aimagereader_vk_stable *, struct vk_input *);
@@ -173,7 +190,7 @@ static int fail_allocation, fail_record;
 static int64_t wall_clock;
 static unsigned info_logs;
 static char last_info[512];
-static unsigned push_calls, bind_calls, layout_calls, property_calls;
+static unsigned push_calls, bind_calls, dispatch_calls, layout_calls, property_calls;
 static uint32_t max_push;
 static int missing_entry;
 static bool fail_push_layout, fail_set_layout;
@@ -301,12 +318,14 @@ static VkResult vkResetCommandBuffer(VkCommandBuffer cmd, VkCommandBufferResetFl
 {
     struct command_state *c = command(cmd);
     assert(!c->pending && !c->freed && !flags);
+    if (fail_record == 1) return VK_ERROR_OUT_OF_HOST_MEMORY;
     *c = (struct command_state){.allocated = c->allocated};
     reset_calls++;
     return VK_SUCCESS;
 }
 static VkResult vkBeginCommandBuffer(VkCommandBuffer cmd, const VkCommandBufferBeginInfo *info)
 {
+    if (fail_record == 2) return VK_ERROR_OUT_OF_HOST_MEMORY;
     command(cmd)->flags = info->flags;
     begin_calls++;
     return VK_SUCCESS;
@@ -314,7 +333,7 @@ static VkResult vkBeginCommandBuffer(VkCommandBuffer cmd, const VkCommandBufferB
 static VkResult vkEndCommandBuffer(VkCommandBuffer cmd)
 {
     end_calls++;
-    if (fail_record) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (fail_record == 3) return VK_ERROR_OUT_OF_HOST_MEMORY;
     command(cmd)->executable = true;
     return VK_SUCCESS;
 }
@@ -343,7 +362,7 @@ static void vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout,
                                VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void *data)
 { assert(size == sizeof(command(cmd)->push)); memcpy(&command(cmd)->push, data, size); }
 static void vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z)
-{ command(cmd)->dispatch[0] = x; command(cmd)->dispatch[1] = y; command(cmd)->dispatch[2] = z; }
+{ command(cmd)->dispatch[0] = x; command(cmd)->dispatch[1] = y; command(cmd)->dispatch[2] = z; dispatch_calls++; }
 static void vkFreeCommandBuffers(VkDevice device, VkCommandPool pool, uint32_t count,
                                  const VkCommandBuffer *buffers)
 {
@@ -380,7 +399,7 @@ static void reset(struct aimagereader_vk_stable *p, bool fel)
     update_calls = reset_calls = begin_calls = end_calls = 0;
     pool_calls = descriptor_calls = command_calls = command_frees = pool_frees = 0;
     imports = removed_views = 0; fail_allocation = fail_record = 0;
-    push_calls = bind_calls = layout_calls = property_calls = 0;
+    push_calls = bind_calls = dispatch_calls = layout_calls = property_calls = 0;
     max_push = 32; missing_entry = 0; fail_push_layout = fail_set_layout = false;
     last_layout_flags = 0;
     static const char *const extensions[] = {VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
@@ -448,11 +467,14 @@ static void test_rotation_and_default(void)
             assert(p.num_inputs == INPUT_CACHE_SIZE);
             assert(command(p.outputs[0].command)->flags == VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
         } else {
-            assert(imports == 12 && update_calls == 1200 && end_calls == 1200);
+            assert(imports == 12 && update_calls == 72 && end_calls == 1200);
             assert(p.recording_hits == 1128 && p.fresh_commands == 1200);
+            assert(p.descriptor_content_hits == 1128 && p.descriptor_writes == 72);
+            assert(bind_calls == 1200 && dispatch_calls == 1200 && p.descriptor_rebinds == 1200);
+            assert(!p.fel_bind_window.count && !p.fel_record_window.count);
             assert(p.num_inputs == 12 && p.num_recordings == 60 && !p.input_evictions);
             assert(pool_calls == 1 && command_calls == 60 && descriptor_calls == 60);
-            printf("PASS: 12-input/5-output, 1200 frames: imports %u -> %u; fresh bindings/recordings %u -> %u; slot hits=%llu, no replay (call counts only)\n",
+            printf("PASS: 12-input/5-output, 1200 frames: imports %u -> %u; descriptor writes %u -> %u; 1200 fresh binds/recordings/dispatches; content hits=%llu, no replay (call counts only)\n",
                    base_imports, imports, base_updates, update_calls, (unsigned long long)p.recording_hits);
             destroy_recording_cache(&p);
             assert(command_frees == 60 && pool_frees == 1 && !p.num_recordings);
@@ -476,7 +498,7 @@ static void test_keys_pending_and_removal(void)
     unsigned calls = update_calls;
     unsigned records = end_calls;
     assert(prepare_conversion(&p, output, input, &desc, &full));
-    assert(active(output) == first && update_calls == calls + 1 && end_calls == records + 1);
+    assert(active(output) == first && update_calls == calls && end_calls == records + 1);
     assert(p.recording_hits == 1 && command(first)->flags == VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
     calls = update_calls;
 
@@ -507,12 +529,53 @@ static void test_keys_pending_and_removal(void)
     calls = update_calls;
     output->fel_query_recorded = false; // The prior frame's query was collected.
     assert(prepare_conversion(&p, output, input, &desc, &full));
-    assert(output->fel_query_recorded && update_calls == calls + 1);
+    assert(output->fel_query_recorded && update_calls == calls);
     p.fel_query_failed = true;
     assert(prepare_conversion(&p, output, input, &desc, &full));
     assert(!output->fel_query_recorded && !command(active(output))->timestamps);
     destroy_recording_cache(&p);
     puts("PASS: cold/warm layouts, pending guard, deferred removal/ABA, crop/geometry and query invalidation");
+}
+
+static void test_descriptor_lifetimes(void)
+{
+    struct aimagereader_vk_stable p; reset(&p, true);
+    struct vk_input *input = get_input(&p, 0); input->initialized = true;
+    struct vk_input *slot = input;
+    VkImageView original_view = input->view;
+    struct vk_output *output = &p.outputs[0]; output->written = true;
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    unsigned calls = update_calls;
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(update_calls == calls && p.descriptor_content_hits == 1);
+
+    // A stable C slot does not make a replaced Vulkan view equivalent.
+    input->view = HANDLE(VkImageView, 300);
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(update_calls == ++calls);
+    complete_frame(output, input);
+    output->view = HANDLE(VkImageView, 301);
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(update_calls == ++calls);
+    complete_frame(output, input);
+
+    // Destruction invalidates even when AHB, C slot and Vulkan handle all recur.
+    destroy_input(&p, input);
+    input = get_input(&p, 0);
+    assert(input == slot);
+    input->view = original_view;
+    input->initialized = true;
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(update_calls == ++calls && p.descriptor_content_hits == 1);
+    complete_frame(output, input);
+
+    // Output, immutable sampler, YCbCr and layout rebuilds own a new cache life.
+    destroy_recording_cache(&p);
+    assert(prepare_conversion(&p, output, input, &desc, &full));
+    assert(update_calls == ++calls && p.num_recordings == 1);
+    complete_frame(output, input);
+    destroy_recording_cache(&p);
+    puts("PASS: exact view identity, recycled AHB/slot/view invalidation and new cache lifetime force descriptor writes");
 }
 
 static void test_limits_and_fallback(void)
@@ -553,17 +616,24 @@ static void test_limits_and_fallback(void)
         assert(attempts == pool_calls + command_calls + descriptor_calls && p.recording_fallbacks == 2);
         destroy_recording_cache(&p);
     }
-    reset(&p, true); input = get_input(&p, 0); input->initialized = true;
-    output = &p.outputs[0]; output->written = true; fail_record = 1;
-    assert(!prepare_conversion(&p, output, input, &desc, &full));
-    assert(!p.recordings[0].valid && !output->active_command);
-    fail_record = 0;
-    assert(prepare_conversion(&p, output, input, &desc, &full));
-    assert(!p.recording_hits && p.num_recordings == 1);
-    fail_record = 1; // Failed refresh of an existing slot cannot replay its old recording.
-    assert(!prepare_conversion(&p, output, input, &desc, &full));
-    assert(!p.recordings[0].valid && !output->active_command && !p.recording_hits);
-    destroy_recording_cache(&p);
+    for (int failure = 1; failure <= 3; failure++) {
+        reset(&p, true); input = get_input(&p, 0); input->initialized = true;
+        output = &p.outputs[0]; output->written = true; fail_record = failure;
+        assert(!prepare_conversion(&p, output, input, &desc, &full));
+        assert(!p.recordings[0].valid && !output->active_command);
+        fail_record = 0;
+        assert(prepare_conversion(&p, output, input, &desc, &full));
+        assert(!p.recording_hits && p.num_recordings == 1);
+        fail_record = failure; // Failed fresh recording cannot select old commands.
+        assert(!prepare_conversion(&p, output, input, &desc, &full));
+        assert(!p.recordings[0].valid && !output->active_command && !p.recording_hits);
+        calls = update_calls;
+        fail_record = 0;
+        assert(prepare_conversion(&p, output, input, &desc, &full));
+        assert(update_calls == calls + 1 && !p.descriptor_content_hits);
+        complete_frame(output, input);
+        destroy_recording_cache(&p);
+    }
     puts("PASS: bounded LRU/imports, in-flight exhaustion, optional allocation fallback and failed recording not reusable");
 }
 
@@ -580,12 +650,40 @@ static void test_api_measurements(void)
     assert(prepare_conversion(&p, output, input, &desc, &crop));
     assert(p.fel_api_wall[FEL_API_DESCRIPTOR].count == 1 && p.fel_api_wall[FEL_API_END].count == 1);
     assert(prepare_conversion(&p, output, input, &desc, &crop));
-    assert(p.fel_api_wall[FEL_API_DESCRIPTOR].count == 2 && p.fel_api_wall[FEL_API_RESET].count == 2);
+    assert(p.fel_api_wall[FEL_API_DESCRIPTOR].count == 1 && p.fel_api_wall[FEL_API_RESET].count == 2);
     for (int op = FEL_API_BARRIER_IN; op < FEL_API_PUSH_DESCRIPTORS; op++)
         assert(p.fel_api_wall[op].count == 2);
     assert(!p.fel_api_wall[FEL_API_PUSH_DESCRIPTORS].count);
+    assert(p.fel_bind_window.count == 2 && p.fel_record_window.count == 2);
     destroy_recording_cache(&p);
-    puts("PASS: API diagnostics exclude cold initialization; slot hits refresh bindings/commands with six measured sub-stages");
+    puts("PASS: API diagnostics exclude cold initialization; content hits skip writes but measure every fresh bind/record");
+}
+
+static void test_latency_windows(void)
+{
+    struct fel_latency_window window = {0};
+    uint64_t summary[3];
+    fel_latency_summary(&window, summary);
+    assert(!summary[0] && !summary[1] && !summary[2]);
+    for (uint64_t n = 1; n <= 256; n++)
+        fel_latency_add(&window, n * 1000);
+    struct fel_latency_window saved = window;
+    fel_latency_summary(&window, summary);
+    assert(window.count == 128 && window.next == 0);
+    assert(summary[0] == 192 && summary[1] == 250 && summary[2] == 256);
+    assert(!memcmp(&window, &saved, sizeof(window)));
+
+    struct aimagereader_vk_stable p; reset(&p, true);
+    fel_perf_finish_map(&p); // profiling disabled: no clock or sample
+    assert(!p.fel_map_window.count && !p.fel_map_cold.count);
+    p.fel_map_started = p.fel_map_checkpoint = mp_time_ns();
+    fel_perf_finish_map(&p);
+    assert(!p.fel_map_window.count && p.fel_map_cold.count == 1);
+    p.fel_profile_warm = true;
+    p.fel_map_started = p.fel_map_checkpoint = mp_time_ns();
+    fel_perf_finish_map(&p);
+    assert(p.fel_map_window.count == 1 && p.fel_map_warm.count == 1);
+    puts("PASS: bounded 128-call latency window, nearest-rank quantiles, warm-only map samples and non-mutating summaries");
 }
 
 static void test_bounded_diagnostics(void)
@@ -721,8 +819,10 @@ int main(void)
 {
     test_rotation_and_default();
     test_keys_pending_and_removal();
+    test_descriptor_lifetimes();
     test_limits_and_fallback();
     test_api_measurements();
+    test_latency_windows();
     test_bounded_diagnostics();
     test_push_capabilities_and_frames();
     return 0;

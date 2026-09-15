@@ -1,6 +1,46 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.19，方案评审）
+## Recovery anchor（当前：9.20，描述符内容复用实施）
+
+- 目标：实施用户2026-09-16“优化”批准的9.19-A；仅相同描述符内容省去重复写入，每帧重新绑定/录制/提交，保留完整FEL、10bit、同步与源归还。交付可核对身份的TV64候选；像素与电视性能仍须实播裁决，不将调用次数下降称为卡顿修复。
+- 基线 `feature/mpv-dv7-fel` / `5f6fd1a75c210eac2571e7939a4e5451f23e84e3`，恢复tag `recovery/P2-4-fel-descriptor-review/20260916062200-5f6fd1a75c21`。guard `P2-4-fel-descriptor-content` / upstream，保护104个既有 `app/.cxx/` 文件；不推送。
+- 范围：FEL patch及其生成源码stable mapper、既有Vulkan cache测试与必要校验脚本、两ABI libmpv、本文件和评估索引；四仓锁及其他18份库保持基线。研究/版本/日志32证据全部沿用9.19，不重复泛搜，不实施B/C。
+- 06:33 Asia/Shanghai开始，目标07:05–07:15完成本机候选：修改及定向验证15–20分钟、同锁双ABI和TV64打包10–15分钟、文档收尾约5分钟。电视无ADB，实播时间另计。
+- 已修改stable mapper及FEL patch、既有cache测试/提取脚本、静态契约和native marker校验。真实函数ASan/UBSan通过：1200帧写入1200→72，1128次内容命中，仍1200次bind/record/dispatch；同地址/句柄回收、pending、crop/尺寸/query、reset/begin/end失败、push和有界统计通过。新patch仅重生成stable段，固定pre-FEL基线正向检查及当前源反向/静态契约通过。
+- 证据目录 `/private/tmp/webhtv-fel-descriptor-content.xqkvwpr9/`。真实函数/静态契约、双ABI实际编译、ELF/公开导出、18依赖字节不变、TV64内10库/签名/ZIP均通过，候选 buildTime=`202609160647`，APK SHA256=`0edb43e7a30b5dc92966dd55c6811d2fe720d24cbda7b0b28ce23f3c2e726b74`。本机候选按guard原子提交/tag，精确ID由guard记录；这不是电视像素/性能合格tag。唯一下一步：电视安装含本候选libmpv的包，按9.19.8核对画面与三组性能日志；用户插入日志页需求时保留该待验收状态。
+
+## 9.20 描述符内容复用候选（2026-09-16）
+
+用户已批准实施9.19-A。设计、成熟实现来源、备选、验收及回滚沿用9.19；本轮不改变shader、图像池容量、EL线程、同步或公开设置。只读参考并非依赖升级，mpv/FFmpeg/libplacebo/builder四个固定版本和既有补丁顺序不变。
+
+对象生命期是缓存正确性的约束：输入移除/销毁必须失效关联记录，输出/immutable sampler/YCbCr/layout重建必须先销毁记录池；普通set仅在完整hit且copy已完成时跳过相同内容写入，任何miss/冷路径/失败回退继续写入。每次仍reset/begin(ONE_TIME)、绑定、当前UV、dispatch、ownership barrier/query及当前semaphore提交。复用的是资源描述，像素由生产者逐帧改写；不能由host桩证明真实AHB像素正确。
+
+代码与产物验证通过后提供本机候选；9.19.8像素与至少三组电视性能对照仍是实际采用门槛。write下降而bind/map不改善，或出现旧帧/回跳时，否决本假设并按9.19进入B，不继续扩pool或加线程。基线TV64 SHA256=`6e9bba7846e2e99620757c7ced5c357b287ce1bc64562a79f2db511e83c86a51`保留作对照。
+
+### 实现及定向验证
+
+- `recording_matches`在既有input/output、crop、尺寸和query条件上增加两端精确view快照。资源代际由销毁前失效约束：`destroy_input`先清除全部关联有效记录再释放view；`destroy_conversion_resources`先完成copy/销毁recording pool，再销毁输出、immutable sampler、YCbCr和layout。没有只凭AHB地址或可复用Vulkan handle认定同一代资源，也没有扩大缓存。
+- `prepare_conversion`完整命中时省略普通set更新，仍先使record无效，再fresh record，成功才重新有效并选择command。miss/cold/fallback照旧写入；push仍在每个新command内提交两个binding。失败后的下一次重新写入；不重放旧command。
+- 既有`WebHTV FEL reuse:`单行增加`descriptor-content-cache=1`、`content-hit`、`descriptor-writes`、`descriptor-rebinds`和`latency-window`。继续走Java已存在的性能分类，无新增主线程处理或日志行/采样频率；最后至多128次warm bind/record/map的nearest-rank p50/p95/max复用既有计时，日志关闭不新增时钟调用，约5KiB固定元数据增量（view快照与三个窗口），无新像素池。三个阶段重叠，不能相加成整帧时间。
+- `cache-test.log`编译实际函数并启用ASan/UBSan，8组结果通过；`static-contract.log`校验源/patch一致、FEL准入、失效/不可变对象寿命和既有同步。只有受影响的缓存单元与静态契约运行，未重复全量FEL/Java用例。这些结果不是电视像素或吞吐验收。
+
+### 本机候选产物与验证边界
+
+- `arm64-build.log`、`armv7l-build.log`均只增量编译stable mapper并重新链接libmpv；`stage.log`、`native-assets.log`通过同锁暂存与ELF/命名空间校验；`native-boundary.log`确认仅两份libmpv变化、其他18库（包括JNI）字节不变、两ABI公开mpv导出集合不变。沿用NDK r29/API24及第9.19.3四仓完整版本。既有shadow/locale警告未扩展处理。
+- `apk-build.log`：JDK21、既有隔离CXX缓存、一次TV64构建26秒成功，103任务中9执行/94缓存；没有重建Exo或修改受保护 `app/.cxx/`。`apk-artifacts.log`确认10个包内MPV库逐一匹配，v2签名通过，ZIP结构/签名开销800374字节；未运行ADB/电视操作。
+- 初始05:28包已保存在证据目录 `baseline-tv64.apk`；本次06:47包另存 `fel-content-tv64.apk`，避免随后日志页需求重打包覆盖对照。APK中 `GIT_REVISION=5f6fd1a75c210eac2571e7939a4e5451f23e84e3`、dirty为提交前构建信息，按下列哈希识别实际候选。
+
+| 产物/输入 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| arm64 `libmpv.so` | 17808120 | `240935cf90a8ff660bc11cf8f3d20ef2be228ee559317db952af1ee1d1a1a62d` |
+| armv7 `libmpv.so` | 14621300 | `b0a0ed3ae3c4d6c071a31d94d7a6ccc09cd9ca8bb348ba074f1046804f172a74` |
+| TV64 debug APK，buildTime `202609160647` | 164143897 | `0edb43e7a30b5dc92966dd55c6811d2fe720d24cbda7b0b28ce23f3c2e726b74` |
+| FEL patch | — | `e5e094d234c6ba8ef2c99f09ac051176873c31a4fe7949e3631dc4b0844fa2e2` |
+| native lock（未改） | — | `a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159` |
+
+其余输入哈希见证据目录`build-inputs.json`，20库身份见`native-artifacts.json`。普通视频、push设备与取消/源归还路径保持原设计；native像素、功耗/CPU、起播失败及实际电视掉帧尚未验收。`descriptor-writes`是转换时update调用数，非单个binding数或初始化总写入数；最近128次窗口跨seek时不能作为无seek稳态对照，须按9.19.8取持续区间。不因本机验证通过就宣称A已达到20%采用目标。
+
+## 历史恢复记录（9.19，方案评审）
 
 - 目标：根据新日志32完成Vulkan描述符绑定高耗时的跨项目最佳实践方案；保留完整BL硬解/EL软解/NLQ、10bit、逐帧录制、同步与退出。整体电视实时性能仍未验收，本轮只更新本任务文档和评估索引。
 - 基线 `feature/mpv-dv7-fel` / `57211803d507ab1b6b6a0ee02c626a7f5909eebc`；已有诊断tag `recovery/P2-4-fel-wait-diagnostics/20260916053516-57211803d507`。本轮guard `P2-4-fel-descriptor-review` / assessment，保护104个既有 `app/.cxx/` 脏文件；不修改生产代码、二进制、依赖或用户播放设置，不推送。

@@ -34,6 +34,9 @@ awk '
   /^static bool has_extension\(/ || /^static bool create_conversion_descriptor_layout\(/ ||
   /^static void trace_fel_frame_order\(/ || /^static void format_fel_frame_order\(/ ||
   /^static struct fel_api_clock fel_api_begin\(/ || /^static void fel_api_end\(/ ||
+  /^static void fel_latency_add\(/ || /^static int fel_latency_compare\(/ ||
+  /^static void fel_latency_summary\(/ || /^static void fel_perf_checkpoint\(/ ||
+  /^static void fel_perf_finish_map\(/ ||
   /^static void invalidate_input_recordings\(/ || /^static void destroy_input\(/ ||
   /^static void destroy_recording_cache\(/ || /^static struct vk_input \*find_input\(/ ||
   /^static void purge_removed_inputs\(/ || /^static struct vk_input \*select_input_slot\(/ ||

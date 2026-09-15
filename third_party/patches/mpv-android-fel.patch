@@ -1815,7 +1815,7 @@ index 4952b4fb38..0b03d0d1c6 100644
 diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hwdec_aimagereader_vk_stable.c
 --- a/video/out/hwdec/hwdec_aimagereader_vk_stable.c
 +++ b/video/out/hwdec/hwdec_aimagereader_vk_stable.c
-@@ -10,30 +10,44 @@
+@@ -10,30 +10,45 @@
  #include "config.h"
 
  #include <errno.h>
@@ -1857,10 +1857,11 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +#define FEL_INPUT_CACHE_SIZE 32
 +#define FEL_RECORD_CACHE_SIZE 128
 +#define FEL_ORDER_CAPACITY 8
++#define FEL_LATENCY_SAMPLES 128
  #define EXTERNAL_FORMAT_DESCRIPTOR_COUNT 4
  #define CONVERSION_FENCE_TIMEOUT_NS UINT64_C(250000000)
  #define POOL_LOG_INTERVAL 120
-@@ -60,6 +74,9 @@ struct vk_output {
+@@ -60,6 +75,9 @@ struct vk_output {
  };
 
  struct vk_output {
@@ -1870,7 +1871,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      VkImage image;
      VkDeviceMemory memory;
      VkImageView view;
-@@ -67,9 +84,11 @@ struct vk_output {
+@@ -67,9 +85,11 @@ struct vk_output {
      struct ra_tex *ratex;
      VkDescriptorSet descriptor;
      VkCommandBuffer command;
@@ -1882,18 +1883,21 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      VkFence fence;
      AImage *source_image;
      struct mp_image *source_frame;
-@@ -81,6 +100,55 @@ struct aimagereader_vk_stable {
+@@ -81,6 +101,63 @@ struct aimagereader_vk_stable {
      bool released;
  };
 
 +// Cache bounded Vulkan object slots, not AImages or additional output pixels.
-+// External producer contents change every frame: refresh descriptors and record
-+// a fresh one-shot command even on a slot hit. Do not replay an old recording.
++// Descriptor contents describe views, not the pixels changed by the producer.
++// Reuse identical contents, but bind and record a fresh one-shot command every
++// frame. Input destruction invalidates records before handles can be recycled;
++// output/sampler/YCbCr/layout reconstruction destroys the entire recording pool.
 +struct vk_recording {
 +    VkCommandBuffer command;
 +    VkDescriptorSet descriptor;
 +    struct vk_input *input;
 +    struct vk_output *output;
++    VkImageView input_view, output_view;
 +    AImageCropRect crop;
 +    uint32_t width, height;
 +    uint64_t last_used;
@@ -1915,6 +1919,11 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +};
 +
 +struct fel_api_clock { int64_t wall, cpu; };
++
++struct fel_latency_window {
++    uint64_t ns[FEL_LATENCY_SAMPLES];
++    unsigned count, next;
++};
 +
 +struct fel_wait_snapshot {
 +    uint64_t runtime, runqueue, slices, voluntary, involuntary;
@@ -1938,7 +1947,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  struct aimagereader_vk_stable {
      struct mp_log *log;
      struct ra_hwdec_mapper *mapper;
-@@ -94,6 +162,10 @@ struct aimagereader_vk_stable {
+@@ -94,6 +171,10 @@ struct aimagereader_vk_stable {
      PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAHBProperties;
      PFN_vkGetPhysicalDeviceImageFormatProperties2 GetImageFormatProperties2;
      PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
@@ -1949,7 +1958,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      VkCommandPool command_pool;
      VkFormat output_format;
-@@ -116,17 +188,465 @@ struct aimagereader_vk_stable {
+@@ -116,16 +197,521 @@ struct aimagereader_vk_stable {
      VkPipelineLayout pipeline_layout;
      VkPipeline pipeline;
 
@@ -1981,6 +1990,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    uint64_t fel_query_unavailable;
 +    struct mp_fel_perf_stat fel_api_wall[FEL_API_COUNT];
 +    struct mp_fel_perf_stat fel_api_cpu[FEL_API_COUNT];
++    struct fel_latency_window fel_bind_window, fel_record_window, fel_map_window;
 +    struct vk_recording recordings[FEL_RECORD_CACHE_SIZE];
 +    VkDescriptorPool recording_pool;
 +    uint32_t sampler_descriptors;
@@ -1989,6 +1999,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    uint64_t recording_serial, recording_hits, recording_misses;
 +    uint64_t recording_evictions, recording_invalidations, recording_fallbacks;
 +    uint64_t recording_cold;
++    uint64_t descriptor_content_hits, descriptor_writes, descriptor_rebinds;
 +    uint64_t input_hits, input_misses, input_evictions, input_removals;
 +    uint64_t fresh_commands, fel_order_count, fel_pts_differences;
 +    struct fel_order_event fel_order[FEL_ORDER_CAPACITY], fel_last_pts_difference;
@@ -2001,6 +2012,36 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  };
 +
 +static int output_sample_depth(VkFormat format);
++
++// Reuse already measured warm timings. No extra clocks, allocation or sampling
++// when profiling is off; sorting only happens at the existing log interval.
++static void fel_latency_add(struct fel_latency_window *window, uint64_t ns)
++{
++    window->ns[window->next] = ns;
++    window->next = (window->next + 1) % FEL_LATENCY_SAMPLES;
++    window->count = MPMIN(window->count + 1, FEL_LATENCY_SAMPLES);
++}
++
++static int fel_latency_compare(const void *a, const void *b)
++{
++    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
++    return (x > y) - (x < y);
++}
++
++static void fel_latency_summary(const struct fel_latency_window *window,
++                                 uint64_t summary[3])
++{
++    summary[0] = summary[1] = summary[2] = 0;
++    if (!window->count)
++        return;
++    uint64_t sorted[FEL_LATENCY_SAMPLES];
++    memcpy(sorted, window->ns, window->count * sizeof(sorted[0]));
++    qsort(sorted, window->count, sizeof(sorted[0]), fel_latency_compare);
++    // Nearest-rank p50/p95 and maximum of the last <=128 measured calls.
++    summary[0] = sorted[(window->count * 50 + 99) / 100 - 1] / 1000;
++    summary[1] = sorted[(window->count * 95 + 99) / 100 - 1] / 1000;
++    summary[2] = sorted[window->count - 1] / 1000;
++}
 +
 +static struct fel_api_clock fel_api_begin(struct aimagereader_vk_stable *p)
 +{
@@ -2171,6 +2212,10 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    int64_t elapsed = MPMAX(0, now - start.wall);
 +    int64_t cpu = mp_fel_thread_cpu_ns();
 +    mp_fel_perf_add(&p->fel_api_wall[op], elapsed);
++    if (op == FEL_API_DESCRIPTORS || op == FEL_API_PUSH_DESCRIPTORS)
++        fel_latency_add(&p->fel_bind_window, elapsed);
++    else if (op == FEL_API_RECORD)
++        fel_latency_add(&p->fel_record_window, elapsed);
 +    if (start.cpu > 0 && cpu >= start.cpu)
 +        mp_fel_perf_add(&p->fel_api_cpu[op], cpu - start.cpu);
 +    // Aggregate RECORD contains the individual calls: do not log it twice.
@@ -2238,7 +2283,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +        used += written;
 +    }
 +}
-
++
 +static void fel_perf_checkpoint(struct aimagereader_vk_stable *p,
 +                                enum mp_fel_perf_stage stage)
 +{
@@ -2258,6 +2303,9 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    fel_perf_checkpoint(p, MP_FEL_PERF_OTHER);
 +    mp_fel_perf_add(p->fel_profile_warm ? &p->fel_map_warm : &p->fel_map_cold,
 +                   MPMAX(0, p->fel_map_checkpoint - p->fel_map_started));
++    if (p->fel_profile_warm)
++        fel_latency_add(&p->fel_map_window,
++                        MPMAX(0, p->fel_map_checkpoint - p->fel_map_started));
 +    int64_t cpu = mp_fel_thread_cpu_ns();
 +    if (p->fel_profile_warm && p->fel_map_cpu_started > 0 && cpu >= p->fel_map_cpu_started)
 +        mp_fel_perf_add(&p->fel_map_cpu, cpu - p->fel_map_cpu_started);
@@ -2377,6 +2425,19 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +                p->fel_map_stages[MP_FEL_PERF_EXPORT].total / 1000,
 +                p->fel_map_stages[MP_FEL_PERF_IMAGE_RETURN].total / 1000,
 +                p->fel_map_stages[MP_FEL_PERF_OTHER].total / 1000);
++        const struct fel_latency_window *windows[] = {
++            &p->fel_bind_window, &p->fel_record_window, &p->fel_map_window,
++        };
++        const char *const names[] = {"bind", "record", "map"};
++        char latency[512];
++        int latency_used = 0;
++        for (int n = 0; n < MP_ARRAY_SIZE(windows); n++) {
++            uint64_t summary[3];
++            fel_latency_summary(windows[n], summary);
++            latency_used += snprintf(latency + latency_used,
++                sizeof(latency) - latency_used, " %s=%u/%" PRIu64 "/%" PRIu64 "/%" PRIu64,
++                names[n], windows[n]->count, summary[0], summary[1], summary[2]);
++        }
 +        mp_info(p->log, "WebHTV FEL reuse: input-hit=%" PRIu64
 +                " input-miss=%" PRIu64 " input-evict=%" PRIu64
 +                " input-removed=%" PRIu64 " input-slots=%d input-limit=%d"
@@ -2384,13 +2445,18 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +                " command-evict=%" PRIu64 " invalidated=%" PRIu64
 +                " fallback=%" PRIu64 " cold=%" PRIu64
 +                " records=%d record-limit=%d disabled=%d fresh-commands=%" PRIu64
-+                " command-mode=fresh-bind-record replay=0.\n",
++                " descriptor-content-cache=1 content-hit=%" PRIu64
++                " descriptor-writes=%" PRIu64 " descriptor-rebinds=%" PRIu64
++                " command-mode=fresh-bind-record replay=0. latency-window:%s "
++                "(warm last<=128 n/p50-us/p95-us/max-us; overlapping stages).\n",
 +                p->input_hits, p->input_misses, p->input_evictions,
 +                p->input_removals, p->num_inputs, FEL_INPUT_CACHE_SIZE,
 +                p->recording_hits, p->recording_misses, p->recording_evictions,
 +                p->recording_invalidations, p->recording_fallbacks,
 +                p->recording_cold, p->num_recordings, FEL_RECORD_CACHE_SIZE,
-+                p->recording_cache_disabled, p->fresh_commands);
++                p->recording_cache_disabled, p->fresh_commands,
++                p->descriptor_content_hits, p->descriptor_writes, p->descriptor_rebinds,
++                latency);
 +        char order[1024];
 +        format_fel_frame_order(p, order, sizeof(order));
 +        mp_info(p->log, "WebHTV FEL frame order: events=%" PRIu64
@@ -2413,11 +2479,10 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +        }
 +    }
 +}
-+
+
  static bool vk_success(struct aimagereader_vk_stable *p, VkResult result,
                         const char *operation)
- {
-@@ -145,7 +665,7 @@ static bool can_import_sync_fd(pl_vulkan vk)
+@@ -145,7 +731,7 @@ static bool can_import_sync_fd(pl_vulkan vk)
      return false;
  }
 
@@ -2426,7 +2491,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  {
      PFN_vkGetPhysicalDeviceExternalSemaphoreProperties get_properties =
          (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)
-@@ -168,10 +688,68 @@ static bool can_import_sync_fd(pl_vulkan vk)
+@@ -168,10 +754,68 @@ static bool can_import_sync_fd(pl_vulkan vk)
          .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
      };
      get_properties(vk->phys_device, &info, &properties);
@@ -2497,7 +2562,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  static bool has_ycbcr_conversion(pl_vulkan vk)
  {
      const VkStructureType ycbcr_type =
-@@ -262,8 +840,25 @@ static void destroy_input(struct aimagereader_vk_stabl
+@@ -262,8 +906,25 @@ static void destroy_input(struct aimagereader_vk_stabl
      return UINT32_MAX;
  }
 
@@ -2523,12 +2588,10 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (input->view)
          vkDestroyImageView(p->device, input->view, NULL);
      if (input->image)
-@@ -271,6 +866,24 @@ static void destroy_input(struct aimagereader_vk_stabl
-     if (input->memory)
-         vkFreeMemory(p->device, input->memory, NULL);
+@@ -273,6 +934,24 @@ static void clear_output_frames(struct vk_output *outp
      *input = (struct vk_input){0};
-+}
-+
+ }
+
 +static void destroy_recording_cache(struct aimagereader_vk_stable *p)
 +{
 +    VkCommandBuffer commands[FEL_RECORD_CACHE_SIZE];
@@ -2545,10 +2608,12 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    p->num_recordings = 0;
 +    p->recording_cache_disabled = false;
 +    memset(p->recordings, 0, sizeof(p->recordings));
- }
-
++}
++
  static void clear_output_frames(struct vk_output *output)
-@@ -281,6 +894,46 @@ static bool finish_output(struct aimagereader_vk_stabl
+ {
+     mp_image_unrefp(&output->source_frame);
+@@ -281,6 +960,46 @@ static bool finish_output(struct aimagereader_vk_stabl
      output->num_source_aliases = 0;
  }
 
@@ -2595,7 +2660,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  static bool finish_output(struct aimagereader_vk_stable *p,
                            struct vk_output *output, uint64_t timeout_ns)
  {
-@@ -307,9 +960,18 @@ static bool finish_output(struct aimagereader_vk_stabl
+@@ -307,10 +1026,19 @@ static bool finish_output(struct aimagereader_vk_stabl
      if (!vk_success(p, result, "waiting for AHardwareBuffer conversion"))
          return false;
 
@@ -2603,7 +2668,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (output->source_image) {
          p->api.AImage_delete(output->source_image);
          output->source_image = NULL;
-+    }
+     }
 +    if (p->android_fel) {
 +        for (int n = -1; n < output->num_source_aliases; n++) {
 +            struct mp_image *frame = n < 0 ? output->source_frame
@@ -2611,10 +2676,11 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +            if (frame && frame->android_fel_staging)
 +                mp_android_fel_staging_complete(frame->android_fel_staging->data);
 +        }
-     }
++    }
      if (output->input) {
          if (output->input->users > 0)
-@@ -347,6 +1009,8 @@ static void destroy_output(struct aimagereader_vk_stab
+             output->input->users--;
+@@ -347,6 +1075,8 @@ static void destroy_output(struct aimagereader_vk_stab
          vkDestroySemaphore(p->device, output->acquire, NULL);
      if (output->ready)
          vkDestroySemaphore(p->device, output->ready, NULL);
@@ -2623,8 +2689,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (output->fence)
          vkDestroyFence(p->device, output->fence, NULL);
      *output = (struct vk_output){0};
-@@ -354,21 +1018,23 @@ static void destroy_conversion_resources(struct aimage
-
+@@ -354,21 +1084,23 @@ static void destroy_conversion_resources(struct aimage
  static void destroy_conversion_resources(struct aimagereader_vk_stable *p)
  {
 -    for (int n = 0; n < OUTPUT_COUNT; n++)
@@ -2650,7 +2715,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      }
      if (num_commands) {
          vkFreeCommandBuffers(p->device, p->command_pool, num_commands,
-@@ -376,7 +1042,7 @@ static void destroy_conversion_resources(struct aimage
+@@ -376,7 +1108,7 @@ static void destroy_conversion_resources(struct aimage
      }
 
      p->mapper->tex[0] = NULL;
@@ -2659,7 +2724,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          destroy_output(p, &p->outputs[n]);
 
      for (int n = 0; n < p->num_inputs; n++)
-@@ -509,6 +1175,9 @@ static VkFormat choose_output_format(
+@@ -509,6 +1241,9 @@ static VkFormat choose_output_format(
          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
 
      for (int n = 0; n < num_candidates; n++) {
@@ -2669,7 +2734,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          VkFormatProperties props;
          vkGetPhysicalDeviceFormatProperties(p->vk->phys_device,
                                              candidates[n], &props);
-@@ -648,6 +1317,7 @@ static bool create_output_image(struct aimagereader_vk
+@@ -648,6 +1383,7 @@ static bool create_output_image(struct aimagereader_vk
                      "creating conversion fence"))
          return false;
 
@@ -2677,8 +2742,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      return true;
  }
 
-@@ -670,7 +1340,7 @@ static bool create_outputs(
-
+@@ -670,7 +1406,7 @@ static bool create_outputs(
      uint32_t queue_families[3];
      int num_queue_families = collect_queue_families(p, queue_families);
 -    for (int n = 0; n < OUTPUT_COUNT; n++) {
@@ -2686,7 +2750,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          if (!create_output_image(p, &p->outputs[n], queue_families,
                                   num_queue_families))
              return false;
-@@ -680,14 +1350,14 @@ static bool create_outputs(
+@@ -680,14 +1416,14 @@ static bool create_outputs(
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
          .commandPool = p->command_pool,
          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -2704,7 +2768,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          p->outputs[n].command = commands[n];
 
      return true;
-@@ -751,6 +1421,133 @@ static bool create_pipeline(
+@@ -751,6 +1487,133 @@ static bool create_pipeline(
      return ycbcr_props.combinedImageSamplerDescriptorCount;
  }
 
@@ -2838,7 +2902,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  static bool create_pipeline(
      struct aimagereader_vk_stable *p,
      const VkAndroidHardwareBufferFormatPropertiesANDROID *props)
-@@ -850,10 +1647,8 @@ static bool create_pipeline(
+@@ -850,10 +1713,8 @@ static bool create_pipeline(
          .bindingCount = MP_ARRAY_SIZE(bindings),
          .pBindings = bindings,
      };
@@ -2851,7 +2915,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          return false;
 
      VkPushConstantRange push_constant = {
-@@ -901,18 +1696,30 @@ static bool create_pipeline(
+@@ -901,18 +1762,30 @@ static bool create_pipeline(
      if (!vk_success(p, result, "creating AHardwareBuffer conversion pipeline"))
          return false;
 
@@ -2885,7 +2949,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          .poolSizeCount = MP_ARRAY_SIZE(pool_sizes),
          .pPoolSizes = pool_sizes,
      };
-@@ -921,14 +1728,14 @@ static bool create_pipeline(
+@@ -921,14 +1794,14 @@ static bool create_pipeline(
                      "creating conversion descriptor pool"))
          return false;
 
@@ -2904,7 +2968,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          .pSetLayouts = layouts,
      };
      if (!vk_success(p, vkAllocateDescriptorSets(
-@@ -936,9 +1743,11 @@ static bool create_pipeline(
+@@ -936,9 +1809,11 @@ static bool create_pipeline(
                      "allocating conversion descriptors"))
          return false;
 
@@ -2917,7 +2981,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          VkDescriptorImageInfo target = {
              .imageView = output->view,
              .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-@@ -954,15 +1763,6 @@ static bool create_pipeline(
+@@ -954,15 +1829,6 @@ static bool create_pipeline(
          vkUpdateDescriptorSets(p->device, 1, &write, 0, NULL);
      }
 
@@ -2933,7 +2997,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      return true;
  }
 
-@@ -1036,7 +1836,8 @@ static struct vk_input *select_input_slot(struct aimag
+@@ -1036,7 +1902,8 @@ static struct vk_input *select_input_slot(struct aimag
          if (!p->inputs[n].buffer)
              return &p->inputs[n];
      }
@@ -2943,7 +3007,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          return &p->inputs[p->num_inputs];
 
      struct vk_input *oldest = NULL;
-@@ -1051,6 +1852,8 @@ static struct vk_input *select_input_slot(struct aimag
+@@ -1051,6 +1918,8 @@ static struct vk_input *select_input_slot(struct aimag
          return NULL;
      }
 
@@ -2952,7 +3016,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      destroy_input(p, oldest);
      return oldest;
  }
-@@ -1076,7 +1879,10 @@ static struct vk_input *create_input(struct aimageread
+@@ -1076,7 +1945,10 @@ static struct vk_input *create_input(struct aimageread
          .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,
          .pNext = &format_props,
      };
@@ -2964,7 +3028,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
                      "querying Android hardware-buffer properties"))
          return NULL;
      if (format_props.format == VK_FORMAT_UNDEFINED &&
-@@ -1100,13 +1906,21 @@ static struct vk_input *create_input(struct aimageread
+@@ -1100,13 +1972,21 @@ static struct vk_input *create_input(struct aimageread
      int output_height = p->mapper->src_params.h;
 
      if (!p->resources_ready) {
@@ -2988,7 +3052,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      } else if (p->buffer_width != (int)desc->width ||
                 p->buffer_height != (int)desc->height ||
                 p->width != output_width || p->height != output_height ||
-@@ -1120,6 +1934,7 @@ static struct vk_input *create_input(struct aimageread
+@@ -1120,6 +2000,7 @@ static struct vk_input *create_input(struct aimageread
      struct vk_input *input = select_input_slot(p);
      if (!input)
          return NULL;
@@ -2996,7 +3060,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      VkExternalFormatANDROID external_format = {
          .sType = VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID,
-@@ -1147,8 +1962,10 @@ static struct vk_input *create_input(struct aimageread
+@@ -1147,8 +2028,10 @@ static struct vk_input *create_input(struct aimageread
          .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
          .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
      };
@@ -3009,7 +3073,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
                      "creating imported Android hardware-buffer image"))
          goto error;
 
-@@ -1175,13 +1992,16 @@ static struct vk_input *create_input(struct aimageread
+@@ -1175,13 +2058,16 @@ static struct vk_input *create_input(struct aimageread
          .allocationSize = buffer_props.allocationSize,
          .memoryTypeIndex = memory_type,
      };
@@ -3032,7 +3096,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      VkSamplerYcbcrConversionInfo conversion_info = {
          .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
-@@ -1207,8 +2027,10 @@ static struct vk_input *create_input(struct aimageread
+@@ -1207,8 +2093,10 @@ static struct vk_input *create_input(struct aimageread
              .layerCount = 1,
          },
      };
@@ -3045,12 +3109,10 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
                      "creating Android hardware-buffer image view"))
          goto error;
 
-@@ -1296,24 +2118,175 @@ static int import_acquire_fence(struct aimagereader_vk
-                        "using a bounded CPU wait\n", result);
-     p->ImportSemaphoreFdKHR = NULL;
+@@ -1298,22 +2186,176 @@ static bool record_conversion(struct aimagereader_vk_s
      return wait_acquire_fence(p, fd) ? 0 : -1;
-+}
-+
+ }
+
 +static bool recording_pending(const struct vk_recording *record)
 +{
 +    return record->command && record->output && record->output->pending &&
@@ -3063,6 +3125,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +                               const AImageCropRect *crop, bool timestamps)
 +{
 +    return record->valid && record->input == input && record->output == output &&
++           record->input_view == input->view && record->output_view == output->view &&
 +           record->width == desc->width && record->height == desc->height &&
 +           record->crop.left == crop->left && record->crop.top == crop->top &&
 +           record->crop.right == crop->right && record->crop.bottom == crop->bottom &&
@@ -3182,9 +3245,11 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +    } else {
 +        vkUpdateDescriptorSets(p->device, both ? 2 : 1, writes, 0, NULL);
 +        fel_api_end(p, FEL_API_DESCRIPTOR, clock);
++        if (p->android_fel)
++            p->descriptor_writes++;
 +    }
- }
-
++}
++
  static bool record_conversion(struct aimagereader_vk_stable *p,
                                struct vk_output *output,
                                struct vk_input *input,
@@ -3226,7 +3291,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      VkImageMemoryBarrier acquire[] = {
          {
              .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-@@ -1349,16 +2322,28 @@ static bool record_conversion(struct aimagereader_vk_s
+@@ -1349,16 +2391,30 @@ static bool record_conversion(struct aimagereader_vk_s
              },
          },
      };
@@ -3255,12 +3320,14 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +                                p->pipeline_layout, 0, 1, &descriptor,
 +                                0, NULL);
 +        fel_api_end(p, FEL_API_DESCRIPTORS, op_clock);
++        if (p->android_fel)
++            p->descriptor_rebinds++;
 +    }
 +    fel_wait_probe_end(p, &wait_sample);
      const double source_width = desc->width;
      const double source_height = desc->height;
      const struct conversion_push_constants push = {
-@@ -1374,14 +2359,18 @@ static bool record_conversion(struct aimagereader_vk_s
+@@ -1374,14 +2430,18 @@ static bool record_conversion(struct aimagereader_vk_s
          },
          .output_size = {p->width, p->height},
      };
@@ -3281,7 +3348,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      VkImageMemoryBarrier release[] = {
          {
-@@ -1414,15 +2403,80 @@ static bool record_conversion(struct aimagereader_vk_s
+@@ -1414,15 +2474,85 @@ static bool record_conversion(struct aimagereader_vk_s
              },
          },
      };
@@ -3322,14 +3389,17 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +        struct vk_recording *record = p->recording_cache_disabled ? NULL :
 +            select_recording(p, output, input, desc, crop, &hit);
 +        if (hit) {
-+            // A slot hit is NOT permission to replay an old external-image
-+            // command. Refresh the current binding and all ownership barriers.
++            // Both views and their lifetimes match. The immutable sampler,
++            // YCbCr conversion and layouts live as long as this recording pool;
++            // imageLayout is fixed per binding. Only descriptor writes can be
++            // skipped: current pixels/UV, ownership and sync need fresh commands.
 +            record->valid = false;
-+            update_conversion_descriptor(p, VK_NULL_HANDLE, record->descriptor, input, output, true);
 +            if (!record_conversion(p, output, input, desc, crop, record))
 +                return false;
 +            record->valid = true;
 +            p->recording_hits++;
++            if (!p->push_descriptors)
++                p->descriptor_content_hits++;
 +            record->last_used = ++p->recording_serial;
 +            output->active_command = record->command;
 +            output->fel_query_recorded = record->timestamps;
@@ -3344,6 +3414,8 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 +                    return false;
 +                record->input = input;
 +                record->output = output;
++                record->input_view = input->view;
++                record->output_view = output->view;
 +                record->crop = *crop;
 +                record->width = desc->width;
 +                record->height = desc->height;
@@ -3365,7 +3437,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
  static bool submit_conversion(struct aimagereader_vk_stable *p,
                                struct vk_output *output,
                                bool wait_for_output,
-@@ -1439,21 +2493,29 @@ static bool submit_conversion(struct aimagereader_vk_s
+@@ -1439,21 +2569,29 @@ static bool submit_conversion(struct aimagereader_vk_s
          wait_semaphores[wait_count] = output->acquire;
          wait_stages[wait_count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
      }
@@ -3398,7 +3470,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      bool success =
          vk_success(p, result, "submitting AHardwareBuffer conversion");
      if (success)
-@@ -1469,6 +2531,10 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
+@@ -1469,6 +2607,10 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
      p->log = mapper->log;
      p->mapper = mapper;
      p->api = *api;
@@ -3409,7 +3481,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      struct mpvk_ctx *ctx = ra_vk_ctx_get(mapper->owner->ra_ctx);
      p->gpu = ra_pl_get(mapper->ra);
-@@ -1499,11 +2565,19 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
+@@ -1499,11 +2641,19 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
              get_device_proc(
                  p->device,
                  "vkGetAndroidHardwareBufferPropertiesANDROID");
@@ -3434,7 +3506,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          }
      }
      if (!p->queue || !p->GetAHBProperties || !p->GetImageFormatProperties2)
-@@ -1519,12 +2593,23 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
+@@ -1519,12 +2669,23 @@ struct aimagereader_vk_stable *aimagereader_vk_stable_
                      "creating AHardwareBuffer conversion command pool"))
          goto error;
 
@@ -3460,7 +3532,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (p->ImportSemaphoreFdKHR) {
          MP_VERBOSE(mapper, "Using Vulkan sync_fd for AImage acquire fences\n");
      } else {
-@@ -1544,6 +2629,7 @@ void aimagereader_vk_stable_destroy(struct aimagereade
+@@ -1544,6 +2705,7 @@ void aimagereader_vk_stable_destroy(struct aimagereade
      if (!p)
          return;
 
@@ -3468,7 +3540,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      mp_verbose(p->log, "Vulkan conversion pool stats: submitted=%" PRIu64
                         " completed=%" PRIu64 " reclaimed=%" PRIu64
                         " fence-timeouts=%" PRIu64 " pool-retries=%" PRIu64
-@@ -1553,6 +2639,8 @@ void aimagereader_vk_stable_destroy(struct aimagereade
+@@ -1553,6 +2715,8 @@ void aimagereader_vk_stable_destroy(struct aimagereade
      if (p->gpu)
          pl_gpu_finish(p->gpu);
      destroy_conversion_resources(p);
@@ -3477,7 +3549,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (p->command_pool)
          vkDestroyCommandPool(p->device, p->command_pool, NULL);
 
-@@ -1567,6 +2655,8 @@ void aimagereader_vk_stable_buffer_removed(struct aima
+@@ -1567,6 +2731,8 @@ void aimagereader_vk_stable_buffer_removed(struct aima
      if (!input)
          return;
      input->removed = true;
@@ -3486,7 +3558,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (!input->users)
          destroy_input(p, input);
  }
-@@ -1574,20 +2664,27 @@ bool aimagereader_vk_stable_reuse(struct aimagereader_
+@@ -1574,20 +2740,27 @@ bool aimagereader_vk_stable_reuse(struct aimagereader_
  bool aimagereader_vk_stable_reuse(struct aimagereader_vk_stable *p,
                                    struct mp_image *frame)
  {
@@ -3515,7 +3587,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      return false;
  }
 
-@@ -1605,6 +2702,8 @@ bool aimagereader_vk_stable_retain_last(struct aimager
+@@ -1605,6 +2778,8 @@ bool aimagereader_vk_stable_retain_last(struct aimager
          return false;
      MP_TARRAY_APPEND(p, output->source_aliases,
                       output->num_source_aliases, frame_ref);
@@ -3524,7 +3596,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      p->mapper->tex[0] = output->ratex;
      return true;
  }
-@@ -1622,12 +2721,23 @@ int aimagereader_vk_stable_map(
+@@ -1622,12 +2797,23 @@ int aimagereader_vk_stable_map(
      if (!crop || !p->mapper->src_params.w || !p->mapper->src_params.h)
          return -1;
 
@@ -3549,7 +3621,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (!desc.width || !desc.height ||
          desc.width > INT32_MAX || desc.height > INT32_MAX ||
          crop->left < 0 || crop->top < 0 ||
-@@ -1638,25 +2748,39 @@ int aimagereader_vk_stable_map(
+@@ -1638,25 +2824,39 @@ int aimagereader_vk_stable_map(
                         "(buffer %ux%u, crop %d,%d-%d,%d)\n",
                 desc.width, desc.height, crop->left, crop->top,
                 crop->right, crop->bottom);
@@ -3601,7 +3673,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
          if (!finish_output(p, &p->outputs[selected_output],
                             CONVERSION_FENCE_TIMEOUT_NS)) {
              p->pool_retries++;
-@@ -1665,10 +2789,40 @@ int aimagereader_vk_stable_map(
+@@ -1665,10 +2865,40 @@ int aimagereader_vk_stable_map(
                                  "output=%d retries=%" PRIu64 "\n",
                          selected_output, p->pool_retries);
              }
@@ -3642,7 +3714,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      output = &p->outputs[selected_output];
 
      wait_for_output = output->released;
-@@ -1685,24 +2839,12 @@ int aimagereader_vk_stable_map(
+@@ -1685,24 +2915,12 @@ int aimagereader_vk_stable_map(
          p->reclaimed_outputs++;
      }
      clear_output_frames(output);
@@ -3670,7 +3742,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      if (*acquire_fence >= 0) {
          int import_result =
-@@ -1712,6 +2854,7 @@ int aimagereader_vk_stable_map(
+@@ -1712,6 +2930,7 @@ int aimagereader_vk_stable_map(
              goto error;
          acquire_imported = import_result > 0;
      }
@@ -3678,8 +3750,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      if (!submit_conversion(p, output, wait_for_output, acquire_imported)) {
          if (acquire_imported)
              reset_acquire_semaphore(p, output);
-@@ -1720,6 +2863,8 @@ int aimagereader_vk_stable_map(
-
+@@ -1720,6 +2939,8 @@ int aimagereader_vk_stable_map(
      output->source_image = image;
      output->source_frame = frame_ref;
 +    output->fel_serial = p->submitted_outputs;
@@ -3687,7 +3758,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
      output->input = input;
      output->pending = true;
      output->written = true;
-@@ -1727,6 +2872,8 @@ int aimagereader_vk_stable_map(
+@@ -1727,6 +2948,8 @@ int aimagereader_vk_stable_map(
      input->users++;
      input->last_used = ++p->input_serial;
      input->initialized = true;
@@ -3696,7 +3767,7 @@ diff --git a/video/out/hwdec/hwdec_aimagereader_vk_stable.c b/video/out/hwdec/hw
 
      pl_vulkan_release_ex(p->gpu, pl_vulkan_release_params(
          .tex = output->pltex,
-@@ -1735,11 +2882,25 @@ int aimagereader_vk_stable_map(
+@@ -1735,11 +2958,25 @@ int aimagereader_vk_stable_map(
          .semaphore = (pl_vulkan_sem){.sem = output->ready},
      ));
      p->mapper->tex[0] = output->ratex;

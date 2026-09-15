@@ -84,12 +84,19 @@ def main():
         require("p->android_fel && input->initialized && !input->removed && output->written" in prepare
                 and "if (output->pending)" in prepare
                 and reuse_hit.index("record->valid = false")
-                    < reuse_hit.index("update_conversion_descriptor")
                     < reuse_hit.index("record_conversion")
                     < reuse_hit.index("record->valid = true")
                     < reuse_hit.index("output->active_command = record->command")
+                and "update_conversion_descriptor" not in reuse_hit
+                and "if (!p->push_descriptors)" in reuse_hit
+                and "p->descriptor_content_hits++" in reuse_hit
                 and "output->fel_query_recorded = record->timestamps" in reuse_hit,
-                "completed FEL object slots must refresh current bindings and recording before selection")
+                "completed FEL content hits skip writes but must bind and record before selection")
+        require("record->input_view == input->view" in stable
+                and "record->output_view == output->view" in stable
+                and "record->input_view = input->view" in prepare
+                and "record->output_view = output->view" in prepare,
+                "descriptor content identity must include both exact image views")
         require("#define FEL_INPUT_CACHE_SIZE 32" in stable
                 and "#define FEL_RECORD_CACHE_SIZE 128" in stable
                 and "p->android_fel ? FEL_INPUT_CACHE_SIZE : INPUT_CACHE_SIZE" in stable
@@ -118,6 +125,19 @@ def main():
                     < destroy.index("destroy_recording_cache(p)")
                     < destroy.index("destroy_output(p, &p->outputs[n])"),
                 "cached commands must finish and be freed before referenced resources are destroyed")
+        for release in ("vkDestroyPipelineLayout(", "vkDestroyDescriptorSetLayout(",
+                        "vkDestroySampler(", "vkDestroySamplerYcbcrConversion("):
+            require(destroy.index("destroy_recording_cache(p)") < destroy.index(release),
+                    "descriptor pool lifetime must end before immutable layout/sampler/YCbCr objects")
+        destroy_input = stable[stable.index("static void destroy_input("):
+                               stable.index("static void destroy_recording_cache(")]
+        require(destroy_input.index("invalidate_input_recordings(p, input)")
+                    < destroy_input.index("vkDestroyImageView("),
+                "input generation must be invalidated before Vulkan can recycle a view handle")
+        require("#define FEL_LATENCY_SAMPLES 128" in stable
+                and "latency-window:%s" in stable
+                and "descriptor-content-cache=1" in stable,
+                "content reuse and actual bind/map latency must remain separately observable and bounded")
         require("recording_cache_disabled = true" in stable
                 and "WebHTV FEL reuse:" in stable and "WebHTV FEL api perf:" in stable,
                 "optional reuse failure must stop allocation retries and remain diagnosable")
