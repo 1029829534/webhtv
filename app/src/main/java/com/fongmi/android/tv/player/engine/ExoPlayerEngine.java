@@ -608,6 +608,7 @@ public class ExoPlayerEngine implements PlayerEngine {
                     format == null ? "unknown" : format.width + "x" + format.height + "/" + format.sampleMimeType);
         }
         player.setVideoEffects(effects);
+        com.fongmi.android.tv.player.exo.ExoDiagnosticCollector.effects(player, effects);
     }
 
     @Override
@@ -953,6 +954,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         ExoPerformanceSetting.beginAutoSession();
         if (!playWhenReady) player.pause();
         MediaItem item = ExoUtil.getMediaItem(spec.copyWithFormat(activeFormat), decode);
+        item = com.fongmi.android.tv.player.exo.ExoDiagnosticCollector.prepare(player, item, spec.getPlaybackTraceId());
         player.setMediaItem(item, position);
         preCache.start(player, item, spec.getPlaybackTraceId(), spec.getPlaybackRoute());
         player.prepare();

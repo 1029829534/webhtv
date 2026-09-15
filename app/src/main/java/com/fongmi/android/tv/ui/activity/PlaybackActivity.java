@@ -71,6 +71,8 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
     private int requestedResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT;
     private ExoOutputModeManager exoOutputModeManager;
     private ExoAssSession attachedAssSession;
+    private final com.fongmi.android.tv.player.SurfaceDiagnosticCollector surfaceDiagnostics =
+            new com.fongmi.android.tv.player.SurfaceDiagnosticCollector();
 
     protected MediaController controller() {
         return mController;
@@ -432,6 +434,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
             syncShutter(true);
             logSurfaceState("attach after setRender target=" + targetRender);
         }
+        surfaceDiagnostics.bind(getExoView(), player().getPlaybackTraceId());
         if (getExoView().getPlayer() == null) {
             getExoView().setPlayer(player().getPlayer());
             logSurfaceState("attach after setPlayer");
@@ -455,6 +458,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
         View surface = getExoView().getVideoSurfaceView();
         if (!(surface instanceof SurfaceView surfaceView)) return;
         if (!PlaybackPerformanceSetting.isSurfaceFixedSizeEnabled() || getRender() != PlayerSetting.RENDER_SURFACE || player().isNativePlayer()) {
+            surfaceDiagnostics.resize("layout", -1, -1);
             surfaceView.getHolder().setSizeFromLayout();
             logSurfaceState("syncVideoSurfaceSize layout size=" + (size == null ? "null" : size.width + "x" + size.height));
             return;
@@ -468,6 +472,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
             width = Math.max(1, Math.round(width * scale));
             height = Math.max(1, Math.round(height * scale));
         }
+        surfaceDiagnostics.resize("fixed", width, height);
         surfaceView.getHolder().setFixedSize(width, height);
         logSurfaceState("syncVideoSurfaceSize fixed=" + width + "x" + height);
     }
@@ -536,9 +541,11 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
             getExoView().setShutterBackgroundColor(Color.BLACK);
             if (shutter != null) shutter.setVisibility(View.VISIBLE);
         }
+        surfaceDiagnostics.snapshot("shutter-policy");
     }
 
     private void detachSurface() {
+        surfaceDiagnostics.unbind();
         detachAssSurface();
         getExoView().setPlayer(null);
         if (mService != null) player().publishPlaybackRenderTarget(PlaybackAutoContext.RenderTarget.DETACHED);
@@ -731,6 +738,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
 
     @Override
     public void onPlaybackStateChanged(int state) {
+        if (mService != null && isOwner()) surfaceDiagnostics.bind(getExoView(), player().getPlaybackTraceId());
         if (SpiderDebug.isEnabled()) SpiderDebug.log("playback-lifecycle", "state changed state=%d %s", state, lifecycleState());
         if (isOwner()) onStateChanged(state);
     }
@@ -770,6 +778,8 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
 
     private void publishDisplayFacts(ExoOutputModeManager.Result result) {
         if (mService == null || result == null) return;
+        surfaceDiagnostics.snapshot("display-mode-request");
+        surfaceDiagnostics.display(result);
         player().publishPlaybackDisplayFacts(
                 toDisplayMode(result.currentMode()),
                 toDisplayMode(result.requestedMode()));
@@ -900,6 +910,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
 
     @Override
     protected void onDestroy() {
+        surfaceDiagnostics.unbind();
         detachAssSurface();
         if (SpiderDebug.isEnabled()) SpiderDebug.log("playback-lifecycle", "activity destroy beforeRelease %s", lifecycleState());
         restoreExoOutputMode();

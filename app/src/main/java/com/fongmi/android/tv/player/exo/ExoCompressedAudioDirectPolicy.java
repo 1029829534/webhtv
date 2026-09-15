@@ -71,6 +71,10 @@ public final class ExoCompressedAudioDirectPolicy
     }
 
     AudioOutputProvider wrapOutputProvider(AudioOutputProvider delegate) {
+        return wrapOutputProvider(delegate, null);
+    }
+
+    AudioOutputProvider wrapOutputProvider(AudioOutputProvider delegate, ExoDiagnosticCollector diagnostics) {
         return new ForwardingAudioOutputProvider(delegate) {
             @Override
             public AudioOutputProvider.FormatSupport getFormatSupport(
@@ -168,6 +172,7 @@ public final class ExoCompressedAudioDirectPolicy
                     AudioOutput output = vendorDirect
                             ? createVendorDirectAudioOutput(config)
                             : super.getAudioOutput(config);
+                    output = ExoDiagnosticAudioOutput.wrap(output, config, diagnostics);
                     if (!vendorDirect) return output;
                     return new ForwardingAudioOutput(output) {
                         @Override
