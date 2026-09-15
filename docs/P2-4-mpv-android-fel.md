@@ -1,6 +1,71 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.17）
+## Recovery anchor（当前：9.18）
+
+- 目标：继续定位电视 FEL 严重掉帧；本单元补齐无 ADB 的等待来源诊断，保留完整 BL 硬解/EL 软解/NLQ、10bit、逐帧录制、同步与退出。它是诊断候选，不是电视性能修复验收。
+- 基线 `feature/mpv-dv7-fel` / `206a57e0e337304a8b78712c487ef245d7cb0fa0`，guard `P2-4-fel-wait-diagnostics` / upstream。启动时保护 104 个既有脏文件，均属 `app/.cxx/`；不修改或移动这些文件，不升级锁定依赖，不推送。
+- 2026-09-15 新日志30与9.15同名旧日志不同：TCL MT9655、Android14、TV64、buildTime=202609152206；FEL已生效，但两轮 warm map 39.28/35.50ms、descriptor bind 34.73/31.65ms（线程CPU约1ms），第二轮360次显示跳过；seek前后计数不能相加。push扩展未启用，尚不能从日志断言物理支持情况。
+- 用户确认电视不能连接ADB，只能用App调试日志；提供 `http://192.168.1.5:9978/debug/logs`，只读访问及TXT下载已成功，status当时 `playingContext=false`。沿用此前持续修复授权，采用本节窄诊断方案，无需再次请求相同授权。
+- 证据目录 `/private/tmp/webhtv-fel-wait-diagnostics-20260915/`；原日志SHA256=`303afdfbd1e782b624b77f2194a15c76f5fd6eeaccc5a82b34cf5aad14fc7791`。采样/能力日志、Java分类、实际函数ASan/UBSan与源/patch一致性通过；旧静态入口断言已适配当前统一诊断链并通过。双ABI实际编译/ELF/导出通过，18依赖（含JNI）不变；13项Java及TV64包内10库/签名/ZIP通过。guard原子提交/tag收尾，精确ID由guard记录，不额外建立回填自身ID的提交。
+- 候选TV64 buildTime=`202609160528`，APK SHA256=`6e9bba7846e2e99620757c7ced5c357b287ce1bc64562a79f2db511e83c86a51`。编译前基线/dirty标记保留在APK中，按本表哈希识别候选；它不证明电视卡顿已修复。唯一下一步：安装此TV64候选，先开调试日志再按原设置播放FEL约30秒，从既有Web地址读取`capability-v=1`及`WebHTV FEL wait sample`裁决等待来源。
+
+## 9.18 新日志30：无ADB电视的Vulkan等待诊断（2026-09-15）
+
+### 问题、研究与决定
+
+23.976fps每帧约41.7ms；现有约32–35ms的bind墙钟时间与约1ms线程CPU时间之间有大段等待。GPU copy约21ms、最后已知渲染pass均值约21–26ms，属于异步区间，不能与CPU墙钟相加。AHB缓存已命中、无源归还失败或fence超时；不据此盲加EL线程、重启命令重放或取消同步。当前唯一待裁决问题是：这段等待主要属于runqueue调度延迟，还是非运行/非排队等待，以及输入acquire fence是否在此期间变为就绪。
+
+固定依赖沿用9.17：mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`、builder `99a60ad2141d5ace94453590903c2c6b9a0a2443`；全部为已覆盖基线，无新合并提交。访问日期均为2026-09-15。
+
+| 来源/版本 | 等级、事实、适用性与限制 |
+| --- | --- |
+| 本地 stable mapper `prepare_conversion/record_conversion/fel_api_begin/fel_api_end`，VO与BL交接调用链 | A；API计时只含调用区间；BL发布前暂存、每帧重新录制与释放栅栏保护仍有效。采样只包围descriptor bind/push，不改这些行为 |
+| 锁定libplacebo `src/vulkan/context.c::device_init/finalize_context`、`gpu_pass.c::vk_pass_create`及公开`vulkan.h` | A/B；创建device会自动启用可用push扩展，公开列表为实际启用。`extension-not-enabled`不能当作遗漏App配置，也不能在缺少API版本时等同物理不支持；单独记录支持/启用/版本 |
+| [Linux v6.1 sched-stats](https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/refs/tags/v6.1/Documentation/scheduler/sched-stats.rst)、同版`fs/proc/base.c::proc_pid_schedstat` | A；三个字段为运行纳秒、runqueue等待纳秒、调度次数；统计未启用时输出全0。读取本线程，拒绝全0、截断、溢出、倒退，不能把不可用记为零等待 |
+| NDK29 `sys/resource.h`与`linux/resource.h`；[AOSP simpleperf android-14.0.0_r1 environment.cpp::GetProcessUid](https://android.googlesource.com/platform/system/extras/+/android-14.0.0_r1/simpleperf/environment.cpp) | A/B；`getrusage(RUSAGE_THREAD)`提供本线程主动/被动切换次数，simpleperf对不可读proc返回无值。次数不是时间、不保证指出某个驱动锁；缺失数据明确保留错误状态 |
+| [AOSP libsync android-14.0.0_r1 sync.c::sync_wait](https://android.googlesource.com/platform/system/core/+/android-14.0.0_r1/libsync/sync.c) | A/B；poll检查sync fd的POLLIN/错误，timeout=0可只观察、不等待、不消费/关闭fd；前后状态相关不等于因果证明 |
+| 上游issues/PR、Arm/Khronos技术基准 | 复用9.15–9.17已阅读的有限检索及基准；没有能证明当前等待根因的补丁。本轮只补测量，不重新扩展驱动修复搜索或套用基准收益 |
+| 论文 | 不适用本诊断单元：不提出新重建、调度或性能算法；字段含义和生命周期由Linux/Android实际源码决定 |
+
+Linux原始GitHub入口返回429，已改读同版本官方googlesource镜像并保存完整源码；联网使用127.0.0.1:7897代理。没有把失败抓取记为已读。
+
+比较：不改则下一份日志仍无法区分等待来源；完整Perfetto/系统跟踪需设备能力，当前无ADB；强开push/修改线程或同步均缺少证据。采用窄适配：FEL且视频INFO日志启用时，每3秒最多对一次bind/push读取本线程schedstat、RUSAGE_THREAD及acquire fence前后状态；保留原API墙钟/CPU统计，另报采样自身开销。权限/能力不足只影响诊断，不重试刷屏或改变播放。首次mapper创建记录实际Vulkan版本、GPU/驱动、push广告支持与启用情况，枚举有上限，不启用新扩展。
+
+所有样本只进入已有App/Web日志通路并有独立限流，不追加主线程处理、不保存图像/PCM、不引入线程或新的依赖/ABI/权限。只读系统调用存在有限采样开销，日志明确记录；不能从差额直接声称已测得驱动内部等待时间。
+
+### 验收、范围与回滚
+
+- 授权：用户要求继续通过Web日志诊断此FEL性能问题。代码范围为FEL补丁、相关原生测试/校验脚本、MPV日志分类与测试、两份libmpv及本任务/索引/构建说明；编译仅使用可再生隔离缓存，保护app/.cxx/。
+- 最便宜决定性检查：真实生产函数的host ASan/UBSan验证计数解析/溢出/倒退/全0、权限失败、限频及禁用零采样、主动/被动切换、fence的pending/ready/error与零超时且不关闭；保留原有1200帧push/set录制/生命周期测试。Java检查新增记录不受普通日志洪泛影响且来源/级别严格。
+- 仅同锁增量编译两ABI libmpv，检查ELF/公开导出与其他18库不变。打包本日志对应TV64，确认包内全部MPV资产、签名及ZIP；不以host/编译成功宣称电视流畅。
+- 设备闭环：用户安装候选后，保持原样片/FEL设置，通过已有Web地址读取一次持续播放日志，首先裁决能力、采样有效性、runqueue/切换/fence关系，再决定性能改动。没有可用计数时仍明确未知。
+- 回滚：成套恢复至基线`206a57e0e337304a8b78712c487ef245d7cb0fa0`的补丁/日志分类/两libmpv；原子提交与annotated recovery tag保留本候选，不移动已有tag、不推送。
+- 时间：22:41 Asia/Shanghai声明余下25–35分钟（实现15分钟、验证/增量编译10–15分钟、打包收尾5分钟），目标23:06–23:16；电视操作与采样等待另计。
+
+### 03:05跨日恢复与已完成验证
+
+源码仅增加诊断：bind/push每3秒采样一次本线程schedstat/RUSAGE_THREAD与acquire fd的poll(0)，读失败/全0/倒退保持未知，权限或接口缺失不重复打开；前后采样开销单列。原来API统计、图像输入/输出、push门控、逐帧命令、barrier/semaphore/fence、NLQ和位深逻辑保留。能力枚举最多512项，仅观察，不开启扩展。新日志分类仅使测量避开旧播放状态处理，记录通过项目现有统一诊断存储。
+
+实际生产函数的ASan/UBSan覆盖计数解析/溢出/截断/全0/倒退、拒绝访问与失效缓存、关闭时零采样、限频与时钟回退、主动/被动切换、sync fd零超时且不关闭、扩展支持/启用/入口缺失/分配失败/不完整枚举；原有1200帧cache与逐次录制、240帧交接、取消/EOF/lease/NLQ元数据等行为全部通过。EL/RPU样片解码仍因未提供素材明确SKIP。末尾旧静态入口断言已按现有代码修正，未削弱不排队主线程/不重复Logcat约束。
+
+2026-09-16 03:05恢复时原交付目标已失效；剩余限定为双ABI增量编译、TV64 APK/Java检查和原子提交tag，估计8–12分钟，不扩研究、不重复成功测试。电视能力/性能仍待该包Web日志，不能标作已修复卡顿。
+
+### 本机候选结果（2026-09-16 05:28构建）
+
+- `arm64-build.log`、`armv7l-build.log`包含实际stable mapper编译及libmpv链接，未重建FFmpeg/libplacebo/JNI。`native-assets.log`、`native-boundary.log`确认两ABI ELF/命名空间/公开导出一致，另18个库逐字节不变。相对本轮HEAD基线libmpv仅增加3680/4536字节。
+- 使用NDK29/API24的固定MPV构建图；Gradle用JDK21、SDK37、离线温缓存及原隔离CMake staging，未触碰受保护app/.cxx/。构建授权等待后05:28实际启动，一次有效Gradle构建1分46秒，112任务（18执行/1缓存/93未变）；未重复原生行为测试或整包构建。
+- `MpvDiagnosticsPolicyTest`13项、0失败/0错误/0跳过。`apk-artifacts.json`记录TV64包10项MPV资产全部匹配、签名通过、ZIP额外开销801465字节，包含`lib/arm64-v8a/libexo_ass.so`。旧APK与该variant的精确package增量缓存已保存在证据目录，不删除用户数据。
+- 原生测试的唯一未执行项为缺少实样的EL/RPU解码；此单元不改变FEL数学、解码或像素。目标电视尚未安装该候选，能力与等待分布仍未知。源码/索引检查0错误，二进制修改告警对应本guard显式拥有的两libmpv及补丁，无额外范围变更。
+
+| 候选产物 | SHA-256 | 字节 |
+| --- | --- | ---: |
+| arm64-v8a libmpv | `3e3732114fdd2527bbe95cce9b635087f0a67034a50c23a59c28c6c47fc5fa05` | 17807048 |
+| armeabi-v7a libmpv | `be2b7828d6806ae8cf8a390f2f48106608193ffef40d6c5e4369ddaa9dfee6c2` | 14619876 |
+| TV64 debug APK，buildTime=202609160528 | `6e9bba7846e2e99620757c7ced5c357b287ce1bc64562a79f2db511e83c86a51` | 164143897 |
+
+FEL补丁SHA256=`f2b3e011e2fac157750b20c990c447daec958f9d48304c19e4c9ff485002dfb6`；lock保持`a009a6dd9066eacd8547383f93cc7dce2956fff7d6d338bd886be75b9e4ae159`。设备判读先看`sched-error/rusage-error/probe-us`是否有效，再看runqueue及切换次数和acquire前后状态；不把缺失值当0、不把两个异步区间相加、不把pending→ready关联当作驱动内部因果证明。
+
+## 历史恢复记录（9.17）
 
 - 目标：继续修复显式FEL的首次起播失败与持续掉帧，保留BL硬解/EL软解、真实FEL重建、10bit、同步、可取消退出和其他模式。电视画面/实时性能仍未验收，不能以host或构建成功宣称完成整体需求。
 - 当前分支`feature/mpv-dv7-fel`，HEAD/回滚基线`ce10d5c15ef36fa83e27c6195182717a334a1036`，tag `recovery/P2-4-fel-vk-reuse/20260913225443-ce10d5c15ef3`；guard `P2-4-fel-warmup-push` / upstream。原有`app/.cxx/`70个文件全部保护，不移动/修改；同四仓锁、无依赖升级、无推送授权。

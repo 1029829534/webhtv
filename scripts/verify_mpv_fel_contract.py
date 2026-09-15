@@ -131,9 +131,21 @@ def main():
         callback = app[app.index("public void logMessage("):app.index("private void openCurrent(")]
         fast_log = callback[callback.index("if (performanceKind >= 0)"):
                             callback.index("String line = MpvDiagnosticsPolicy.redactSensitive")]
-        require("DebugLogStore.add(" in fast_log and "return;" in fast_log
+        collector = (ROOT / "app/src/main/java/androidx/media3/mpvplayer/MpvDiagnosticCollector.java").read_text()
+        native_log = collector[collector.index("synchronized void nativeLog("):
+                               collector.index("static boolean isHook(")]
+        sink = (ROOT / "app/src/main/java/com/fongmi/android/tv/player/PlaybackDiagnosticCollector.java").read_text()
+        require(callback.index("diagnostics.nativeLog(prefix, level, text)")
+                < callback.index("if (performanceKind >= 0)")
+                and "log.emitNative(" in native_log and "DebugLogStore.event(event)" in sink
+                and "postToMain(" not in native_log and "PlaybackTrace.log(" not in native_log
+                and "return;" in fast_log
                 and "postToMain(" not in fast_log and "PlaybackTrace.log(" not in fast_log,
                 "pure FEL measurements must not enqueue UI work or duplicate pretty Logcat output")
+        require("WebHTV FEL wait sample:" in stable and "capability-v=1" in stable
+                and "MP_TIME_MS_TO_NS(3000)" in stable
+                and "poll(&state, 1, 0)" in stable and "RUSAGE_THREAD" in stable,
+                "FEL waiting diagnostics must remain bounded, per-thread and non-waiting")
         output = wrapper[wrapper.index("output_frame:\n", wrapper.index("static void read_frame(")):]
         require(output.index("stage_fel_before_publish(p, frame)") < output.index("mp_pin_in_write(pin, frame)"),
                 "FEL BL must return its source before publishing to the decoder queue")

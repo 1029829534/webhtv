@@ -115,6 +115,16 @@ struct aimagereader_vk_stable {
     unsigned fel_slow_count;
 };
 
+// The independent wait-probe test compiles the real diagnostics. These cache
+// scenarios keep optional sampling disabled and retain their Vulkan assertions.
+struct fel_wait_sample { bool active; };
+static struct fel_wait_sample fel_wait_probe_begin(struct aimagereader_vk_stable *p)
+{
+    return (struct fel_wait_sample){0};
+}
+static void fel_wait_probe_end(struct aimagereader_vk_stable *p,
+                               const struct fel_wait_sample *sample) {}
+
 static struct fel_api_clock fel_api_begin(struct aimagereader_vk_stable *);
 static void fel_api_end(struct aimagereader_vk_stable *, enum fel_api_op, struct fel_api_clock);
 static void trace_fel_frame_order(struct aimagereader_vk_stable *, char, int, int, uint64_t, double, double);

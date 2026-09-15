@@ -15,6 +15,21 @@ if [[ ! -f "$vulkan_headers/vulkan/vulkan.h" ]]; then
   exit 1
 fi
 awk '
+  /^static struct fel_api_clock fel_api_begin\(/ ||
+  /^static int fel_parse_schedstat\(/ || /^static int fel_read_schedstat\(/ ||
+  /^static int fel_probe_acquire_fence\(/ || /^static struct fel_wait_snapshot fel_wait_snapshot\(/ ||
+  /^static int64_t fel_wait_delta\(/ || /^static struct fel_wait_sample fel_wait_probe_begin\(/ ||
+  /^static void fel_wait_probe_end\(/ || /^static bool has_extension\(/ ||
+  /^static void log_fel_descriptor_capabilities\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/video/out/hwdec/hwdec_aimagereader_vk_stable.c" | \
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -fsanitize=address,undefined -idirafter "$vulkan_headers" \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_wait_probe_test.c" \
+    -x c - -o "$test_output/fel-wait-probe-test"
+"$test_output/fel-wait-probe-test"
+awk '
   /^static const char \*const fel_api_names\[/ ||
   /^static bool has_extension\(/ || /^static bool create_conversion_descriptor_layout\(/ ||
   /^static void trace_fel_frame_order\(/ || /^static void format_fel_frame_order\(/ ||

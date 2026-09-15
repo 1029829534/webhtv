@@ -2,6 +2,8 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
+2026-09-16 P2-4第9.18节：为无ADB电视补充`WebHTV FEL wait sample`，仅FEL/视频INFO记录开启时每3秒采样一次descriptor bind/push的线程调度计数、CPU/墙钟及acquire fence的poll(0)状态，权限/计数缺失明确未知，采样开销独立记录。`WebHTV FEL descriptors: capability-v=1`独立记录GPU/驱动/API和push扩展支持/启用情况；不改变扩展启用、重建、位深、同步或线程。两ABI同锁libmpv、host与13项Java检查、TV64 APK验证通过，其余18库不变；来源、原始日志、哈希、判读限制及回滚见[任务第9.18节](../docs/P2-4-mpv-android-fel.md)。这是一份诊断候选，电视卡顿尚待新Web日志裁决。
+
 2026-09-14 P2-4第9.17节续修：首次实际FEL硬件draw另设有界10s初始化，结束只排除占用时间、普通帧仍750ms，seek/轮询不续期。FEL stable按实际启用的KHR扩展/入口/YCbCr数量门控push descriptors，布局创建失败回普通set；每帧仍完整绑定当前图像并ONE_TIME录制，不重放旧命令，不改10bit/NLQ与同步。新增`WebHTV FEL renderer init`、`WebHTV FEL descriptors`（mode/reason/max-push）和`push-descriptors`耗时进入有界App日志。两ABI/产物及实际SHA-256以[任务第9.17节](../docs/P2-4-mpv-android-fel.md)为准；本单元仅重编两份libmpv、其余18库不变。host缓存/生命周期测试需给`test_mpv_fel_contract.sh`提供`ANDROID_NDK_HOME`或`VULKAN_HEADERS_INCLUDE`，只用Vulkan声明，不加载GPU驱动。电视实际扩展能力、画面正确性及实时性能仍须实测验收。
 
 ## 两种构建必须分开

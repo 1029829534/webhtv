@@ -27,6 +27,7 @@ public class MpvDiagnosticsPolicyTest {
                 {"vo/gpu-next/aimagereader", "WebHTV FEL api slow:"},
                 {"vo/gpu-next/aimagereader", "WebHTV FEL descriptors:"},
                 {"vo/gpu-next", "WebHTV FEL renderer init:"},
+                {"vo/gpu-next/aimagereader", "WebHTV FEL wait sample:"},
         };
         assertEquals(MpvDiagnosticsPolicy.FEL_PERFORMANCE_KINDS, measurements.length);
         for (int kind = 0; kind < measurements.length; kind++) {
@@ -59,6 +60,7 @@ public class MpvDiagnosticsPolicyTest {
         assertFalse(window.allowPerformance(104, 12));
         assertTrue(window.allowPerformance(104, 13)); // Frame identity survives API statistics.
         assertTrue(window.allowPerformance(104, 14)); // Slow-call evidence has its own budget.
+        assertTrue(window.allowPerformance(104, 17)); // Wait samples survive the same flood.
         assertTrue(window.allow(104, "vd: WebHTV FEL fatal: no progress"));
         assertEquals(2, window.takePerformanceSuppressed());
         assertEquals(0, window.takePerformanceSuppressed());

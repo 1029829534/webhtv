@@ -92,7 +92,7 @@ final class MpvDiagnosticsPolicy {
                 && (level > 0 && level <= 30 || shouldLogNativeImmediately(line));
     }
 
-    static final int FEL_PERFORMANCE_KINDS = 17;
+    static final int FEL_PERFORMANCE_KINDS = 18;
 
     /** Only native single-line measurements may bypass playback-state processing. */
     static int felPerformanceKind(String prefix, int level, String text) {
@@ -110,6 +110,7 @@ final class MpvDiagnosticsPolicy {
             if (value.startsWith("WebHTV FEL frame order:")) return 13;
             if (value.startsWith("WebHTV FEL api slow:")) return 14;
             if (value.startsWith("WebHTV FEL descriptors:")) return 15;
+            if (value.startsWith("WebHTV FEL wait sample:")) return 17;
         } else if (prefix.equals("vo/gpu-next")) {
             if (value.startsWith("WebHTV FEL render perf:")) return 2;
             if (value.startsWith("WebHTV FEL renderer init:")) return 16;
