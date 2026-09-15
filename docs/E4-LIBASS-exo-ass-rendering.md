@@ -2,6 +2,15 @@
 
 ## Recovery anchor
 
+- 当前目标/授权（2026-09-15）：用户指出自行构建 debug 包又使用系统字体，并明确“这是一个必须的功能，根本不存在关闭的场景”。删除 ASS 实验构建开关，使常规手机/电视 arm64 debug/release 使用此前已验收的渲染接线；不要求额外 Gradle 参数。
+- 当前单元：`E4-LIBASS-required-build`，`quick-fix`；分支 `feature/mpv-dv7-fel`，基线 `248a947ba8dcd834e386cba25e4de83984ebc1ab`。仅修改 `app/build.gradle`、`ExoUtil.java`、`ExoAssSession.java`、本文件及评估索引；初始 `app/.cxx/` 的 70 个文件继续保护。
+- 原因与决定：`exoAssPrototype` 默认 false，同时控制 BuildConfig、JNI 打包、外挂标记及会话创建。历史验收包额外传 true，普通构建未启用。按第 15 节删除配置和运行时对此配置的依赖；已有能力判定、惰性 worker、失败回退保持。
+- 验证状态：不传 ASS 参数的手机/电视 arm64 debug 增量构建通过（1 分 23 秒）；两包 BuildConfig 均无实验字段，编译字节码保留会话创建，DEX 含 ASS 会话，JNI 字节与仓库一致且 ZIP 16 KiB 对齐。此修复不重建 JNI，不将已有字体/性能验收冒充本轮复测。证据为 `/private/tmp/exo-ass-required-build.log` 和 `/private/tmp/exo-ass-required-artifacts.json`。
+- 边界/回滚：现有独立 JNI 只有 arm64；32 位、HDR/DV 等既有能力缺口仍未实现。回滚本次原子提交即可恢复基线构建策略，取消开关不再作为当前回滚方法。
+- 唯一下一步：由 `E4-LIBASS-required-build` guard finish 将已验证的 5 个任务文件原子提交并创建同名前缀的本地恢复 tag，不推送。
+
+### 历史阶段恢复记录（以下开关策略属于旧提交）
+
 - 目标/状态：阶段 1 外挂原型已归档；2026-09-15 实际容器 ASS 路径经修复后，用户确认“可以了，打tag”，按实际播放验收并归档。采用已有 Media3 SSA sample 的兼容桥，仍默认关闭、arm64/SDR/SurfaceView；精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV、旧电视和产品化仍属后续阶段。
 - 授权：2026-09-14 用户在复评后要求“在不破坏现有功能、性能的前提下，实施方案”，授权当前推荐的阶段 1；阶段 2–4 尚未授权。
 - Lane/scope：upstream，guard `E4-LIBASS-stage1`。范围为 Exo ASS 新目录及测试、`ExoUtil`、`ExoPlayerEngine`、`PlayerManager`、公共 `PlaybackActivity`、App 构建/混淆/调试测试入口、独立 native 构建/锁/产物、TextRenderer 补丁及对应 exoplayer Maven 产物、两份现有任务文档。精确路径由 guard scope 记录。首轮证据在 `/private/tmp/webhtv-libass-research-20260914/`，复评证据在 `/private/tmp/webhtv-libass-review-20260914/`。
@@ -40,6 +49,8 @@
 证据分类：A=源码/测试/官方契约；B=维护者解释或成熟项目实践；C=有方法的独立技术报告；D=单篇帖子或未经复现的经验。论文与宣传性性能数据不会直接转化为本项目性能保证。
 
 ## 1. 结论与建议
+
+当前构建策略以第 15 节为准：用户已明确 ASS 是必需功能，删除实验构建开关。下述阶段 1 的默认关闭建议保留为历史设计记录。
 
 **可以自行实现，推荐复用成熟的 libass 排版/特效内核，自行完成 Exo 接入和呈现适配。** 不必等待 Media3 官方合并 libass，也不必重新发明 ASS 解释器。
 
@@ -617,3 +628,24 @@ USB 再次短暂重连后，改为手机本地 shell 连续测量，保留原已
 最终验收：用户在安装本次修复后明确确认“可以了，打tag”。依照显式闭合要求立即提交/tag，取消上述尚未执行的素材修正后复测及额外正常页日志/截图采集。原失败、基线分类及已通过的 5 项结果完整保留，未把用户确认表述为自动化测试全部通过。
 
 最终 APK `/private/tmp/webhtv-libass-live-20260915/exo-ass-runtime-final.apk`：173057932 字节，SHA-256 `07cd2260dbf07134c62c146192c677a526ccdcd24a29ea2f7df710ff8d304885`；JNI 为 2775600 字节，SHA-256 `476b3e048fff1002cbd25a328340637f0cb40fdec6a6f2f6033fc7548ac80157`，APK 中未压缩且 ZIP 偏移 151420928 满足 16 KiB。素材修正后的增量打包通过（20 秒），APK 字节/对齐验证通过。提交由 `Task-Guard: E4-LIBASS-runtime` 定位，恢复 tag 使用同名前缀；不推送远端。
+
+## 15. ASS 作为常规构建必需功能（2026-09-15）
+
+用户自行构建 debug 包出现系统字体。源码证据（A，2026-09-15）：`app/build.gradle` 的 `exoAssPrototype` 默认 false，控制 `EXO_ASS_PROTOTYPE` 和 `third_party/exo-ass-native/prebuilt` 打包；`ExoAssSession.createIfEnabled` 因此不创建会话，`ExoUtil.buildSubConfig` 也不标记完整外挂 ASS。此前交付构建显式传 `-PexoAssPrototype=true`，绕过了缺陷；未检查用户自行构建的 APK，不把源码判定写成其 APK 实测。
+
+用户已明确要求必需功能，批准消除构建差异。本次属于既有设计的局部接线修复，沿用第 5、13、14 节已完成的 libass/成熟消费者研究和设备字体验收，不引入上游改动、依赖升级或新原生实现，因此无需新增外部检索。
+
+方案比较：保持现状会继续产生缺失功能的普通包；仅将属性默认改 true 仍允许 Gradle 属性静默关闭必需功能；采纳窄适配，删除属性和 BuildConfig 字段，无条件登记现有 JNI 目录，并移除两处运行时构建标志判断。功能启用不依赖 debug/release、手机/电视类型或调用者的本地构建参数。
+
+现有 `Process.is64Bit()` 是原生 ABI 能力边界，独立 JNI 当前只有 `arm64-v8a`。已有 SDR/SurfaceView/DRM/tunneling 判定和异常回退继续保护播放；字幕选轨关闭仍是用户播放控制。只有有效的已选 ASS 才启动 native worker，复用此前已验收的字体、特效、时钟及资源生命周期，不改变其渲染成本。32 位/HDR 等缺口没有因删除构建开关自动完成。
+
+验收：不传 ASS 属性，构建手机/电视 arm64 debug；核对生成的 BuildConfig 不再包含实验字段、两处 Java 接线编译通过、APK 含与仓库一致的 `libexo_ass.so`。构建时隔离 App CMake 暂存目录，保护初始 `.cxx`。公共 source set 与公共 Java 接线同时适用于 release；不以 debug 打包宣称完整 release 混淆或新设备性能验收。普通包新增此前遗漏的 2775600 字节 JNI，和历史正常包采用同一产物及许可证，不重建 native。
+
+回滚：整体撤销 `E4-LIBASS-required-build` 原子提交，基线为 `248a947ba8dcd834e386cba25e4de83984ebc1ab`；不再提供实验参数作为产品开关。提交由 `Task-Guard: E4-LIBASS-required-build` 和 `recovery/E4-LIBASS-required-build/` 本地注释 tag 定位，不推送远端。
+
+最终验证：`bash ./gradlew --init-script /private/tmp/webhtv-libass-stage1/isolate-cxx.gradle :app:assembleMobileArm64_v8aDebug :app:assembleLeanbackArm64_v8aDebug --console=plain` 通过，1 分 23 秒（15 项执行、128 项复用），未传 ASS 属性。两包均无实验 BuildConfig 字段，`javap` 确认 `createIfEnabled` 包含进程 ABI 判断及会话构造，DEX 含会话类；原生库均为 2775600 字节，SHA-256 `476b3e048fff1002cbd25a328340637f0cb40fdec6a6f2f6033fc7548ac80157`，未压缩且 ZIP 数据偏移满足 16 KiB。来源/既有 native 实现保持一致；恢复文档检查通过，未进行安装、设备复测或 release 混淆构建。
+
+| 本轮无参数 APK | 字节数 | SHA-256 |
+| --- | --- | --- |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 188388733 | `1c36fff34fc684548c4bdffea18a1e5d4416ccd1c82ed4b14474976e33b0999a` |
+| `app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk` | 176524458 | `b2cf27f168dc3aebb7762a90b055204f610c494c9b02beb02d8bb2bdd691164c` |

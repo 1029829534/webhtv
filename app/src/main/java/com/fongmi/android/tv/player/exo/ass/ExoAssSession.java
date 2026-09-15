@@ -17,8 +17,6 @@ import androidx.media3.common.text.CueGroup;
 import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.ui.PlayerView;
 
-import com.fongmi.android.tv.BuildConfig;
-
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -74,8 +72,7 @@ public final class ExoAssSession implements TextRenderer.Observer {
 
     @Nullable
     public static ExoAssSession createIfEnabled(Context context, boolean tunneling) {
-        return BuildConfig.EXO_ASS_PROTOTYPE && Process.is64Bit()
-                ? new ExoAssSession(context, tunneling) : null;
+        return Process.is64Bit() ? new ExoAssSession(context, tunneling) : null;
     }
 
     ExoAssSession(Context context, boolean tunneling) {

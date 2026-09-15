@@ -859,7 +859,7 @@ public class ExoUtil {
     private static MediaItem.SubtitleConfiguration buildSubConfig(Sub sub, int index) {
         MediaItem.SubtitleConfiguration.Builder builder = new MediaItem.SubtitleConfiguration.Builder(Uri.parse(UrlUtil.convert(sub.getUrl())))
                 .setLabel(sub.getName()).setMimeType(sub.getFormat()).setSelectionFlags(sub.getFlag()).setLanguage(sub.getLang());
-        if (BuildConfig.EXO_ASS_PROTOTYPE && MimeTypes.TEXT_SSA.equals(sub.getFormat()))
+        if (MimeTypes.TEXT_SSA.equals(sub.getFormat()))
             builder.setId(AssInput.EXTERNAL_ID_PREFIX + index);
         return builder.build();
     }
