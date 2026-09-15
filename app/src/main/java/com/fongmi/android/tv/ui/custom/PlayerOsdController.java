@@ -322,7 +322,10 @@ public class PlayerOsdController {
         Format audio = snapshot.audioFormat();
         String state = stateText(player.getPlaybackState()) + (player.isLoading() ? " / 正在加载" : "");
         String buffer = join(" / ", formatDuration(player.getBufferedDuration()), player.getBufferedPercentage() > 0 ? player.getBufferedPercentage() + "%" : "");
-        String rebuffer = snapshot.rebufferCount() <= 0 ? "0 次" : snapshot.rebufferCount() + " 次 / " + formatDuration(snapshot.rebufferTotalMs());
+        // MPV has no Exo analytics snapshot; its buffering tracker belongs to PlayerManager.
+        int rebufferCount = player.isMpv() ? player.getRebufferCount() : snapshot.rebufferCount();
+        long rebufferTotalMs = player.isMpv() ? player.getRebufferTotalMs() : snapshot.rebufferTotalMs();
+        String rebuffer = rebufferCount <= 0 ? "0 次" : rebufferCount + " 次 / " + formatDuration(rebufferTotalMs);
         long stableThroughput = player.getNetworkProtectionStableThroughput();
         long consumption = player.getNetworkProtectionConsumption();
         String networkProtection = player.getNetworkProtectionText();
