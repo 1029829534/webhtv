@@ -54,6 +54,7 @@ import com.fongmi.android.tv.player.engine.PlayerCacheState;
 import com.fongmi.android.tv.player.iso.IsoSessionManager;
 import com.fongmi.android.tv.player.lut.MpvLutShader;
 import com.fongmi.android.tv.player.mpv.MpvDirectAudioPolicy;
+import com.fongmi.android.tv.player.mpv.MpvConfigStore;
 import com.fongmi.android.tv.player.mpv.MpvNetworkRecoveryPolicy;
 import com.fongmi.android.tv.player.mpv.MpvSubtitleStylePolicy;
 import com.fongmi.android.tv.player.mpv.PlaybackRecoveryMonitor;
@@ -68,7 +69,9 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -303,6 +306,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private String activeAudioSpdif;
     private BiConsumer<Integer, Integer> videoSizeProbeListener;
     private final List<Runnable> discMenuStateListeners = new ArrayList<>();
+    private final List<Runnable> customButtonStateListeners = new ArrayList<>();
+    private String customButtonStates = "";
     private boolean trackRefreshScheduled;
     private boolean trackRefreshPrioritized;
     private int trackRefreshCoalescedEvents;
@@ -636,6 +641,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             releaseNativeContext("release");
         } finally {
             discMenuStateListeners.clear();
+            customButtonStateListeners.clear();
             stopMainThreadWatchdog();
         }
         return Futures.immediateVoidFuture();
@@ -745,6 +751,27 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         command[1] = message;
         if (args != null) System.arraycopy(args, 0, command, 2, args.length);
         return enqueueMpvCommand(command);
+    }
+
+    /** Lua-owned state cached on the main thread; no synchronous native reads. */
+    public boolean isCustomButtonActive(String id) {
+        return !TextUtils.isEmpty(id) && ("," + customButtonStates + ",").contains("," + id + ",");
+    }
+
+    public void addCustomButtonStateListener(Runnable listener) {
+        if (!released && !customButtonStateListeners.contains(listener)) {
+            customButtonStateListeners.add(listener);
+        }
+    }
+
+    public void removeCustomButtonStateListener(Runnable listener) {
+        customButtonStateListeners.remove(listener);
+    }
+
+    private void setCustomButtonStates(String states) {
+        if (customButtonStates.equals(states)) return;
+        customButtonStates = states;
+        for (Runnable listener : List.copyOf(customButtonStateListeners)) listener.run();
     }
 
     public PlaybackRoute.Resolution getPlaybackRouteResolution() {
@@ -1743,6 +1770,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         observe("chapter", MPVLib.MpvFormat.MPV_FORMAT_INT64);
         observe("chapter-list", MPVLib.MpvFormat.MPV_FORMAT_NODE);
         observe("disc-menu-active", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe(MpvConfigStore.CUSTOM_BUTTON_STATE_PROPERTY, MPVLib.MpvFormat.MPV_FORMAT_STRING);
     }
 
     private void dispatchProperty(String property, @Nullable Object value) {
@@ -1819,6 +1847,20 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void handleProperty(String property, @Nullable Object value) {
         if (released) return;
+        if (MpvConfigStore.CUSTOM_BUTTON_STATE_PROPERTY.equals(property)) {
+            // user-data is a NODE property: MPV_FORMAT_STRING serializes it as JSON,
+            // including quotes around string values. Decode before matching button IDs.
+            String states = "";
+            if (value instanceof String json) {
+                try {
+                    Object decoded = new JSONTokener(json).nextValue();
+                    if (decoded instanceof String ids) states = ids;
+                } catch (JSONException ignored) {
+                }
+            }
+            setCustomButtonStates(states);
+            return;
+        }
         boolean firstCacheTimeReadback = cacheTimeState.recordObserved(property, value);
         if (firstCacheTimeReadback) {
             MpvCacheTimeState.Snapshot cacheTime = cacheTimeState.snapshot();
@@ -3378,6 +3420,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             mainHandler.removeCallbacks(mediaReplacementStopTimeoutRunnable);
             mediaReplacementCoordinator.reset();
             initialized = false;
+            setCustomButtonStates("");
             autoHlsBitrateState.onNativeContextReleased();
             surfaceAttached = false;
             osdSurfaceAttached = false;
