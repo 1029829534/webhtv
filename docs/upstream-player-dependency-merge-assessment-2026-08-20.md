@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-16 P2-4 [9.24 用户主动绑定类型对照](P2-4-mpv-android-fel.md#p2-4-fel-bind-probe)已实现获批 B 第一层：四组 fresh record、默认关闭/独占/可取消、保持源所有权，不提交诊断 shader。真实 C ASan/UBSan、21 项 Java、Web 脚本、27 文件完整补丁、双 ABI/ELF/导出及 18 库边界通过；TV64 `202609161336`（SHA256 `9192d5a6df9cb5615f7bacaed8bd55200fd7240bacfd04727dd4324eca2e876e`）MPV 身份/全部 27 个其他原生库不变、CRC/v2 签名通过。guard `P2-4-fel-bind-probe`，基线 `8de0fd70942d513034fb8118de5229d7eb719622`；保护 104 个既有 `app/.cxx/` 文件。下一步电视主动运行对照，按结果继续 B；C 和整体流畅度验收仍等待设备证据。
+
 - 2026-09-16 P2-4 [9.23 起播一次选择 FEL](P2-4-mpv-android-fel.md#p2-4-fel-startup-selection)已实现：native 在实际选轨后建立 FEL VO/decoder，App 观察结果、取消识别后的销毁重载，并要求视频帧提交证据。guard `P2-4-fel-startup-selection` / upstream，基线 `5df95f475009ed0d04d864b60d7d22b229e87e95`，104 个既有 `app/.cxx/` 文件保护；真实 C 合同、34 项 Java 测试、双 ABI 及 18 库不变已通过。TV64 `202609161235` 内容/ZIP/v2 签名通过，SHA256 `f5c51f91c9bd1889417b813c86cd790ce5c84a861fe3a045cdea29fd65fb76ba`，暂无电视性能结果。下一步 B 有界绑定对照；C 继续等待设备证据。
 
 - 2026-09-16 P2-4新增[9.22跨项目源码与二进制复核](P2-4-mpv-android-fel.md#p2-4-fel-cross-project-review)：已读Flutter视频纹理缓存PR/测试、Mesa PanVK/Panfrost的storage/AFBC/MTK detile实现、GL raw-YUV规范，并静态核对本机Kodi MediaCodec入口。日志33三组9/32输入槽、零淘汰，不能套扩大缓存；输出已为32位打包10bit。先修正native选轨后一次建链，再做sampler/storage及外部图像对照，C仍有条件；电视闭源驱动内部原因/实时性能未验证。guard `P2-4-fel-cross-project` / assessment，基线 `98d247ea193c58a3dbfa4033d679023282632a8e`，保护104个既有`app/.cxx/`文件；只提交方案，无新native/APK/安装。唯一下一步：进入获批的起播修正单元。

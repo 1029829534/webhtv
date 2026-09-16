@@ -115,6 +115,11 @@ public class DebugLogs implements Process {
                     DiagnosticControls.startDepth(data.has("seconds") ? data.get("seconds").getAsInt() : 60);
                 }
                 case "/debug/diag/stop" -> DiagnosticCapture.stop("user-stopped");
+                case "/debug/diag/fel-bind" -> {
+                    if (!data.has("consent") || !data.get("consent").getAsBoolean()) return diagnosticMessage(Response.Status.BAD_REQUEST, "需要确认暂停播放进行对照");
+                    DiagnosticControls.startFelBindProbe();
+                }
+                case "/debug/diag/fel-bind-stop" -> DiagnosticControls.stopFelBindProbe();
                 case "/debug/diag/export" -> { return archive(); }
                 default -> { return diagnosticMessage(Response.Status.NOT_FOUND, "未找到操作"); }
             }
@@ -331,6 +336,7 @@ public class DebugLogs implements Process {
                   <p id="diag-status" class="hint" role="status"></p>
                   <div class="form-section"><h3>标记故障</h3><p class="hint">出现问题时标记，保留前后日志方便定位。</p><div class="action-row"><select id="diag-symptom" aria-label="故障现象"><option>黑屏</option><option>画面不动</option><option>无声</option><option>断音</option><option>音画不同步</option><option>其他</option></select><button id="diag-mark" class="primary">标记此刻</button></div></div>
                   <div class="form-section"><h3>限时深度统计</h3><p class="hint">只记录画面和声音的统计数值，不保存图像或声音；到期自动停止。</p><div class="action-row"><button id="diag-deep">开启 60 秒</button><button id="diag-stop">停止统计</button></div></div>
+                  <div class="form-section"><h3>FEL 卡顿定位</h3><p class="hint">仅用于 MPV Vulkan FEL。暂时暂停播放，最多 30 秒，结束后恢复；只记录耗时，不读取画面。</p><div class="action-row"><button id="diag-fel-bind" disabled>运行绑定对照</button><button id="diag-fel-cancel" disabled>取消对照</button></div><p id="diag-fel-status" class="hint" role="status"></p></div>
                 </section>
                 <section id="tool-panel-utilities" role="tabpanel" aria-labelledby="tool-tab-utilities" hidden>
                   <div class="form-section"><h3>诊断包</h3><div class="action-row"><button id="diag-zip">下载诊断 ZIP</button></div><p class="hint">包含保留日志、报告和结构化事件；仅需 TXT 时使用顶部「下载」。</p></div>
@@ -354,13 +360,15 @@ public class DebugLogs implements Process {
             diagEl('mark').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/mark',{symptom:diagEl('symptom').value});diagSay('已标记，继续记录后 15 秒；随后下载可包含故障前后上下文')});
             diagEl('deep').onclick=()=>{if(confirm('开启本次播放的 60 秒深度统计？只记录低分辨率画面和 PCM 数值，不保存图像或声音；到期自动停止。'))diagRun(async()=>{await diagPost('/debug/diag/deep',{seconds:60,consent:true});diagSay('已开启限时统计')})};
             diagEl('stop').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/stop');diagSay('深度统计已停止')});
+            diagEl('fel-bind').onclick=()=>{if(confirm('暂时暂停当前播放，运行最多 30 秒的 FEL 绑定对照？结束后恢复播放，不读取或保存画面。'))diagRun(async()=>{await diagPost('/debug/diag/fel-bind',{consent:true});diagEl('fel-bind').disabled=true;diagSay('已请求绑定对照，结果将写入日志')})};
+            diagEl('fel-cancel').onclick=()=>diagRun(async()=>{await diagPost('/debug/diag/fel-bind-stop');diagSay('已请求取消，正在释放诊断资源')});
             diagEl('zip').onclick=()=>diagRun(async()=>{diagSay('正在生成诊断包…');const blob=await diagPost('/debug/diag/export',{},true);if(!blob.size)throw Error('诊断包为空，请重试 TXT 下载');const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='webhtv-av-report.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);diagSay('诊断包已生成，含日志、可读报告、结构化事件和校验信息')});
             document.querySelectorAll('[data-debug-action]').forEach(button=>button.onclick=()=>diagRun(async()=>{const r=await fetch(button.dataset.debugAction,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',cache:'no-store'});if(!r.ok){const j=await r.json();throw Error(j.message)}location.reload()}));
             function diagPass(e){const trace=diagEl('trace').value,attempt=diagEl('attempt').value,domain=diagEl('domain').value,priority=diagEl('priority').value;if(!trace&&!attempt&&!domain&&!priority)return true;const d=e.diag;if(!d)return false;if(trace&&d.trace!==trace||attempt&&String(d.attemptId)!==attempt)return false;const name=d.event||'',p=d.observed&&d.observed.property&&d.observed.property.value||'';if(domain==='video'&&!/video|surface|display|pixel/.test(name+' '+p))return false;if(domain==='audio'&&!/audio|pcm|volume|mute|avsync/.test(name+' '+p))return false;if(priority==='critical'&&d.priority!=='critical'&&!/error|fatal|warn/.test(d.level))return false;if(priority==='error'&&!/error|fatal/.test(d.level))return false;return true}
             ['trace','attempt','domain','priority'].forEach(id=>diagEl(id).onchange=()=>{updateFilterState();render()});
             function diagOptions(id,values,label){const el=diagEl(id),selected=el.value,all=Array.from(values).slice(-100);if(selected&&!all.includes(selected))all.push(selected);const signature=all.join('|');if(el.dataset.signature===signature)return;el.dataset.signature=signature;el.textContent='';const first=document.createElement('option');first.value='';first.textContent=label;el.appendChild(first);all.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent=value;el.appendChild(option)});el.value=selected}
             function diagFilters(){const traces=new Set(),attempts=new Set();raw.split('\\n').forEach(line=>{const r=parse(line);if(r.tag!=='av-diag')return;try{const d=JSON.parse(r.msg);if(d.trace&&d.trace!=='none')traces.add(d.trace);if(d.attemptId)attempts.add(String(d.attemptId))}catch(e){}});diagOptions('trace',traces,'所有播放记录');diagOptions('attempt',attempts,'所有尝试')}
-            async function diagStatus(){try{const r=await fetch('/debug/diag/status',{cache:'no-store'}),j=await r.json();diagEl('status').textContent=(j.engine||'暂无播放')+(j.deepRemainingMs>0?' · 深度统计剩余 '+Math.ceil(j.deepRemainingMs/1000)+' 秒':' · 标准记录');diagFilters()}catch(e){}setTimeout(diagStatus,3000)}diagStatus();
+            async function diagStatus(){try{const r=await fetch('/debug/diag/status',{cache:'no-store'}),j=await r.json();diagEl('status').textContent=(j.engine||'暂无播放')+(j.deepRemainingMs>0?' · 深度统计剩余 '+Math.ceil(j.deepRemainingMs/1000)+' 秒':' · 标准记录');const s=j.felBindProbeState||'unavailable',labels={unavailable:'当前播放不支持对照',ready:'可运行',queued:'等待播放器响应',armed:'等待下一帧',quiescing:'准备暂停播放',running:'正在测量',cancelling:'正在取消',completed:'已完成，结果见日志',cancelled:'已取消',failed:'未完成，请查看日志并确认正在播放', 'timed-out':'已到时间上限，结果见日志'};diagEl('fel-status').textContent=labels[s]||s;diagEl('fel-bind').disabled=s==='unavailable'||j.felBindProbeActive||j.deepRemainingMs>0;diagEl('fel-cancel').disabled=!j.felBindProbeActive;diagEl('deep').disabled=!!j.felBindProbeActive;diagFilters()}catch(e){}setTimeout(diagStatus,3000)}diagStatus();
             """;
     }
 

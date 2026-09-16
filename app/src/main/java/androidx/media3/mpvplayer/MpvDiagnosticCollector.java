@@ -29,6 +29,8 @@ final class MpvDiagnosticCollector {
             "container-fps", "estimated-vf-fps", "video-pts", "audio-pts", "mpv-version", "ffmpeg-version", "options/msg-level",
             "options/af", "demuxer-cache-duration", "cache-buffering-state", "audio-spdif");
     private final PlaybackDiagnosticCollector log = new PlaybackDiagnosticCollector("mpv", "runtime-properties");
+    private final com.fongmi.android.tv.player.FelBindProbeControl felBindProbe =
+            new com.fongmi.android.tv.player.FelBindProbeControl(log.instanceId());
     private final MpvPropertySnapshot snapshot;
     private final AtomicLong nativeSeq = new AtomicLong();
     private final String cacheId = PlaybackDiagnosticCollector.id("mpv-health");
@@ -47,6 +49,7 @@ final class MpvDiagnosticCollector {
     private final com.fongmi.android.tv.player.OutputProgressDiagnostic videoProgress = new com.fongmi.android.tv.player.OutputProgressDiagnostic(true);
 
     MpvDiagnosticCollector(MpvPropertySnapshot snapshot) { this.snapshot = snapshot; }
+    com.fongmi.android.tv.player.FelBindProbeControl felBindProbe() { return felBindProbe; }
     boolean depthActive() {
         Context owner = nativeOwner;
         com.github.catvod.crawler.diagnostics.DiagnosticCapture.Session capture = com.github.catvod.crawler.diagnostics.DiagnosticCapture.current(owner.trace(), owner.generation(), owner.attempt());
@@ -69,6 +72,8 @@ final class MpvDiagnosticCollector {
 
     synchronized void begin(String trace) {
         closed = false; log.begin(trace, "foreground");
+        felBindProbe.begin();
+        com.fongmi.android.tv.player.DiagnosticControls.registerFelBindProbe(felBindProbe);
         emitted.clear(); emittedMissing.clear(); emittedTracks = null;
         if (PlaybackDiagnosticCollector.enabled()) { capture(); health(); }
     }
@@ -215,6 +220,7 @@ final class MpvDiagnosticCollector {
     }
 
     synchronized void end(int reason, int error) {
+        felBindProbe.end();
         if (closed) return;
         log.emit("mpv.event", "mpv-controller-end", e -> e.observed("reason", reason).observed("errorCode", error));
         if (nativeOwner == log.context()) tick(true);
@@ -228,12 +234,13 @@ final class MpvDiagnosticCollector {
         // begin() already closed an older controller attempt. Its late native end
         // remains evidence for that owner and must never close the new attempt.
         if (nativeOwner == log.context() && !closed) {
+            felBindProbe.end();
             log.end("end-file:" + reason); closed = true;
         }
     }
 
     synchronized void tick(boolean force) {
-        if (!PlaybackDiagnosticCollector.enabled()) return;
+        if (!PlaybackDiagnosticCollector.enabled()) { felBindProbe.cancel(); return; }
         capture();
         long now = SystemClock.elapsedRealtime();
         if (!force && now - lastTickMs < 5000) return;

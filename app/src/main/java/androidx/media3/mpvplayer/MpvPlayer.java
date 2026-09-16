@@ -423,6 +423,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 () -> releaseInitialTrackSelectionGate("timeout");
         isoTrackMetadataReadyListener = this::onIsoTrackMetadataReady;
         hlsProxy = new MpvHlsProxy();
+        diagnostics.felBindProbe().connect(mainHandler::post, action -> {
+            if (!initialized || released || nativeContextOwner != this) return false;
+            if (action.equals("start") && !com.github.catvod.crawler.DebugLogStore.isEnabled()) return false;
+            return mpvSetPropertyString("android-fel-bind-probe", action) >= 0;
+        });
         autoCacheBaselineState = new MpvAutoCacheBaselineState();
         autoHlsBitrateState = new MpvAutoHlsBitrateState();
         recentLogs = new ArrayList<>();
@@ -1773,6 +1778,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         observe("video-params/colormatrix", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("current-vo", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("android-dovi-fel-active", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe("android-fel-bind-probe", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("video-frame-submitted", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
         observe("current-gpu-context", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("gpu-api", MPVLib.MpvFormat.MPV_FORMAT_STRING);
@@ -2034,6 +2040,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 cachedCurrentVo = value instanceof String text ? text : cachedCurrentVo;
             }
             case "android-dovi-fel-active" -> androidFelActive = Boolean.TRUE.equals(value);
+            case "android-fel-bind-probe" -> diagnostics.felBindProbe().observed(value instanceof String text ? text : "unavailable");
             case "video-frame-submitted" -> {
                 videoFrameSubmitted = Boolean.TRUE.equals(value);
                 stateChanged = reportFirstSubmittedVideoFrame();
@@ -5694,6 +5701,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     }
 
     private void syncDiagnosticLogLevel() {
+        if (!com.github.catvod.crawler.DebugLogStore.isEnabled()) diagnostics.felBindProbe().cancel();
         if (!initialized || released) return;
         boolean enabled = SpiderDebug.isEnabled();
         boolean deep = enabled && diagnostics.depthActive();

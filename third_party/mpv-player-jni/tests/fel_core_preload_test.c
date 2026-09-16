@@ -3,6 +3,7 @@
 // One available codec output is a regression model, not a measured TV DPB size.
 #include "filters/f_android_fel_trace.h"
 #include "filters/f_android_fel.h"
+#include "video/out/fel_bind_probe.h"
 #include <libavutil/buffer.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -498,6 +499,35 @@ static void test_cold_initialization(void)
     cleanup();
 }
 
+static void test_diagnostic_deadline(void)
+{
+    reset_test();
+    struct mp_image *a = new_image(1);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_begin_probe(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_FEL_PROBE_TIMEOUT_NS - 1;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_begin_probe(a->android_fel_staging->data);
+    fake_now++;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_ERROR);
+    talloc_free(a);
+    cleanup();
+
+    reset_test();
+    a = new_image(1);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    mp_android_fel_staging_begin_probe(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_TIME_MS_TO_NS(4000);
+    mp_android_fel_staging_end_probe(a->android_fel_staging->data);
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_FALSE);
+    fake_now += MP_ANDROID_FEL_FRAME_TIMEOUT_NS;
+    CHECK(vo_prepare_fel_frame(&vo, a) == VO_ERROR);
+    talloc_free(a);
+    cleanup();
+}
+
 static void test_initialization_deadlines_and_cancel(void)
 {
     reset_test();
@@ -769,6 +799,7 @@ int main(void)
     test_render_initialization();
     test_cold_initialization();
     test_initialization_deadlines_and_cancel();
+    test_diagnostic_deadline();
     test_lookahead(false, 2, false);
     test_lookahead(true, 2, false);
     test_lookahead(true, 6, false);

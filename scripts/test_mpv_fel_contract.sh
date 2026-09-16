@@ -26,6 +26,20 @@ if [[ ! -f "$vulkan_headers/vulkan/vulkan.h" ]]; then
   exit 1
 fi
 awk '
+  /^bool get_internal_paused\(/ || /^static void handle_fel_bind_probe\(/ ||
+  /^static int mp_property_android_fel_bind_probe\(/ ||
+  /^static void fel_latency_add\(/ || /^static int fel_latency_compare\(/ ||
+  /^static void fel_latency_summary\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/player/playloop.c" "$mpv_source/player/command.c" \
+  "$mpv_source/video/out/hwdec/hwdec_aimagereader_vk_stable.c" | \
+  "${CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -fsanitize=address,undefined -I"$mpv_source" -idirafter "$vulkan_headers" \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_bind_probe_test.c" \
+    -x c - -o "$test_output/fel-bind-probe-test"
+"$test_output/fel-bind-probe-test"
+awk '
   /^static struct fel_api_clock fel_api_begin\(/ ||
   /^static int fel_parse_schedstat\(/ || /^static int fel_read_schedstat\(/ ||
   /^static int fel_probe_acquire_fence\(/ || /^static struct fel_wait_snapshot fel_wait_snapshot\(/ ||

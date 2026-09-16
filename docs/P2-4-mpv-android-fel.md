@@ -1,6 +1,60 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.23，起播一次选择候选已完成本机验证）
+## Recovery anchor（当前：9.24，绑定类型对照候选已完成本机验证）
+
+- Objective / acceptance：实施 9.22-B 的第一层裁决：空控制、sampler-only、storage-only、组合布局，均 fresh record，不提交诊断 draw/dispatch。默认不运行，用户主动、独占、30 秒预算，可取消；保留真实 AImage 所有权与 fence，不保存/输出节目像素。
+- Current unit：`feature/mpv-dv7-fel` / `8de0fd70942d513034fb8118de5229d7eb719622`；guard `P2-4-fel-bind-probe` / upstream；保护 104 个原有 `app/.cxx/` 文件。上个单元已提交，tag `recovery/P2-4-fel-startup-selection/20260916124938-8de0fd70942d`。
+- Scope：MPV 诊断接线、Web 既有诊断抽屉、FEL patch/生成源码、定向测试、双 ARM libmpv、本文及索引；不升级依赖，不改 Exo/JNI/其余 18 库。证据 `/private/tmp/webhtv-fel-bind-probe-pa3hqm7z/`。
+- Status：原生对照真实函数及 core/VO ASan/UBSan、Java 2 类 21 项测试/产品编译、实际 Java 生成的 Web 脚本语法、完整补丁 27 文件往返、双 ABI/ELF/公开导出与 18 库边界均通过。TV64 `202609161336`（SHA256 `9192d5a6df9cb5615f7bacaed8bd55200fd7240bacfd04727dd4324eca2e876e`）的 10 个 MPV 资产、ZIP CRC/v2 签名及 27 个其他原生库与基线一致均通过；104 个既有 `app/.cxx/` 文件无变化。未安装/未取得电视结果。12:55 Asia/Shanghai 起原目标 13:35，因恢复基线修正、一次 mpv 辅助函数名修正与 Gradle 缓存权限等待顺延至 13:45 收尾；不重复已通过且未变更的检查。
+- Risks：首次只裁决绑定类型，普通/YCbCr/稳定/动态图像分组及真实提交依结果再进入；C 仍等待电视证据，不能把诊断包称为卡顿修复。
+- Rollback：上述提交/tag 成套恢复源/补丁/App/双 ABI；保留已交付的 9.23 TV64 包。
+- Exactly one next action：电视安装 13:36 候选，在 Web「诊断 → FEL 卡顿定位」主动运行一次绑定对照并导出日志，用四组结果决定 9.22-B 后续分组；C 不先行。
+
+<a id="p2-4-fel-bind-probe"></a>
+
+## 9.24 用户主动的绑定类型对照（2026-09-16，本机候选已验证）
+
+用户“继续实施优化/继续”已授权沿 9.22 逐级实施。9.23 已原子保存为 `8de0fd70942d513034fb8118de5229d7eb719622`；本次只进入 B 的第一层，不越过目标电视证据直接实施 C。最佳实践证据、完整来源版本、五类研究、三方案比较和性能门槛沿用 9.19/9.22，不重复泛搜或把既有源码阅读算新发现。
+
+具体核对了锁定 mpv 的 `playloop.c::set_pause_state/get_internal_paused/run_playloop`、`vo.c::vo_set_paused/process_fel_prepare/fel_prepare_timed_out`、stable mapper 的 `map/create_input/prepare_conversion`，以及 App `DiagnosticControls`、`MpvDiagnosticCollector` 和 Web 诊断抽屉。当前常驻计时只能观测生产链的组合 bind，未提供最小布局对照；暂停 VO 使用短互斥锁/唤醒，不同步等待 mapper，适合由 core 与 VO 做显式握手。沿用成熟 mpv 内部暂停原因与原子请求，不新建渲染线程、设备或常驻探针。
+
+采用的窄实现：
+
+1. 仅当前正在播放的 Vulkan FEL 实例接受请求；Web 复用同源 POST/限频和日志入口，与深度像素/PCM 统计互斥。请求不因换片/重建自动迁移到新实例。
+2. 下一个合法 AImage 在 mapper 内持有时声明诊断阶段，core 暂停内部播放并确认；保留用户的 pause 意图，结束/取消按最新用户意图恢复。源 acquire fence 必须已 signal；持有期间不归还 AImage、不允许 producer 改写，不额外获取 decoder buffer。
+3. 先 flush 既有 libplacebo 工作，以空队列 fence 排空本应用的 GPU 队列；有界轮询，可取消。该排空提交单独记录，不属于诊断 draw/dispatch。故障/超时未 signal 的 fence 延后回收，不能提前销毁 GPU 在用对象。
+4. 独立诊断 command pool、完整写入的 descriptor set 与最小 pipeline layout；空控制/输入 sampler/输出 storage/组合逐组 fresh reset/begin/bind/end。没有 shader 执行或图像读写，记录布局中的 imageLayout 不冒充真实 GPU transition。每组最多 8 次预热 + 32 次采样 / 5 秒，总请求预算 30 秒，分别报告 bind 与 record 的墙钟/线程 CPU 和样本数，冷创建单列。
+5. 一份原尺寸、原格式目标图像，按实际 VkMemoryRequirements 计入 96 MiB 上限；不降位深/分辨率补数。诊断 descriptor/command 完成销毁后才继续当前帧生产转换。失败仅终止诊断，不替换 FEL shader、配对、缓存或正常同步。
+6. 真实函数 host 合同覆盖默认关闭、独占、取消/截止、暂停恢复、fresh 命令、合法布局、无 draw/dispatch/提交、资源释放和预算。随后同锁双 ARM 构建、ELF/公开导出/18 库边界及 TV64 包身份/签名。电视 B 结果到来前只交付诊断候选，物理呈现/实际流畅度仍未验收。
+
+普通图像/YCbCr/动态源分组和真实提交按 9.22 的结果分流执行；这是逐级测量合同，不遗漏后续裁决，也不声称四组 bind 的差值就是播放可获得的收益。厂商 API 自身挂住无法由应用强制打断，保留这一实测限制，不强行销毁仍在使用的资源。
+
+### 本机验证与实现边界
+
+- `probe-contract-final.log`：直接编译 `hwdec_aimagereader_vk_probe.inc` 与实际 core 暂停/property 函数，ASan/UBSan 通过。四组各 40 次 fresh reset/begin/end，共 120 次真正 bind，3 次完整 descriptor 写入；唯一 2 次 queue submit 是空的排空 fence。默认不开启时无计时/分配；覆盖主动取消、用户暂停意图、原尺寸 10bit、真实 allocation 超额、分配/record 失败、未 signal fence 延后销毁、device lost、acquire 不就绪、握手失败及截止；所有诊断 GPU/descriptor 引用按顺序释放。集成编译修正为锁定 mpv 的 `m_property_strdup_ro` 后仅续跑相关合同与失败构建。
+- `core-contract.log`：实际 core/VO 既有生命周期及新增诊断阶段通过；30 秒不能靠重复轮询续期，诊断结束恢复正常 750ms 交接预算。
+- `gradle-focused-final.log`：仅 `FelBindProbeControlTest`（8 项）与 `MpvDiagnosticsPolicyTest`（13 项）及必要产品编译，52 秒通过。初次 Gradle 因沙箱不能访问已安装缓存锁而未执行测试，使用既有授权重试，不把权限失败算代码失败。`web-verification.log` 核对实际 Java 生成的脚本语法和新增控件唯一 ID，不宣称完成电视 UI 操作。
+- `patch-roundtrip-build-final.json`、`native-static-build-final.log`：27 文件最终基线正向应用、当前树反向检查、逐字节往返及全部既有 FEL 合同通过。第一次恢复目录已带旧补丁，静态合同拦截了不完整差异；修正为先逆应用已验证旧补丁再生成完整 patch，保留未变文件的原 patch 段，没有用错误版本构建/交付。`player/playloop.c` 未在旧 FEL patch 中，基线只撤销本单元的三个明确修改，保留其他播放器补丁。
+- 第一次对照是 `pipeline=none` 的合法最小 layout / record-only 测量，没有 shader 执行；它不能单凭“全部很快”就排除实际 pipeline 或渲染负载的相互作用。输出位深/原始尺寸不变；96MiB 限制是显式图像分配，并非厂商驱动内部/RSS 总量保证。普通播放 map 统计排除该次主动暂停。
+- Web 状态仅读取 App 缓存；请求 epoch 阻止跨媒体投递，native serial 阻止上次结束通知覆盖新请求。已发出的取消保持互斥到 native 完成清理；原生状态区分暂停确认、执行、结束和失败，结果复用既有结构化 native 日志，未改共享事件 schema。
+- `hwdec_aimagereader_vk.c::aimagereader_vk_map/buffer_removed` 共用既有 mapper mutex，源移除回调不能在对照期间销毁正在引用的 input view；core 暂停/取消只使用独立的 VO 状态锁及原子请求。`MpvPropertySnapshot.update` 接受按媒体代际校验的新增属性，状态回调没有被属性白名单丢弃。
+
+### 构建、产物与回滚
+
+锁定的 mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`、builder `99a60ad2141d5ace94453590903c2c6b9a0a2443` 和 NDK29/API24 不变。两 ABI 增量构建通过，日志 `arm64-build.log/armv7l-build.log`；`stage.log`、`native-assets.log`、`native-boundary.log` 核对 ELF/namespace/公开 libmpv 导出和其余 18 库逐字节不变。保留既有 stable shadow 与旧 32 位 time_t 警告，未扩大修复范围。
+
+| 产物 | 大小（字节） | SHA256 |
+| --- | ---: | --- |
+| FEL 权威 patch | 见仓库文件 | `2a6c2288987886bc247eab02ad40c6e516ad06f215ef0322620fa1e45a155032` |
+| arm64 `libmpv.so` | 17820296 | `1d55dbe26cd7192cddf4f7388becdf118c459f7bb4ce15f54e908891af91b454` |
+| armv7 `libmpv.so` | 14635188 | `7f7e39193526b81f3e90d6a30ad8bfa828d6a5c034d42499e6dc48ac7a337dc4` |
+| TV64 debug 5.6.0 / `202609161336` | 164160281 | `9192d5a6df9cb5615f7bacaed8bd55200fd7240bacfd04727dd4324eca2e876e` |
+
+固定交付副本：`/private/tmp/webhtv-fel-bind-probe-pa3hqm7z/fel-bind-probe-tv64.apk`。包由 `8de0fd70942d513034fb8118de5229d7eb719622` + 本单元未提交工作树构建，不冒称内嵌将来提交号。复用 9.23 已验证且源码未改的 App C++ 产物，打包排除该不变的 externalNativeBuild；最终 APK 的全部 27 个 `lib/` 库逐项与 9.23 包一致，MPV 的 10 个 assets 库与本次资产相符。打包 114 秒，无增量 ZIP 空洞遗留（总 ZIP 开销 801740 字节）；完整 CRC、v2 签名和 104 个保护文件通过，见 `apk-verification.log`、`artifact-summary.json`、`protected-cxx-final.json`。
+
+本单元以 guard `P2-4-fel-bind-probe` 原子提交并生成本地 annotated recovery tag，不推送。回滚为上述 9.23 提交/tag，成套恢复 patch/App/两份 libmpv；TV64 9.23 固定副本仍保留。这是用户主动的诊断候选，不是持续卡顿/实际显示帧率的验收通过。下一步只从电视四组对照日志裁决后续 B，暂不实施 C。
+
+## 历史 Recovery anchor（9.23，起播一次选择候选已完成本机验证）
 
 - Objective / acceptance：实际选中 DV7 轨道后、VO/decoder 创建前一次选择完整 FEL；不再从任意可用轨道推断后销毁 App 播放器重载；非 FEL 路线、10bit、EL 配对/同步不变。视频首帧须有本轮视频输出提交证据，不能仅凭 READY/轨道尺寸。
 - Current unit：`feature/mpv-dv7-fel` / `5df95f475009ed0d04d864b60d7d22b229e87e95`，guard `P2-4-fel-startup-selection` / upstream；用户多次“实施优化/继续”已授权，无待审批事项。保护原有 104 个 `app/.cxx/` 文件。
