@@ -1,6 +1,94 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.21，日志33否决整体性能验收）
+## Recovery anchor（当前：9.22，跨项目复核后的下一阶段方案）
+
+- Objective：继续解决日志33的起播慢和持续掉帧；本单元完成跨项目源码、规范、讨论和本机APK静态复核，给出能区分原因的下一步，保留完整FEL、10bit及非FEL行为。
+- Current unit：`feature/mpv-dv7-fel` / `98d247ea193c58a3dbfa4033d679023282632a8e`；guard `P2-4-fel-cross-project` / assessment，范围仅本文与评估索引，104个既有 `app/.cxx/` 文件保护。
+- Evidence：`/private/tmp/webhtv-fel-cross-project-fhko9uzb/`；`evidence-manifest.json`记录来源URL、revision、访问日、等级、结论/限制及SHA256，含失败检索，不能把32个记录称为32篇有效资料。沿用9.21已解析日志，没有重读/重解析7MB导出。
+- Status：确认导入缓存没有淘汰、输出已经是32位打包10bit；开源Mali代码支持进一步区分sampler绑定、storage绑定、格式转换和队列压力，尚不能命名电视闭源驱动内部根因。起播修正、B对照和C替代均未实施；没有新APK或电视验证。
+- Rollback：本单元只改变方案；播放器仍对应上述HEAD及`recovery/P2-4-fel-log33-review/20260916075556-98d247ea193c`。本文的评审tag不表示播放性能合格。
+- Exactly one next action：进入获批的起播修正单元，在实际选中轨道的native建链入口一次决定FEL输出；后续按本节B的绑定类型/外部图像对照决定C，不再盲增缓存。
+
+<a id="p2-4-fel-cross-project-review"></a>
+
+## 9.22 跨项目源码与二进制复核：缩小等待来源（2026-09-16）
+
+用户明确要求难点扩展到其他播放器、图形项目、论文及成熟产品实现。本轮07:58 Asia/Shanghai开始，目标08:28–08:38完成；实际生产代码、补丁、依赖、库和APK均不改。9.19的规范、ANGLE、Filament、GStreamer、FFmpeg/libplacebo及论文记录继续有效，本节只补能改变取舍的新证据。当前并无新的待合并上游提交；下列revision均为只读研究，不升级任何依赖。
+
+### 9.22.1 已排除的方向与本地调用核对
+
+1. **不是输入导入缓存容量不足。** 从9.21的`native.json`取各trace最大的`fresh-commands`快照：输入hit/miss分别为489/9、461/9、442/9，三组`input-slots=9`、`input-limit=32`、`input-evict=0`。`input-removed=9`是移除/清理计数，不可改称LRU淘汰。结果保存于`cache-counter-evidence.json`。Flutter的扩大缓存修复不适合直接移植。
+2. **不能再把descriptor写入减少当作等待消失。** 9.20候选已减少85.7%的写入，但9.21三组bind均值仍约33–37ms；继续增加set池、更新模板或线程缺少依据。
+3. **计时没有把`/proc`读取包进普通bind计时。** 已逐行核对stable mapper的`fel_wait_probe_begin/end`、`fel_api_begin/end`与`record_conversion`：先完成before采样，再开始`FEL_API_DESCRIPTORS`计时，`vkCmdBindDescriptorSets`后立即截取结束时刻，随后才做after采样。稀疏wait sample可能包含统计/慢日志的额外成本，不能与普通bind窗口混为一个口径。线程调度和时钟读取仍是测量边界的一部分；约1ms线程CPU不等于已证明33ms厂商锁等待。
+4. **现有输出已经保留10bit且只占32bit/像素。** 日志明确`source format 0 / external format 0xf0 / output format 64`；64即`VK_FORMAT_A2B10G10R10_UNORM_PACK32`。`choose_output_format()`已经优先选它，`create_output_image()`用途是`SAMPLED | STORAGE`。没有“把RGBA16改10bit就减半”的剩余收益。`RGB_IDENTITY + ITU_FULL`采样和`configure_dst_params()`的`Cr/Y/Cb`映射属于raw-YUV合同，替代shader必须保持。
+5. **起播确实可以在native选中轨道后决定。** 锁定mpv的`loadfile.c`先选择轨道、执行`on_loaded`，之后才正常建视频/音频链；`video.c::reinit_video_chain_src(track)`在创建VO之前就收到实际track，已有按轨道选direct/HDR输出与替换VO的本地能力。App目前清空`dv7FelOutput`→先建直出→等待轨道信息→销毁整个播放器重载，额外初始化不是mpv要求。
+
+本地精确入口：`hwdec_aimagereader_vk_stable.c::{fel_wait_probe_begin,fel_api_end,record_conversion,choose_output_format,create_input,configure_dst_params}`；`player/loadfile.c`的轨道选择和`on_loaded`；`player/video.c::{reinit_video_chain_src,video_output_image}`；`filters/f_decoder_wrapper.c::mp_decoder_wrapper_create`；`MpvPlayerEngine::{resetDv7HandlingForNewItem,updateDv7FelOutputForCurrentItem,buildPlayer}`。文件哈希保存在manifest。编译入口仍是权威`third_party/patches/mpv-android-fel.patch`经现有构建脚本应用；生成树不能替代补丁交付。
+
+四仓锁继续为mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`、FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`、libplacebo `b694a21bf2dc176c1e98b8a13c6421a0de5f3da5`、builder `99a60ad2141d5ace94453590903c2c6b9a0a2443`。本轮没有改变这些输入。
+
+### 9.22.2 新增外部证据及决定影响
+
+访问日均为2026-09-16。A为实际代码/规范/本机二进制事实；B为维护者或厂商解释；C为外部报告/待验证类比；D为线索。等级表示证据类型，不表示可以从别的驱动外推到本电视。
+
+| 来源、固定身份与实际阅读 | 支持的事实 | 本项目决定及限制 |
+| --- | --- | --- |
+| [Flutter PR190710](https://github.com/flutter/flutter/pull/190710)，head `4a9dbbccc1e51930967faad5a821a0942a9721d9`、base `b444e7897e249e9538e2afe623b533abbabfa4fb`；已读完整PR说明、实际diff、LRU测试、[TextureView复现及反馈](https://github.com/flutter/flutter/issues/180831)、[Vulkan ProcessFrame](https://github.com/flutter/flutter/blob/4a9dbbccc1e51930967faad5a821a0942a9721d9/engine/src/flutter/shell/platform/android/image_external_texture_vk_impeller.cc)。代码A、性能报告C；访问时**open，未合并** | 真实改动是6→64项有界导入缓存，测试64个key及第65个淘汰；作者用“无纹理/暂停纹理/持续解码纹理”分离新图像成本。报告的设备分别轮转19/31个AHB，旧缓存反复miss；`ProcessFrame`命中复用，miss才建Vulkan图像及layout转换 | 采纳对照方法；本地9/32且零淘汰，拒绝照抄64。PR中约55%改善不能用作本电视预期。原报告者确认TextureView改善不等于PlatformView也修好；PR测试合并SHA不作为已合并commit |
+| Mesa25.1.0 `5c142e46f3f6e752ed745fd48912ebb8fad67145`：[PanVK image_can_use_mod](https://github.com/chaotic-cx/mesa-mirror/blob/5c142e46f3f6e752ed745fd48912ebb8fad67145/src/panfrost/vulkan/panvk_image.c)，A | AFBC资格明确排除`VK_IMAGE_USAGE_STORAGE_BIT`，另受GPU/格式/tiling/mutable及调试开关约束 | C若实施应使用真正的`COLOR_ATTACHMENT | SAMPLED`输出用途，不能只是给当前STORAGE图像加COLOR_ATTACHMENT。**这不是TCL闭源驱动的AFBC开关证明**，不能保证换usage就启用压缩或获得某个百分比 |
+| 同Mesa revision：[panfrost_set_shader_images](https://github.com/chaotic-cx/mesa-mirror/blob/5c142e46f3f6e752ed745fd48912ebb8fad67145/src/gallium/drivers/panfrost/pan_context.c)、[pan_resource_modifier_convert](https://github.com/chaotic-cx/mesa-mirror/blob/5c142e46f3f6e752ed745fd48912ebb8fad67145/src/gallium/drivers/panfrost/pan_resource.c)、[panfrost_mtk_detile_compute](https://github.com/chaotic-cx/mesa-mirror/blob/5c142e46f3f6e752ed745fd48912ebb8fad67145/src/gallium/drivers/panfrost/pan_cmdstream.c)，A | 绑定shader image前可能进行AFBC/AFRC转换；固定modifier的资源可用shadow图像，转换会flush writer；MediaTek分块YUV有单独的detile compute和pre-barrier。驱动资源使用路径可包含应用没显式写出的转换 | B必须增加**输入sampler与输出storage分别绑定**的控制，不先认定是AHB输入或“描述符太多”。Panfrost是Gallium/OpenGL路径，不是`vkCmdBindDescriptorSets`的同驱动实现；没有把`externalFormat=0xf0`对应到任何DRM modifier，不能照搬detile算法、拆plane或硬编码格式 |
+| Khronos [EXT_YUV_target v18](https://github.com/KhronosGroup/OpenGL-Registry/blob/2e30f7894201bec9bdd3aa5218c5025f9ac5948c/extensions/EXT/EXT_YUV_target.txt)，revision `2e30f7894201bec9bdd3aa5218c5025f9ac5948c`，A；已读raw sampler定义、精度及issues 1/6/9/10/12 | `__samplerExternal2DY2YEXT`确能保留raw YUV，分量为Y/U/V；默认sampler为lowp，规范未约束低分辨率chroma的具体重建。普通YUV blit/image-store不能随意代替该能力 | GLES raw-YUV是可研究的后备路线，不等于普通`samplerExternalOES`。若需要跨API，须证明扩展、highp、10bit、chroma/crop、Cr/Y/Cb重排和fence互操作；现阶段优先同Vulkan的窄候选，避免额外GL上下文/同步边界 |
+| 锁定mpv的[hook文档](https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/DOCS/man/input.rst)，加上述本地`loadfile.c/video.c`完整相关函数，A | `on_preloaded`还没应用默认轨道选择；`on_loaded`已有选中轨道。正常建链入口先决定VO再初始化decoder | 起播应复用native轨道/VO生命周期，不能在`on_preloaded`或App“任意可用轨道”中抢猜FEL。复杂filter的提前建链、`track=NULL`、切轨和VO复用要按实际来源处理；不添加第二次probe/loadfile或Java往返阻塞hook |
+
+补充讨论实际读了[MDK/fvp #134](https://github.com/wang-bin/fvp/issues/134)的维护者回复，以及[ncnn #5531](https://github.com/Tencent/ncnn/issues/5531)的AHB实验。前者分别涉及渲染器、硬解选择和音频时钟，不能把“掉帧”视为同一根因；后者是Adreno/640×480相机的pipeline创建与queue wait报告，WebHTV已有一次性pipeline，不采用其数字。ncnn回复中“未编译符号导致运行时花屏”的解释也不足以成立，未作为事实采信。另读[Flutter #176695](https://github.com/flutter/flutter/issues/176695)电视纹理停顿讨论：因缺目标设备信息关闭，**不是已修复**，模拟器通过不能代替电视结果。
+
+论文与博文类别继续沿用9.19已取得的正文；本轮另查HPCA2013《Reducing GPU offload latency via fine-grained CPU-GPU synchronization》，[Crossref元数据](https://api.crossref.org/works/10.1109/hpca.2013.6522332)和Semantic Scholar仅确认作者/DOI，未得到全文，不能称已读或引用其结论。OpenAlex新查询限流，Arm候选文章404，Collabora响应没有可读正文，均在manifest标为失败，未拿失败页面充当证据。决定所需的API合同、资源用途和具体调用已有上表原始代码；缺少的是**本电视分组测量及同版闭源驱动内部证据**，不能靠增加泛文献弥补，也不能宣布根因研究完成。
+
+### 9.22.3 本机Kodi APK静态核对与闭源分析边界
+
+实际分析了`/Users/macbookpro/Downloads/Kodi19DV-Final-libbluray-aarch64.apk`，没有安装它。APK为157481012字节，SHA256=`a55173d5240f9b4da418f53b721717b3ecc16e5084c707241e31672d8b934127`；其中`libkodi.so`为88818504字节，SHA256=`ccad3ca24849ca7ea95fbfea92b692ae126def098b0cca36c1143e50b57fefe1`。内嵌版本字符串`19.0.0 / 20210220-73cc2b99ff`不能确定该修改包的完整源码revision，不伪造40位来源。
+
+用NDK29 `llvm-readelf`读取动态符号/依赖，提取字符串后，对两个实际函数按ELF地址反汇编：`CDVDVideoCodecAndroidMediaCodec::Open`在`0x16ef638`、长度4812；`ConfigureMediaCodec`在`0x16f0a6c`、长度1500。首次按符号名反汇编未命中，后改用实际地址范围，未将空输出算作成功。保存了`kodi-elf.txt`、`kodi-codec-*-disassembly.txt`和字符串地址表。
+
+- `Open`引用真实的`video/dolby-vision`字符串，枚举codec/profile，再调用`createByCodecName`；`ConfigureMediaCodec`调用`createVideoFormat`、取得Surface/SurfaceTexture、`configure`、`start`。这是已核实的MediaCodec路线。
+- `Open`的`0x16f06e4/0x16f06ec`分别记录“Dolby Vision MTK decoder, using NAL header size 4 workaround”并调用`SetDoviWorkaround`。它是码流兼容处理的实证，不是NLQ/FEL软件重建的证据；本项目此前的纯BL/EL分离也不能原样替换成它。
+- 动态依赖有GLES/EGL/Media NDK，没有直接依赖Vulkan；字符串搜索未提供NLQ/完整EL软件重建证据。但缺少字符串/直接依赖不能证明所有动态路径不存在，且厂商硬件内部是否处理FEL也未验证。不能称“该Kodi丢了EL”，也不能称“它与WebHTV完成相同工作且更快”。
+
+Kodi本身是开源产品，这次是对用户现有发行二进制的实现核对，**不是已完成Mali闭源驱动逆向**。后续若B指向厂商内部，先取得与电视实际加载库匹配的路径、Build ID/SHA256及API入口归属；再静态定位该入口与锁/等待/转换调用，能取得同设备栈或trace才将其和耗时关联。没有同版二进制时，不用别的手机、模拟器或网上任意libMali代替。成熟闭源播放器也先核实是否确实使用EL残差，可用BL与FEL有可见差异的受控素材，之后才比较实现；“杜比图标亮起”不够。参考产品和驱动二进制不加入WebHTV资产或依赖。
+
+### 9.22.4 调整后的最短实施顺序
+
+| 路线 | 收益与风险 | 决定 |
+| --- | --- | --- |
+| 不改/继续扩大descriptor或AHB缓存 | 保留基线；已验证不是主要改善方向 | 仅作对照，停止同假设调参 |
+| 原样复制Flutter缓存、Panfrost detile或Kodi MediaCodec路径 | 各自在不同输入/驱动/硬件职责下成立；不满足本项目完整FEL与外部格式合同 | 不移植整体实现，分别采纳对照、用途约束和建链原则 |
+| 起播窄修正 | 消除已证实的重复播放器/VO/decoder初始化；需防非DV7、切轨及生命周期回归 | **先实施，独立原子单元**；确定收益是少一次错误尝试/重载，不虚报固定秒数 |
+| B：绑定类型＋外部图像的有界对照 | 区分源sampler、目标storage、生产者更新及通用队列压力；诊断本身没有流畅度承诺 | 随后实施，复用现有限时诊断入口和Web日志，不做常驻探针 |
+| C：同Vulkan fragment暂存 | 可改变storage写入与tile/压缩资格，可能改善copy/渲染依赖；仍采样同一AHB，未必改善其等待 | B支持后实施；保持同位深/尺寸/raw-YUV与源归还，不默认替换 |
+| GLES raw-YUV或厂商原生DV/FEL | 可能避开特定Vulkan路径；扩展、chroma、硬件FEL职责及跨API同步均未证明 | 后备路线，需单独证据；不以关EL、普通RGB转换或降分辨率取得“改善” |
+
+**起播单元：** 将“用户请求FEL”与“当前所选轨道实际启用FEL”分开；在`reinit_video_chain_src`实际来源已知、VO/decoder尚未创建时决定当前路径，按媒体generation同步实际结果给App，避免再次destroy/create/load。不简单把全局`android-dovi-fel=yes`提前：当前`video_output_image`等core路径也消费此bool，会扩大普通视频的暂存范围。恢复用户原始输出选择、filter复杂链、切轨、纯音频、取消/换源/VO复用都是该单元的合同。首帧不能由轨道尺寸或音频`playback-restart`推定；使用可证明的视频输出事件并标清“已提交/已显示”的区别，没有物理呈现反馈就不声称测到了它。内部重新配置与真实缓存重缓冲分别归因，不把所有BUFFERING都隐藏。
+
+**B按结果逐级执行，不铺完整测试矩阵：**
+
+1. 仅用户主动启动的独占诊断窗口运行，记录同一设备/库、实际GPU/queue、图像格式/用途、分辨率和诊断状态；保存/恢复播放状态。先排空既有受控工作，获取并合法持有真实AHB，保留acquire/release fence。不能在节目后台偷偷抢decoder buffer、常驻加线程或输出节目像素。
+2. 先加空计时控制，然后对合法且已完整写入的`sampler-only`、`storage-only`、组合descriptor布局分别做fresh bind/record，首先不提交GPU执行。它们是不同的最小布局，只用来定位绑定类型，不把差值称为相同shader的性能收益。若只有组合慢，保留布局/管线交互方向；若storage单独慢，优先检查输出用途/资源压力。
+3. 若sampler方向突出，再比较普通Vulkan图像、能力允许时的普通10bit多平面YCbCr图像、稳定且不再被生产者改写的真实AHB、正常动态AHB。普通多平面组用来进一步区分YCbCr与外部导入；不支持则记未测，不能把`0xf0`强作P010或降成8bit补数。稳定AHB必须仍有有效所有权，不能归还后继续读一块正在改写的内存。
+4. 对出现差异的组才增加真实提交，再分空闲GPU与既有渲染负载，分别报告bind/record线程CPU和墙钟、submit、GPU query、完成等待。只在带渲染负载时慢，应先查共同device/queue压力；普通组也慢则查通用驱动/调度/实际layer；仅动态AHB慢才重点查生产者同步。任何一步都不能把计时挪到另一个阶段当作优化。
+5. 每项最多8次预热＋32次采样/5秒，全任务目标上限30秒；冷初始化单列，提前耗尽预算则报告样本不足。资源逐组复用/释放，最多一份额外source和一份目标图像，按实际allocation累计上限96MiB，超限即不执行，不能缩图制造可比结果。取消检查放在操作之间和有界等待中；厂商API自身不返回时无法保证强制中断，沿现有故障恢复，不强行销毁仍在用的资源。逐组汇总到Web日志，无逐帧刷屏。
+
+**C的具体约束补充：** 延用9.19的GStreamer fullscreen pass与同一raw-YUV采样；输出只声明实际需要的`COLOR_ATTACHMENT | SAMPLED`，查询当前10bit格式的color-attachment能力，完整写入时load可DONT_CARE、store必须保留。fresh命令、源foreign ownership、GPU完成和独立source-release fence、输出frame lease、crop/chroma/Cr-Y-Cb映射均保持。先对受控图案验证逐帧像素及NLQ输入，再测电视。现有AHB采样如果本身就慢，fragment仍可能同样慢；不承诺AFBC、固定加速倍数或实时达标。
+
+### 9.22.5 验收、交付与恢复
+
+后续起播代码单元沿用9.21的真实调用顺序负例、相关Java策略和取消/切轨边界，原始DV5/DV8/SDR/HDR、默认解码、音频/字幕合同不变。B验证所有权、超时/取消、预算、失败清理和默认关闭，不把微基准当播放通过。C只有在像素合同通过后才比较性能。所有实际native变更仍同锁增量构建双ARM ABI、核对ELF/公开导出/其余18库不变，并交付内容/签名可核对的TV64包；无须为了本次文档研究重建这些产物。
+
+电视验收保持9.19.8：同片至少三组独立起播与不seek持续区间，接近23.976fps、显示丢帧低于0.5%、A/V差不超过200ms且不持续累积；真实首开、seek/退出与完整FEL画面一起通过。起播减少一次重建不能替代这一门槛。当前观察到的约33–37ms bind和约21ms copy是不同时间域，不能相加减计算预计fps。
+
+后续起播单元的agent时间仍以代码/定向验证20–30分钟、热缓存双ABI/TV64构建10–15分钟、记录/提交约5分钟估计；电视等待另计。B涉及独立诊断资源和取消，不借该估计承诺完成，进入该单元时按实际入口重新给总时长。C及闭源内部归因继续以B结果作为准入。
+
+本次最小验证为`evidence-manifest.json`来源/哈希、缓存计数、关键本地调用点与索引链接的合并核对，以及checkpoint脚本；执行记录保存到`review-verification.txt`并写入guard收尾证据。仅本文和索引原子提交、本地annotated recovery tag，不推送。下一代码单元成套保存App/权威补丁/测试/两份libmpv及文档，失败回到本节基线，不移动旧tag，也不把已知卡顿基线称为性能合格版本。
+
+## 历史恢复记录（9.21，日志33否决整体性能验收）
 
 - Objective：核对用户07:21 TV64候选的三次复现，区分起播重建、统计的重缓冲、持续Vulkan等待；完整FEL、10bit及既有非FEL行为仍为合同。
 - Current unit：`feature/mpv-dv7-fel` / `44dd3f1386ac47c5d9e2007b9d2b32dfa0f72d8e`；guard `P2-4-fel-log33-review` / assessment，仅本文和评估索引，保护104个既有 `app/.cxx/` 文件。

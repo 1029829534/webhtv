@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-16 P2-4新增[9.22跨项目源码与二进制复核](P2-4-mpv-android-fel.md#p2-4-fel-cross-project-review)：已读Flutter视频纹理缓存PR/测试、Mesa PanVK/Panfrost的storage/AFBC/MTK detile实现、GL raw-YUV规范，并静态核对本机Kodi MediaCodec入口。日志33三组9/32输入槽、零淘汰，不能套扩大缓存；输出已为32位打包10bit。先修正native选轨后一次建链，再做sampler/storage及外部图像对照，C仍有条件；电视闭源驱动内部原因/实时性能未验证。guard `P2-4-fel-cross-project` / assessment，基线 `98d247ea193c58a3dbfa4033d679023282632a8e`，保护104个既有`app/.cxx/`文件；只提交方案，无新native/APK/安装。唯一下一步：进入获批的起播修正单元。
+
 - 2026-09-16用户日志33否决P2-4整体性能验收，见[9.21复盘及下一阶段方案](P2-4-mpv-android-fel.md#921-日志33起播重复初始化重缓冲来源及a的实际结果2026-09-16)。07:21 TV64/实际libmpv身份匹配；三组map平均37.514/38.712/41.497ms，1419次命令203次descriptor写入，没有实质整体改善。起播均先直出再重建FEL，一次2563ms重缓冲来自内部重建；已记录缓存暂停均false、缓冲状态100。guard `P2-4-fel-log33-review`仅文档，保护104个`app/.cxx/`文件。下一动作：批准起播一次选择FEL路径及9.19-B有界对照阶段后实施；C继续等待证据。
 
 - 2026-09-16 用户插入日志页需求已按[AV-DIAG-01第14.16节](AV-DIAG-01-playback-diagnostics.md#1416-无配对日志操作与固定顶部按钮2026-09-16)实现：完整取消调试配对/token，保留同源POST/限频和脱敏；下载/清空移固定顶部，删除仅手填备注的对照入口。5项JUnit、实际Java网页四视口、61秒TV64构建及10库身份/v2签名/ZIP检查通过。产物`202609160721`同时包含已提交FEL候选，SHA-256及证据见唯一文档。基线`ed3d710ef551210278920ba4cd25e8dda6e19ad6`，guard `AV-DIAG-01-WEB-ACTIONS`，104个 `app/.cxx/` 文件保护；未改native或安装设备。唯一下一步：安装TV64后用同片电视日志验收P2-4候选实际收益。
@@ -47,7 +49,7 @@
 | 外挂及容器兼容桥已验收；常规构建开关已移除 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 2026-09-15 外挂/现有 Media3 SSA sample 兼容桥及字体已获用户验收；按用户“必需功能”要求删除实验开关，手机/电视 arm64 无参数 debug 构建及 JNI/编译接线核验通过，公共接线同时适用于 release（第 15 节）。输入 14/14、JNI/包装与设备 5 项通过；容器生命周期素材的基线失败已定位并修正，用户验收后不追加复测，限制见第 14 节。已接受复杂一核 CPU ≤40% / render+upload p95 ≤16.67 ms；MPV 独立修复保留。精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV 等仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
 | 插入需求 | `AV-DIAG-01` | 通用/App，Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D0–D5实现/产物补齐，覆盖与验证见14.13–14.14；设备/性能待用户实测 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |
-| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 9.20内容复用候选及双ABI/06:47 TV64本机验证完成，仍逐帧绑定/录制；像素、起播与整体电视实时性能未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
+| P2 子阶段 | `P2-4` | MPV/native/App | Android BL 硬解 + EL 软解 + GPU FEL 重建，新增手动选择项 | 日志33否决9.20的整体性能收益；9.22完成跨项目/二进制复核，推荐先修正重复建链，再做绑定类型/外部图像对照；新方案未实施，电视实时性能未验收 | [P2-4-mpv-android-fel.md](P2-4-mpv-android-fel.md) |
 | 38 | `P9-MPV-BLURAY-MENU` | MPV/native/App | HDMV Blu-ray 菜单画面、按钮高亮、方向/确认/返回/Popup、菜单跳转与 still frame；BD-J 无提示回退现状 | 2026-09-11父菜单未命中修复已实现，定向验证及构建通过，用户测试确认并要求tag | [P9-MPV-BLURAY-MENU.md](P9-MPV-BLURAY-MENU.md) |
 
 ## Checkpoint 55：2026-09-06 P9 HDMV 菜单实施启动
