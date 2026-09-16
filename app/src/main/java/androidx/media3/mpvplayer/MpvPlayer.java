@@ -337,6 +337,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private int lastEndFileError;
     private String lastEndFileErrorText;
     private String cachedCurrentVo;
+    private boolean androidFelActive;
+    private boolean videoFrameSubmitted;
+    private boolean firstVideoFrameReported;
+    private boolean newlyRenderedFirstFrame;
     private String cachedCurrentGpuContext;
     private String cachedGpuApi;
     private String cachedCurrentAo;
@@ -459,6 +463,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             Log.w(TAG, "Coerce empty playlist state=" + state + " loading=" + loading + " fileLoaded=" + fileLoaded + " playbackRestarted=" + playbackRestarted);
             state = Player.STATE_IDLE;
         }
+        boolean firstFrameEvent = newlyRenderedFirstFrame;
+        newlyRenderedFirstFrame = false;
         State.Builder builder = new State.Builder()
                 .setAvailableCommands(COMMANDS)
                 .setPlayWhenReady(playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
@@ -470,6 +476,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 .setTextOffsetMs(textOffsetMs)
                 .setAudioOffsetMs(audioOffsetMs)
                 .setVideoSize(videoSize)
+                .setNewlyRenderedFirstFrame(firstFrameEvent)
                 .setVolume(volume)
                 .setCurrentMediaEditions(currentChapters)
                 .setPlaylist(currentItem == null ? ImmutableList.of() : ImmutableList.of(mediaItemData(currentItem)))
@@ -1169,6 +1176,31 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         return observedCurrentVo;
     }
 
+    public boolean isAndroidFelActive() {
+        return androidFelActive;
+    }
+
+    public boolean isNativeOutputSelectionReady() {
+        return fileLoaded;
+    }
+
+    public boolean isObservedVulkanRenderer() {
+        return "androidvk".equals(cachedCurrentGpuContext);
+    }
+
+    /** The native VO accepted a frame in this seek/reconfigure epoch. This is
+     * submission evidence, not a physical display presentation timestamp. */
+    public boolean hasSubmittedVideoFrame() {
+        return videoFrameSubmitted;
+    }
+
+    private boolean reportFirstSubmittedVideoFrame() {
+        if (!fileLoaded || !videoFrameSubmitted || firstVideoFrameReported) return false;
+        firstVideoFrameReported = true;
+        newlyRenderedFirstFrame = true;
+        return true;
+    }
+
     public long getDroppedFrames() {
         refreshRuntimeDiagnostics(MpvDiagnosticsPolicy.Request.PANEL);
         return Math.max(0, cachedDecoderDroppedFrames) + Math.max(0, cachedOutputDroppedFrames);
@@ -1740,6 +1772,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         observe("video-params/colorlevels", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("video-params/colormatrix", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("current-vo", MPVLib.MpvFormat.MPV_FORMAT_STRING);
+        observe("android-dovi-fel-active", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
+        observe("video-frame-submitted", MPVLib.MpvFormat.MPV_FORMAT_FLAG);
         observe("current-gpu-context", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("gpu-api", MPVLib.MpvFormat.MPV_FORMAT_STRING);
         observe("current-ao", MPVLib.MpvFormat.MPV_FORMAT_STRING);
@@ -1998,6 +2032,11 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             case "current-vo" -> {
                 observedCurrentVo = value instanceof String;
                 cachedCurrentVo = value instanceof String text ? text : cachedCurrentVo;
+            }
+            case "android-dovi-fel-active" -> androidFelActive = Boolean.TRUE.equals(value);
+            case "video-frame-submitted" -> {
+                videoFrameSubmitted = Boolean.TRUE.equals(value);
+                stateChanged = reportFirstSubmittedVideoFrame();
             }
             case "current-gpu-context" -> cachedCurrentGpuContext = stringValue(value, cachedCurrentGpuContext);
             case "gpu-api" -> cachedGpuApi = stringValue(value, cachedGpuApi);
@@ -2341,6 +2380,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         }
         switch (eventId) {
             case MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
+                androidFelActive = false;
+                videoFrameSubmitted = false;
+                firstVideoFrameReported = false;
+                newlyRenderedFirstFrame = false;
                 mediaReplacementCoordinator.onStartFile();
                 mainHandler.removeCallbacks(mediaReplacementStopTimeoutRunnable);
                 loadStarted = true;
@@ -2364,6 +2407,24 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                     return;
                 }
                 fileLoaded = true;
+                // Resolve the actual native chain once at this lifecycle
+                // boundary. Property-change delivery may follow FILE_LOADED;
+                // an earlier cached false must not trigger an App rebuild.
+                androidFelActive = booleanProperty("android-dovi-fel-active", false);
+                if (androidFelActive) {
+                    cachedCurrentVo = stringProperty("current-vo", "gpu-next");
+                    observedCurrentVo = true;
+                    cachedCurrentGpuContext = stringProperty("current-gpu-context", "");
+                    if (config.restoreFelAutomaticSubtitles()
+                            && TextUtils.isEmpty(initialSubtitleTrackId)
+                            && "no".equals(config.extraOptions().get("sid"))) {
+                        // Undo only the App's direct-output startup default.
+                        // Saved/manual selections and explicit mpv.conf sid
+                        // stay authoritative; file-local reset protects reuse.
+                        safeSetPropertyString("file-local-options/sid", "auto");
+                    }
+                }
+                reportFirstSubmittedVideoFrame();
                 discNavigationActive = MpvDiscMenuPolicy.usesRawIso(currentIsoUri)
                         && booleanProperty("disc-nav-active", false);
                 discMenuAvailable |= discNavigationActive;
@@ -2888,6 +2949,12 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         return TextUtils.isEmpty(effectiveVo) ? config.vo() : effectiveVo;
     }
 
+    private String activeVideoOutputVo() {
+        if (androidFelActive) return "gpu-next";
+        return observedCurrentVo && !TextUtils.isEmpty(cachedCurrentVo)
+                ? cachedCurrentVo : videoOutputVo();
+    }
+
     private void createOsdSurfaceView() {
         if (!requiresOsdSurface() || osdSurfaceView != null
                 || !(videoOutput instanceof SurfaceView videoView)) return;
@@ -3117,7 +3184,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         }
         try {
             boolean detachDirectVideoFirst = surfaceAttached
-                    && "mediacodec_embed".equals(videoOutputVo());
+                    && "mediacodec_embed".equals(activeVideoOutputVo());
             // Clearing wid first lets direct output tear down MediaCodec before
             // Android releases the Surface. Resetting vo first can reconfigure
             // the decoder against an already released Surface.
@@ -4548,7 +4615,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private boolean maybeSelectPreferredDirectAudio(List<TrackInfo> infos, String selectedAudio) {
         if (directAudioApplied || audioTrackManuallySelected || !initialized
-                || !"mediacodec_embed".equals(videoOutputVo())) return false;
+                || !"mediacodec_embed".equals(activeVideoOutputVo())) return false;
         TrackInfo selected = findTrack(infos, C.TRACK_TYPE_AUDIO, selectedAudio);
         if (selected == null) return false;
         List<MpvDirectAudioPolicy.Candidate> candidates = new ArrayList<>();
@@ -5111,6 +5178,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         observedCurrentVo = false;
         observedHwdecCurrent = false;
         cachedCurrentVo = null;
+        androidFelActive = false;
+        videoFrameSubmitted = false;
+        firstVideoFrameReported = false;
+        newlyRenderedFirstFrame = false;
         cachedCurrentGpuContext = null;
         cachedGpuApi = null;
         cachedCurrentAo = null;

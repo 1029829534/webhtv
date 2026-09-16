@@ -43,9 +43,10 @@ public class MpvOptionPriorityPolicyTest {
     }
 
     @Test
-    public void explicitFelProtectsOnlyItsCoupledOptionsFromConflicts() {
+    public void felRequestPreservesOrdinaryVideoAndConfigPriority() {
         Map<String, String> candidates = new LinkedHashMap<>();
         candidates.put("android-dovi-fel", "yes");
+        candidates.put("android-dovi-fel-vulkan", "yes");
         candidates.put("vo", "gpu-next");
         candidates.put("demuxer-dovi-profile7", "preserve");
         candidates.put("android-dolby-vision-output", "configured");
@@ -57,11 +58,14 @@ public class MpvOptionPriorityPolicyTest {
         candidates.put("android-vulkan-aimagereader-backend", "stable");
 
         Map<String, String> overlay = MpvOptionPriorityPolicy.selectPerformanceOverlay(false, candidates);
-        assertEquals(6, overlay.size());
-        assertEquals("gpu-next", overlay.get("vo"));
+        assertEquals(3, overlay.size());
+        assertEquals("yes", overlay.get("android-dovi-fel"));
+        assertEquals("yes", overlay.get("android-dovi-fel-vulkan"));
         assertEquals("preserve", overlay.get("demuxer-dovi-profile7"));
-        assertEquals("configured", overlay.get("android-dolby-vision-output"));
-        assertEquals("default", overlay.get("vd-lavc-skipframe"));
+        assertFalse(overlay.containsKey("vo"));
+        assertFalse(overlay.containsKey("android-dolby-vision-output"));
+        assertFalse(overlay.containsKey("vd-lavc-skipframe"));
+        assertFalse(overlay.containsKey("vd-lavc-skipidct"));
         assertFalse(overlay.containsKey("audio-spdif"));
         assertFalse(overlay.containsKey("cache-secs"));
         assertFalse(overlay.containsKey("glsl-shaders"));

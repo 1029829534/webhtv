@@ -94,15 +94,6 @@ public class MpvDolbyVisionFallbackPolicyTest {
     }
 
     @Test
-    public void felRequiresBothManualOptInAndAnOriginalProfile7Source() {
-        for (int profile = -1; profile <= 10; profile++) {
-            assertFalse(MpvPlayerEngine.shouldUseDv7FelOutput(false, profile));
-            assertEquals(profile == 7,
-                    MpvPlayerEngine.shouldUseDv7FelOutput(true, profile));
-        }
-    }
-
-    @Test
     public void profile8SelectsHdr10OnlyWithRegularHevcSupport() {
         assertEquals(MpvPlayerEngine.DV8_HDR10,
                 MpvPlayerEngine.selectDv8Handling(

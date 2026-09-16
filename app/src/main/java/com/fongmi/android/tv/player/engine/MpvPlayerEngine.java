@@ -1,5 +1,7 @@
 package com.fongmi.android.tv.player.engine;
 
+import android.text.TextUtils;
+
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
@@ -306,11 +308,26 @@ public class MpvPlayerEngine implements PlayerEngine {
 
     @Override
     public boolean supportsNativeLut() {
-        return !surfaceDirect;
+        return !isSurfaceDirect();
     }
 
     public boolean isSurfaceDirect() {
+        if (player.isAndroidFelActive()) return false;
+        String observed = player.getObservedCurrentVideoOutput();
+        if (!observed.isEmpty()) return "mediacodec_embed".equals(observed);
         return surfaceDirect;
+    }
+
+    public boolean isConfiguredSurfaceDirect() {
+        return surfaceDirect;
+    }
+
+    public boolean hasSubmittedVideoFrame() {
+        return player.hasSubmittedVideoFrame();
+    }
+
+    public boolean isNativeOutputSelectionReady() {
+        return player.isNativeOutputSelectionReady();
     }
 
     public void setSurfaceDirectOverride(@Nullable Boolean value) {
@@ -326,11 +343,12 @@ public class MpvPlayerEngine implements PlayerEngine {
     }
 
     public boolean isVulkanRenderer() {
+        if (player.isAndroidFelActive()) return player.isObservedVulkanRenderer();
         return vulkanRenderer;
     }
 
     public boolean shouldFallbackVulkanToStable() {
-        return vulkanRenderer && MpvVulkanBackendPolicy.isAutomaticConfig()
+        return isVulkanRenderer() && MpvVulkanBackendPolicy.isAutomaticConfig()
                 && !MpvVulkanBackendPolicy.STABLE.equals(vulkanBackend);
     }
 
@@ -457,7 +475,7 @@ public class MpvPlayerEngine implements PlayerEngine {
                 details.decoderName(),
                 player.getObservedHwdecCurrent(),
                 details.outputColorInfo(),
-                isDolbyVisionHdr10Fallback(details, currentVo) && !dv7FelOutput
+                isDolbyVisionHdr10Fallback(details, currentVo) && !isDv7FelOutputEnabled()
                         || fallbackConfigured,
                 details.sourceDolbyVisionProfile() == 7 && isDv7P81Active());
     }
@@ -498,7 +516,6 @@ public class MpvPlayerEngine implements PlayerEngine {
 
     public boolean resetDv7HandlingForNewItem() {
         String previous = dv7HandlingOption;
-        boolean wasFelOutput = dv7FelOutput;
         dv7FelOutput = false;
         int preferredMode = PlaybackPerformanceSetting.getMpvDv7HandlingMode();
         MpvAutoOutputPolicy.DolbyVisionSupport nativeDv7 =
@@ -513,7 +530,7 @@ public class MpvPlayerEngine implements PlayerEngine {
                         : MpvAutoOutputPolicy.DolbyVisionSupport.UNKNOWN;
         dv7HandlingOption = selectDv7Handling(nativeDv7, profile81, preferredMode);
         dv7P81FallbackTried = false;
-        return wasFelOutput || !dv7HandlingOption.equals(previous);
+        return !dv7HandlingOption.equals(previous);
     }
 
     public boolean resetDv8HandlingForNewItem() {
@@ -593,28 +610,16 @@ public class MpvPlayerEngine implements PlayerEngine {
     }
 
     public boolean isDv7FelOutputEnabled() {
-        return dv7FelOutput;
+        return player.isAndroidFelActive();
     }
 
-    /** Source metadata can be available even if direct decoding failed. */
+    /** Native selects the actual track before VO/decoder creation. Never guess
+     * from an available track or rebuild the player after this observation. */
     public boolean updateDv7FelOutputForCurrentItem() {
-        if (!isDv7FelRequested()) return false;
-        MpvPlayer.VideoTrackDiagnostics details = player.getSelectedVideoTrackDiagnostics();
-        if (details == null || sourceDolbyVisionProfile(details) <= 0) {
-            details = player.getAvailableVideoTrackDiagnostics();
-        }
-        int profile = details == null ? -1 : sourceDolbyVisionProfile(details);
-        // A transient empty track-list during a same-item rebuild must not
-        // undo activation. New items explicitly clear the flag above.
-        if (profile <= 0) return false;
-        boolean enabled = shouldUseDv7FelOutput(isDv7FelRequested(), profile);
+        boolean enabled = player.isAndroidFelActive();
         if (dv7FelOutput == enabled) return false;
         dv7FelOutput = enabled;
         return true;
-    }
-
-    static boolean shouldUseDv7FelOutput(boolean requested, int sourceProfile) {
-        return requested && sourceProfile == 7;
     }
 
     static String dv7DemuxerOption(String handling) {
@@ -672,7 +677,7 @@ public class MpvPlayerEngine implements PlayerEngine {
 
     @Override
     public boolean supportsSecondarySubtitle() {
-        return !surfaceDirect;
+        return !isSurfaceDirect();
     }
 
     @Override
@@ -949,7 +954,7 @@ public class MpvPlayerEngine implements PlayerEngine {
                 Util.isLeanback(),
                 MpvPerformanceSetting.isInterpolation() || LutSetting.isEnabled(),
                 MpvConfigStore.hasGpuVideoProcessing());
-        surfaceDirect = !dv7FelOutput && (surfaceDirectOverride == null
+        surfaceDirect = (surfaceDirectOverride == null
                 ? MpvPerformanceSetting.shouldUseSurfaceDirect(autoDirectEligible, Util.isLeanback(), decode == HARD)
                 : surfaceDirectOverride && decode == HARD);
         boolean requestVulkan = vulkanRenderOverride != null
@@ -958,6 +963,13 @@ public class MpvPlayerEngine implements PlayerEngine {
         boolean nativeVulkan = MPVLib.isBundledVulkanEnabled(App.get());
         boolean deviceVulkan = MPVLib.isDeviceVulkan13Capable(App.get());
         boolean useVulkan = !surfaceDirect && requestVulkan && nativeVulkan && deviceVulkan;
+        boolean felVulkan = nativeVulkan && deviceVulkan && (requestVulkan
+                || vulkanRenderOverride == null && decode == HARD
+                && PlaybackPerformanceSetting.isAuto(
+                        PlayerSetting.MPV, PlaybackPerformanceCatalog.MPV_RENDER));
+        boolean felAutoVulkan = vulkanRenderOverride == null && decode == HARD
+                && PlaybackPerformanceSetting.isAuto(
+                        PlayerSetting.MPV, PlaybackPerformanceCatalog.MPV_RENDER);
         vulkanRenderer = useVulkan;
         String configuredBackend = MpvVulkanBackendPolicy.configuredBackend();
         String appBackendOverride = MpvVulkanBackendPolicy.appOverride();
@@ -968,7 +980,7 @@ public class MpvPlayerEngine implements PlayerEngine {
         vulkanBackend = automaticBackend && !automaticOverride.isEmpty()
                 ? automaticOverride
                 : configuredBackend.isEmpty() ? MpvVulkanBackendPolicy.AUTO : configuredBackend;
-        boolean useGpuNext = !surfaceDirect && (useVulkan || decode != HARD || dv7FelOutput);
+        boolean useGpuNext = !surfaceDirect && (useVulkan || decode != HARD);
         if (requestVulkan && !surfaceDirect && !useVulkan) SpiderDebug.log("player-engine", "mpv render requested=vulkan but unavailable native=%s device=%s; fallback=opengl", nativeVulkan, deviceVulkan);
         SpiderDebug.log("player-engine", "mpv output mode=%s direct=%s render requested=%s nativeVulkan=%s deviceVulkan=%s decode=%s actual=%s/%s fel=%s", MpvPerformanceSetting.getOutputModeText(), surfaceDirect, requestVulkan ? "vulkan" : "opengl", nativeVulkan, deviceVulkan, decode == HARD ? "hard" : "soft", surfaceDirect ? "surface" : useVulkan ? "vulkan" : "opengl", surfaceDirect ? "mediacodec_embed" : useGpuNext ? "gpu-next" : "gpu", dv7FelOutput);
         MpvPlayerConfig.Builder builder = MpvPlayerConfig.builder(App.get())
@@ -993,32 +1005,26 @@ public class MpvPlayerEngine implements PlayerEngine {
                         PlayerSetting.MPV,
                         PlaybackPerformanceCatalog.MPV_HLS_BITRATE))
                 .deferStartupTrackRefresh(DV7_P81.equals(getDv7HandlingOption()))
+                .restoreFelAutomaticSubtitles(isDv7FelRequested()
+                        && TextUtils.isEmpty(MpvConfigStore.getOptionValue("sid")))
                 .option("framedrop", MpvPerformanceSetting.getFrameDropOption())
                 .option("video-sync", MpvPerformanceSetting.getSyncOption())
                 .option("interpolation", MpvPerformanceSetting.isInterpolation() ? "yes" : "no")
                 .option("hls-bitrate", MpvPerformanceSetting.getHlsBitrateOption())
                 .option("demuxer-dovi-profile7",
                         dv7DemuxerOption(getDv7HandlingOption()))
-                .option("android-dovi-fel", dv7FelOutput ? "yes" : "no")
+                .option("android-dovi-fel", isDv7FelRequested() ? "yes" : "no")
+                .option("android-dovi-fel-vulkan", felVulkan ? felAutoVulkan ? "auto" : "yes" : "no")
                 .option("demuxer-dovi-profile8",
                         getDv8HandlingOption());
-        if (useVulkan && !appBackendOverride.isEmpty()) {
+        if ((useVulkan || isDv7FelRequested() && felVulkan) && !appBackendOverride.isEmpty()) {
             builder.option(MpvVulkanBackendPolicy.OPTION, appBackendOverride);
-        } else if (useVulkan && automaticBackend && !automaticOverride.isEmpty()) {
+        } else if ((useVulkan || isDv7FelRequested() && felVulkan) && automaticBackend && !automaticOverride.isEmpty()) {
             builder.option(MpvVulkanBackendPolicy.OPTION, automaticOverride);
         }
-        if (dv7FelOutput) {
-            // Decode both layers faithfully. Frame presentation may still
-            // drop late frames, but decoder shortcuts corrupt the residual.
-            builder.option("android-dolby-vision-output", "configured")
-                    .option("framedrop", "vo")
-                    .option("vd-lavc-fast", "no")
-                    .option("vd-lavc-skiploopfilter", "default")
-                    .option("vd-lavc-skipidct", "default")
-                    .option("vd-lavc-skipframe", "default");
-        } else {
-            applySoftDecodeOptions(builder);
-        }
+        // Native enforces faithful decoding only on the selected FEL chain.
+        // Keep the ordinary content preferences intact in a reused player.
+        applySoftDecodeOptions(builder);
         if (surfaceDirect) {
             builder.vo("mediacodec_embed")
                     .option("sid", "no")

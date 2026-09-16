@@ -419,7 +419,6 @@ public class PlayerManager implements ParseCallback {
         completeIjkBufferManagedReload(
                 false, "timeout", SystemClock.elapsedRealtime(), true);
         if (retryLutWarmupByRefresh("timeout")) return;
-        if (retryMpvDv7FelOutput()) return;
         if (retryMpvDv7P81FirstFrameTimeout()) return;
         if (retryMpvVulkanBackendTimeout()) return;
         if (retryMpvAutoVulkanToOpenGl("auto-vulkan-first-frame-timeout")) return;
@@ -4694,7 +4693,8 @@ public class PlayerManager implements ParseCallback {
         mpv.prepareSubtitleForNewItem(persistedSubtitle);
         boolean dv7HandlingChanged = mpv.resetDv7HandlingForNewItem();
         boolean dv8HandlingChanged = mpv.resetDv8HandlingForNewItem();
-        boolean clearAutoVulkanRenderer = mpvAutoVulkanPinnedForItem;
+        boolean clearAutoVulkanRenderer = mpvAutoVulkanPinnedForItem
+                && !mpv.isDv7FelOutputEnabled();
         mpvAutoVulkanPinnedForItem = false;
         mpvAutoVulkanDisabledForItem = false;
         mpv.setVulkanRenderOverride(null);
@@ -4715,7 +4715,7 @@ public class PlayerManager implements ParseCallback {
         }
         boolean shouldStartDirect = MpvPerformanceSetting.shouldUseSurfaceDirect(
                 autoDirectEligible, Util.isLeanback(), engine.isHard());
-        if (mpv.isSurfaceDirect() == shouldStartDirect
+        if (mpv.isConfiguredSurfaceDirect() == shouldStartDirect
                 && !clearAutoVulkanRenderer && !dv7HandlingChanged && !dv8HandlingChanged) return;
         if (SpiderDebug.isEnabled()) SpiderDebug.log("mpv-output", "prepare new item rebuild currentDirect=%s desiredDirect=%s clearAutoVulkan=%s mode=%s", mpv.isSurfaceDirect(), shouldStartDirect, clearAutoVulkanRenderer, MpvPerformanceSetting.getOutputModeText());
         mpv.setSurfaceDirectOverride(shouldStartDirect);
@@ -4771,12 +4771,13 @@ public class PlayerManager implements ParseCallback {
         if (!isMpv() || mpvAutoOutputEvaluated
                 || !(engine instanceof MpvPlayerEngine mpv)) return true;
         if (mpvHlsManagedReload) return false;
-        // Only the manual FEL mode inspects the original DV profile here.
-        // This runs before size/first-frame gating, so a direct decoder that
-        // cannot initialize DV7 can still move to the hybrid GPU path.
-        if (prepareMpvFelOutput(mpv)) {
-            return rebuildAndRestartMpv(mpv.isDv7FelOutputEnabled() ? false : null,
-                    "manual-dv7-fel-output");
+        if (mpv.isDv7FelRequested() && !mpv.isNativeOutputSelectionReady()) return false;
+        prepareMpvFelOutput(mpv);
+        if (mpv.isDv7FelOutputEnabled()) {
+            // Already selected by native before decoder initialization. A
+            // second App-level transition would reopen the same media.
+            mpvAutoOutputEvaluated = true;
+            return true;
         }
         Tracks tracks = engine.getCurrentTracks();
         boolean tracksReady = tracks != null && !tracks.isEmpty();
@@ -4959,35 +4960,17 @@ public class PlayerManager implements ParseCallback {
 
     private boolean prepareMpvFelOutput(MpvPlayerEngine mpv) {
         if (!mpv.updateDv7FelOutputForCurrentItem()) return false;
-        if (!mpv.isDv7FelOutputEnabled()) {
-            if (mpvAutoVulkanPinnedForItem) {
-                mpvAutoVulkanPinnedForItem = false;
-                mpv.setVulkanRenderOverride(null);
-            }
-            return true;
-        }
-        MpvAutoRenderPolicy.Decision decision = MpvAutoRenderPolicy.evaluate(
-                PlaybackPerformanceSetting.isAuto(
-                        PlayerSetting.MPV, PlaybackPerformanceCatalog.MPV_RENDER),
-                engine.isHard(), 7, MpvAutoOutputPolicy.DolbyVisionSupport.UNKNOWN,
-                MPVLib.isBundledVulkanEnabled(App.get()),
-                MPVLib.isDeviceVulkan13Capable(App.get()),
-                mpv.isVulkanRenderer(), mpvAutoVulkanDisabledForItem, true);
-        if (decision.action() == MpvAutoRenderPolicy.Action.ENABLE_VULKAN) {
+        if (mpv.isDv7FelOutputEnabled() && mpv.isVulkanRenderer()
+                && engine.isHard() && PlaybackPerformanceSetting.isAuto(
+                        PlayerSetting.MPV, PlaybackPerformanceCatalog.MPV_RENDER)) {
+            // Retain runtime failure recovery without changing the configured
+            // renderer: native owns this per-source automatic choice.
             mpvAutoVulkanPinnedForItem = true;
-            mpv.setVulkanRenderOverride(true);
         }
         PlaybackTrace.log("mpv-dv", playbackTrace.current(),
-                "manual FEL reconstruction: original DV7, software EL, gpu-next; render=%s",
-                decision.reason());
+                "native FEL selection: active=%s single-load=1",
+                mpv.isDv7FelOutputEnabled());
         return true;
-    }
-
-    private boolean retryMpvDv7FelOutput() {
-        if (!isMpv() || !(engine instanceof MpvPlayerEngine mpv)
-                || !mpv.isDv7FelRequested() || mpv.isDv7FelOutputEnabled()
-                || !prepareMpvFelOutput(mpv) || !mpv.isDv7FelOutputEnabled()) return false;
-        return rebuildAndRestartMpv(false, "manual-dv7-fel-startup");
     }
 
     private boolean retryMpvDv7P81Failure(PlaybackException error) {
@@ -7199,10 +7182,12 @@ public class PlayerManager implements ParseCallback {
         if (tracks == null) return;
         boolean hasVideo = tracks.containsType(C.TRACK_TYPE_VIDEO);
         boolean hasAudio = tracks.containsType(C.TRACK_TYPE_AUDIO);
-        PlaybackStartupPolicy.Completion completion = PlaybackStartupPolicy.resolve(ready, playerType == PlayerSetting.MPV, hasVideo, hasAudio);
+        boolean videoSubmitted = engine instanceof MpvPlayerEngine mpv
+                && mpv.hasSubmittedVideoFrame();
+        PlaybackStartupPolicy.Completion completion = PlaybackStartupPolicy.resolve(ready, videoSubmitted, hasVideo, hasAudio);
         if (completion == PlaybackStartupPolicy.Completion.FIRST_FRAME) {
             if (playbackTrace.hasStage(PlaybackTrace.Stage.FIRST_FRAME)) return;
-            playbackTrace.mark(PlaybackTrace.Stage.FIRST_FRAME, "source=mpv-playback-restart player=" + playerType);
+            playbackTrace.mark(PlaybackTrace.Stage.FIRST_FRAME, "source=mpv-vo-submitted player=" + playerType);
             onIjkRuntimeFirstFrame(SystemClock.elapsedRealtime());
         } else if (completion == PlaybackStartupPolicy.Completion.AUDIO_PLAYABLE) {
             playbackTrace.mark(PlaybackTrace.Stage.AUDIO_PLAYABLE, "source=ready player=" + playerType);
@@ -7210,6 +7195,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     private void completeMpvDirectFirstFrame(int state) {
+        if (!(engine instanceof MpvPlayerEngine mpv) || !mpv.hasSubmittedVideoFrame()) return;
         if (!MpvAutoOutputPolicy.canRevealDirectFrame(
                 MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO,
                 mpvAutoOutputEvaluated,
@@ -7221,7 +7207,7 @@ public class PlayerManager implements ParseCallback {
         callback.onPlayerOutputReady();
         if (!playbackTrace.hasStage(PlaybackTrace.Stage.FIRST_FRAME)) {
             playbackTrace.mark(PlaybackTrace.Stage.FIRST_FRAME,
-                    "source=mpv-playback-restart-direct player=" + playerType);
+                    "source=mpv-vo-submitted-direct player=" + playerType);
             onIjkRuntimeFirstFrame(SystemClock.elapsedRealtime());
         }
         PlaybackTrace.log("mpv-output", playbackTrace.current(),
@@ -7596,7 +7582,12 @@ public class PlayerManager implements ParseCallback {
             // Do not let the generic startup timer turn that valid playback into
             // a false connection-timeout error.
             if (isExo()) App.removeCallbacks(runnable);
-            playbackTrace.mark(PlaybackTrace.Stage.FIRST_FRAME, "source=media3 player=" + playerType);
+            playbackTrace.mark(PlaybackTrace.Stage.FIRST_FRAME,
+                    "source=" + (isMpv() ? "mpv-vo-submitted" : "media3") + " player=" + playerType);
+            if (isMpv()) {
+                mpvAutoOutputFrameReady = true;
+                callback.onPlayerOutputReady();
+            }
             publishPlaybackAutoContext(true);
             onIjkRuntimeFirstFrame(SystemClock.elapsedRealtime());
             publishPlaybackTelemetry();
@@ -7628,7 +7619,6 @@ public class PlayerManager implements ParseCallback {
             publishPlaybackTelemetry(
                     PlaybackAutoContext.PlaybackPhase.ERROR, false);
             if (recoverMpvHlsVariantError()) return;
-            if (retryMpvDv7FelOutput()) return;
             if (retryMpvDv7P81Failure(e)) return;
             if (retryMpvSurfaceDirectFailure(e)) return;
             if (retryMpvVulkanBackendFailure(e)) return;

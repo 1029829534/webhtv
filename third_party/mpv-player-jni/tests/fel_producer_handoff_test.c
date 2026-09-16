@@ -82,6 +82,7 @@ struct fake_vk {
     struct { unsigned index; int count; } queue_compute, queue_graphics;
 };
 struct aimagereader_vk_stable {
+    struct { unsigned count; } fel_map_window;
     bool android_fel, release_sync_fd;
     int device, output_count;
     int queue;
@@ -121,6 +122,10 @@ static bool release_fel_source_async(struct aimagereader_vk_stable *, struct vk_
 static bool submit_conversion(struct aimagereader_vk_stable *, struct vk_output *, bool, bool);
 static void fel_perf_checkpoint(struct aimagereader_vk_stable *, enum mp_fel_perf_stage);
 static void fel_perf_finish_map(struct aimagereader_vk_stable *);
+// Latency distribution arithmetic is exercised by fel_vk_cache_test. This
+// fixture observes only whether producer/copy completion records a sample.
+static void fel_latency_add(void *window, uint64_t ns)
+{ (void)ns; (*(unsigned *)window)++; }
 static void init_fel_gpu_timer(struct aimagereader_vk_stable *);
 static void collect_fel_gpu_time(struct aimagereader_vk_stable *, struct vk_output *);
 bool aimagereader_vk_stable_reuse(struct aimagereader_vk_stable *, struct mp_image *);

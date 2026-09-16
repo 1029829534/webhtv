@@ -8,14 +8,11 @@ import java.util.Set;
 
 final class MpvOptionPriorityPolicy {
 
-    // A selected FEL mode is a coupled decoder/renderer contract. Enforce
-    // only these keys even with mpv.conf priority; leave audio, cache, user
-    // shaders and other performance preferences under their existing policy.
+    // Native applies the decoder/renderer contract to the selected DV7 chain.
+    // Protect only the request and original bitstream; a FEL preference must
+    // not override ordinary videos' VO, decoder shortcuts, or mpv.conf priority.
     private static final Set<String> FEL_REQUIRED_OPTIONS = Set.of(
-            "vo", "gpu-context", "gpu-api", "opengl-es", "hwdec",
-            "android-dovi-fel", "android-dolby-vision-output",
-            "demuxer-dovi-profile7", "framedrop", "vd-lavc-fast",
-            "vd-lavc-skiploopfilter", "vd-lavc-skipidct", "vd-lavc-skipframe");
+            "android-dovi-fel", "android-dovi-fel-vulkan", "demuxer-dovi-profile7");
 
     private static final Set<String> PERFORMANCE_MANAGED_OPTIONS = Set.of(
             "vo",
@@ -42,6 +39,7 @@ final class MpvOptionPriorityPolicy {
             "demuxer-dovi-profile7",
             "demuxer-dovi-profile8",
             "android-dovi-fel",
+            "android-dovi-fel-vulkan",
             "framedrop",
             "video-sync",
             "interpolation",

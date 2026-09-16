@@ -66,6 +66,7 @@ struct vo_driver {
 };
 struct mp_vo_opts { bool android_dovi_fel; };
 struct vo {
+    struct mp_vo_opts extra;
     struct vo_internal *in;
     struct mp_vo_opts *opts;
     struct vo_driver *driver;
@@ -160,7 +161,7 @@ static int fake_control(struct vo *vo, uint32_t command, void *data)
 static bool fake_draw(struct vo *vo, struct vo_frame *frame)
 {
     CHECK(!vo->in->lock);
-    bool fel = vo->opts->android_dovi_fel &&
+    bool fel = vo->extra.android_dovi_fel &&
         (vo->driver->caps & VO_CAP_GPU_DOVI_EL_SW) &&
         frame->current->imgfmt == IMGFMT_MEDIACODEC;
     if (!draws) CHECK(vo->in->fel_render_initializing == fel);
@@ -189,7 +190,7 @@ static void init_fixture(struct fixture *f)
         .draw_frame = fake_draw, .flip_page = fake_flip,
     };
     f->gpu.deferred = f->gpu.available = true;
-    f->vo = (struct vo) { .in = &f->in, .opts = &f->opts,
+    f->vo = (struct vo) { .in = &f->in, .opts = &f->opts, .extra = f->opts,
                          .driver = &f->driver, .priv = &f->gpu };
     mp_fel_trace_init(&f->vo.fel_trace);
     atomic_store(&f->vo.fel_trace.enabled, true);
@@ -232,7 +233,7 @@ int main(void)
     finish_fixture(&f);
 
     init_fixture(&f);
-    f.opts.android_dovi_fel = false;
+    f.vo.extra.android_dovi_fel = false;
     render_frame(&f.vo);
     CHECK(f.in.drop_count == 1 && controls == 0 && copies == 0);
     finish_fixture(&f);

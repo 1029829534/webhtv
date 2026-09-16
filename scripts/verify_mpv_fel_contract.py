@@ -28,7 +28,7 @@ def main():
                           if line.startswith("+") and not line.startswith("+++"))
     for marker in (
         '"android-dovi-fel", OPT_BOOL(android_dovi_fel)',
-        "mpctx->opts->vo->android_dovi_fel && el",
+        "mpctx->video_out->extra.android_dovi_fel && el",
         "VO_CAP_GPU_DOVI_EL_SW",
         "track->stream->codec->dv_profile == 7",
         "info->force_swdec = true",

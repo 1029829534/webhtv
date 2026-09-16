@@ -65,6 +65,7 @@ struct vo_internal {
     bool send_reset;
 };
 struct vo {
+    struct mp_vo_opts extra;
     struct vo_internal *in;
     struct mp_vo_opts *opts;
     struct vo_driver *driver;
@@ -324,7 +325,7 @@ static void reset_test(void)
     vo_opts = (struct mp_vo_opts){true};
     opts = (struct MPOpts){.vo = &vo_opts};
     driver = (struct vo_driver){VO_CAP_GPU_DOVI_EL_SW, control};
-    vo = (struct vo){.in = &in, .opts = &vo_opts, .driver = &driver, .requested = 2};
+    vo = (struct vo){.in = &in, .opts = &vo_opts, .extra = vo_opts, .driver = &driver, .requested = 2};
     mp_fel_trace_init(&vo.fel_trace);
     atomic_store(&vo.fel_trace.enabled, true);
     vf = (struct fake_vf){.f = &filter};
@@ -349,7 +350,7 @@ static void cleanup(void)
 static void test_lookahead(bool fel, int requested, bool sw)
 {
     reset_test();
-    vo_opts.android_dovi_fel = fel;
+    vo.extra.android_dovi_fel = fel;
     vo.requested = requested;
     software = sw;
     bool eof = false;
@@ -649,9 +650,9 @@ static void test_render_initialization(void)
 
     reset_test();
     a = new_image(1);
-    vo_opts.android_dovi_fel = false;
+    vo.extra.android_dovi_fel = false;
     CHECK(!render_begin(a));
-    vo_opts.android_dovi_fel = true;
+    vo.extra.android_dovi_fel = true;
     driver.caps = 0;
     CHECK(!render_begin(a));
     driver.caps = VO_CAP_GPU_DOVI_EL_SW;
@@ -751,7 +752,7 @@ static void test_leases_and_crop(void)
     params.w = 1920;
     CHECK(hwdec_reconfig(&p, &mapper, &timer, &hwdec, &params));
     CHECK(mapper_creations == 2); // actual pixel format is never ignored
-    vo_opts.android_dovi_fel = false;
+    vo.extra.android_dovi_fel = false;
     storage.rotate = 0;
     restore_fel_display_params(&vo, &display, &storage);
     CHECK(storage.rotate == 0); // never override another path's presentation

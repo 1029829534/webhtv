@@ -3,6 +3,17 @@ set -euo pipefail
 task_root="$(cd "$(dirname "$0")/.." && pwd)"
 mpv_source="${1:-$task_root/build/mpv-native/mpv-android/buildscripts/deps/mpv}"
 test_output="$(mktemp -d /private/tmp/webhtv-fel-contract.XXXXXX)"
+awk '
+  /^static bool should_use_android_fel_output\(/ || /^void reinit_video_chain_src\(/ ||
+  /^static int mp_property_android_fel_active\(/ || /^static int mp_property_video_frame_submitted\(/ { copying = 1 }
+  copying { print }
+  copying && /^}/ { copying = 0 }
+' "$mpv_source/player/video.c" "$mpv_source/player/command.c" | \
+  "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -fsanitize=address,undefined \
+    -include "$task_root/third_party/mpv-player-jni/tests/fel_startup_selection_test.c" \
+    -x c - -o "$test_output/fel-startup-selection-test"
+"$test_output/fel-startup-selection-test"
 # Use Vulkan declarations without using Android's libc headers on the host.
 vulkan_headers="${VULKAN_HEADERS_INCLUDE:-}"
 if [[ -z "$vulkan_headers" && -n "${ANDROID_NDK_HOME:-}" ]]; then

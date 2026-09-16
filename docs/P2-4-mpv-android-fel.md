@@ -1,6 +1,47 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.22，跨项目复核后的下一阶段方案）
+## Recovery anchor（当前：9.23，起播一次选择候选已完成本机验证）
+
+- Objective / acceptance：实际选中 DV7 轨道后、VO/decoder 创建前一次选择完整 FEL；不再从任意可用轨道推断后销毁 App 播放器重载；非 FEL 路线、10bit、EL 配对/同步不变。视频首帧须有本轮视频输出提交证据，不能仅凭 READY/轨道尺寸。
+- Current unit：`feature/mpv-dv7-fel` / `5df95f475009ed0d04d864b60d7d22b229e87e95`，guard `P2-4-fel-startup-selection` / upstream；用户多次“实施优化/继续”已授权，无待审批事项。保护原有 104 个 `app/.cxx/` 文件。
+- Scope：FEL 权威补丁及生成的 mpv 树、相关 Java 播放适配/策略、定向合同验证、两份 libmpv 与 lock、本文及评估索引；不升级依赖、不修改其余 18 库/JNI/Exo。
+- Plan：沿用 9.21/9.22 源码与研究结论。`android-dovi-fel` 表达请求，`vo_extra` 保存选中轨道的实际状态；各 core/VO/decoder 消费实际状态。每个 FEL VO 单独指定 gpu-next/context，普通视频配置不被改写；App 观察 native 实际属性，不再启动识别后的第二次 loadfile。
+- Verification / status：实现、6 类 34 项 Java 测试及真实 C 建链/VO/decoder 的 ASan/UBSan 合同通过；源码补丁 24 文件往返一致。最终双 ABI 编译、ELF/公开导出及 18 个其他库逐字节不变通过；TV64 `202609161235` 的 10 个 MPV 库身份、完整 ZIP/v2 签名均通过，未安装/未获电视性能结果。证据 `/private/tmp/webhtv-fel-startup-uwqa5kyt/`。原 11:45/12:10 估计超出：字幕/Surface/自动 Vulkan 回退联动、一次 Java import 修正、缓存权限与产物检查，以及增量 ZIP 空洞导致的一次必要重打包；没有重跑已通过测试。
+- Risks：持续 descriptor bind 等待不由本单元宣称解决；9.22-B 仍为后续独立诊断单元，C 仍需其证据。电视无法 ADB，本机验证不能替代 9.22.5 的设备门槛。
+- Rollback：本单元基线及 `recovery/P2-4-fel-cross-project/20260916082750-5df95f475009`，源/补丁/Java/两份 libmpv 成套恢复。
+- Exactly one next action：按 9.22-B 实施用户主动启动的有界 sampler/storage 绑定对照，用目标电视证据决定后续暂存后端；9.23 包可独立供用户验证起播变化。
+
+<a id="p2-4-fel-startup-selection"></a>
+
+## 9.23 起播一次选择 FEL（2026-09-16，本机候选已验证）
+
+本单元是用户已批准 9.22 路线的第一项，研究证据和三方案比较直接沿用 9.21/9.22，不重复联网搜索。进一步本地核对锁定 mpv：`android-dovi-fel` 的 UPDATE_VO 选项是全局配置，不能在建链时直接篡改 opts/shadow；`reinit_video_chain_src(track)` 与现有 `vo_extra.prefer_hdr_output` 提供按实际 track 创建/替换 VO 的生命周期。采用同类的实例状态，decoder 通过输出链 `mp_stream_info` 继承；运行中质量保护也按实例激活，不把全局“请求”当作所有媒体的实际渲染状态。首帧证据沿用 `vo_has_frame` 的“本次 seek/reconfig 后已排入 VO”定义，明确不等同于物理屏幕呈现时间。
+
+### 实现与边界
+
+- native `player/video.c::reinit_video_chain_src` 在实际 track 上选择 FEL，显式输出 `null`/封面/缺失 track（包括 lavfi-complex 输出）不抢猜轨道。FEL 创建 gpu-next 后才创建 BL decoder；VO 复用比较实例 FEL/渲染请求，切轨或换片可恢复原配置。`player/loadfile.c::update_vo_chain_el_state` 使用真实 VO chain 的 track。
+- `vo_extra.android_dovi_fel` 经 output-chain stream info 传播到 decoder；core lookahead、VO、AImageReader 和 stable mapper 均消费实例状态。原全局 bool 只表示请求。两个 decoder 的 fast/skip 在 native 实际激活后约束，显示允许丢迟到帧，BL/EL 不跳过必要解码；普通内容保留原选项。
+- `android-dovi-fel-vulkan=no/yes/auto` 只在 FEL VO preinit 内选择 context；App 复用现有 Vulkan 能力与自动/手动偏好。auto 初始化失败在同一次 load 内试 OpenGL，手动 yes 保持严格；普通视频全局 VO/gpu-api 不改。
+- App 不再从第一条可用轨道推断 FEL，不再执行 `manual-dv7-fel-output/startup` 销毁重载。FILE_LOADED 时取得实际 native 选择，避免属性观察回调晚到触发错误的二次决策；Surface、音频直出策略和字幕能力随实际输出。仅 FEL 恢复 App 原直出 `sid=no` 默认，使用 file-local option；已保存选择、用户明确 mpv.conf sid 继续优先。
+- 新只读 `video-frame-submitted` 要求本轮有效 video chain/VO、READY 视频状态和 `vo_has_frame`；START_FILE 清理 App 首帧状态，seek/reconfig 的 native 状态排除旧保留画面。MPV 提交证据送入 Media3 首帧事件，日志明确 `mpv-vo-submitted`，不把尺寸、音频 restart 或物理显示混为一谈。
+
+### 已完成验证
+
+- `native-contract.log` 的前半及 `native-contract-remaining.log` 的后半覆盖实际生产函数：选轨/VO 复用/失败/首帧 epoch、core/VO 回压/取消、decoder 发布与EL/BL配对、drop 路径、copy fence/lease、packet/RPU、descriptor 内容缓存及诊断有界性；ASan/UBSan 通过。旧 producer fixture 缺少 9.20 的 latency window stub，补齐后只续跑尚未通过的后半，没有重跑前半。专门的缓存测试继续验证真实 latency 算法，handoff fixture 只观察采样调用。
+- 未提供实样给 host EL 解码，`SKIP EL/RPU sample decode` 保持为跳过；这不等于电视完整画面或性能通过。
+- `gradle-focused-final.log`：TV64 相关 6 个 Java 测试类及产品代码编译通过（59 秒）；原有废弃 API/工具链警告不扩大处理。第一次构建缺少 TextUtils import 已修正，成功结果没有重跑。
+- `patch-roundtrip-final.json`：24 文件的权威补丁到实际源码逐字节一致；同锁双 ABI 构建 `arm64-build.log` / `armv7l-build.log` 已通过。`native-assets.log` / `native-boundary.log` 确认仅两份 libmpv 变化，其余 18 库（包括 JNI）及 libmpv 公开导出保持不变。依赖 lock 未改变。
+
+### 产物、验收与回滚
+
+- TV64 APK：`app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk`；固定副本 `/private/tmp/webhtv-fel-startup-uwqa5kyt/fel-startup-tv64.apk`。版本 `5.6.0` / buildTime `202609161235`，164160281 字节，SHA256 `f5c51f91c9bd1889417b813c86cd790ce5c84a861fe3a045cdea29fd65fb76ba`。包中 `GIT_REVISION` 为本单元基线 `5df95f475009ed0d04d864b60d7d22b229e87e95`+dirty，表示提交前打包，不伪称来自未来提交。
+- libmpv：arm64 17810152 字节，SHA256 `ff9992cf633e4582a8051af34c2d486dd7c9186feb834f3595c4021a24d0ee67`；armv7 14622500 字节，SHA256 `939edf95ac804f22af2fbe329f2f46997b0a2eac82dd166b2fdc0bd395f3a53b`。FEL 补丁 SHA256 `ed2468126e6506c723bde0323c4fdc5677498abaa20c5e0b83f80e51fe57ad95`。最终仅按仓库原补丁格式移除空上下文行的前缀空格，reverse-apply 检查通过，编译源字节未变，无须重建。
+- 首次增量 APK 的 18618205 字节 ZIP 空洞未通过原 5 MiB 预算；只移走本单元生成的 APK，再由 AGP 正常生成/签名。最终无效空间 816267 字节、包内 10 库逐一匹配、ZIP CRC/v2 签名通过；75 秒重打包不重复 Java 单测。原 104 个 `app/.cxx/` 文件内容全部保持，无需恢复/移动任何文件。
+- `startup-contract-final.log` 额外验证最后的三态 Vulkan 请求完整传到 VO；`auto` 能表示同次加载内的 OpenGL 回退，未被 bool 截成手动 `yes`。只有这项受相关代码调整影响的合同重跑。
+- 这是起播修正候选：完整 FEL/10bit 的处理合同保留，未宣称本电视原有 33–37ms descriptor bind 等待消失。电视验收仍需同片独立起播、无 seek 持续区间、切轨/换片/退出和完整画面；无 ADB，不伪报安装或实测通过。源、补丁、Java 与两份 libmpv 由本 guard 原子提交并生成本地恢复 tag，不推送。
+- 回滚保持本节顶部基线和 tag，恢复本单元任务文件为一组；不移动已有 tag，不动 Exo、JNI、其余依赖库或用户脏文件。B/C 后续状态见顶部唯一下一动作。
+
+## 历史恢复记录（9.22，跨项目复核后的下一阶段方案）
 
 - Objective：继续解决日志33的起播慢和持续掉帧；本单元完成跨项目源码、规范、讨论和本机APK静态复核，给出能区分原因的下一步，保留完整FEL、10bit及非FEL行为。
 - Current unit：`feature/mpv-dv7-fel` / `98d247ea193c58a3dbfa4033d679023282632a8e`；guard `P2-4-fel-cross-project` / assessment，范围仅本文与评估索引，104个既有 `app/.cxx/` 文件保护。
