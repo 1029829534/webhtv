@@ -1,6 +1,49 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.24，绑定类型对照候选已完成本机验证）
+## Recovery anchor（当前：9.25，FEL 起播配置所有权修复）
+
+- 目标：修复手机开启DV7/FEL后native abort，保留完整FEL及手动视频解码合同；用户2026-09-17明确“修复”，无需再次确认。
+- 工作区/回滚：`feature/mpv-dv7-fel` / `8919cf134218a3d3bb30f91f3180e9cd83eac982`，guard `P2-4-fel-context-ownership` / upstream；保护104个原有 `app/.cxx/` 文件。
+- 范围：FEL patch中 `vo_gpu_next.c` 配置设置及生成源码、定向内存测试、双ARM `libmpv.so`、本文件/索引/构建记录；不改变FFmpeg、libplacebo、JNI、Exo或其他18份MPV库。
+- 已有证据：手机10:24及11:53两次同栈SIGABRT；符号与包内 `.text/.rodata` 逐字节匹配，`preinit→free_option_data→free_obj_settings_list→ta_free`。9.23将静态数组/字符串写入拥有析构权的配置对象，随后释放导致断言。引入提交 `8de0fd70942d513034fb8118de5229d7eb719622`；AVS3前后和手机 `libmpv.so` SHA均 `1d55dbe26cd7192cddf4f7388becdf118c459f7bb4ce15f54e908891af91b454`。
+- 状态/证据：修复与定向验证完成，最终Mobile64 APK已安装手机。真实ta回归先复现旧错误再通过7条路径；补丁往返/静态合同、双ABI增量编译、ELF/完整公开导出、18库身份及APK检查通过；手机原样片完整FEL激活、实际画面、seek和退出通过。证据 `build/fel-context-ownership/`；后台监听PID61269在 `/private/tmp/webhtv-fel-phone-restart-20260917/` 继续采集并自动重连。9.24电视性能结论仍待目标电视证据。
+- 验收：真实ta和对象配置copy/free复现旧代码非法释放；修复后Vulkan、OpenGL、自动切换、双失败及普通路径均安全且无遗失原配置；双ABI/公开导出/ELF及18库身份保持；手机原样片FEL起播、seek、退出不再出现该崩溃。
+- 耗时：12:10开始；原12:25目标因真实allocator回归的host适配超出，12:40目标又因增量APK空洞与OEM辅助包安装拦截超出；仅重新封装APK及复用已有仪器包，12:44完成手机场景。无新依赖、原生全栈重建或泛搜。
+- 唯一下一动作：用当前guard原子提交并创建本地恢复tag，保持后台日志监听，不推送。
+
+## 9.25 FEL 起播配置所有权修复（2026-09-17）
+
+设计证据沿用本任务固定mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42` 及现有补丁，不新增上游集成：`options/m_option.h::m_option_copy`、`m_option.c::copy_obj_settings_list/free_obj_settings_list/obj_setting_free` 定义对象配置的深拷贝与释放；`m_config_core.c::free_option_data` 按选项类型析构。2026-09-17已读实际源码（A级）。手机两次符号栈提供独立运行证据；这是已有所有权合同的局部回归，不引入架构或算法，不重复已完成的跨项目研究。
+
+方案比较：保持现状会释放静态内存；取消断言或不释放整个配置会掩盖非法释放并泄漏；手工清空字段易遗失原配置和自动切换的分配。选用mpv现有对象设置copy函数，替换时先释放旧拥有的列表，再深拷贝新列表、名称及属性，由原配置析构统一释放。只在FEL创建GPU上下文时发生两组小配置分配，不进入逐帧路径。Vulkan与自动OpenGL共用同一设置函数，普通播放路径不变。
+
+保留原FEL完整层重建、10bit、BL/EL同步、渲染选择及质量；这里的GPU后端自动切换不改变用户视频硬解/软解模式。native ABI/公开API/依赖版本、许可证与源边界不变；只重建两份libmpv并核对其他18个库，尤其保留已接入AVS3的libmvcodec。测试使用真实allocator与对象copy/free，GPU由桩提供成功/失败分支，不能将主机通过当作手机真实起播通过。
+
+实施与构建证据（`build/fel-context-ownership/`）：
+
+- `baseline-invalid-free-final.log` 由真实 `ta.c/ta_utils.c/ta_talloc.c` 与对象配置copy/free、生产preinit配置块复现旧实现的ASan非法释放；`fixed-memory-contract.log` 通过普通输出、显式Vulkan、显式OpenGL、auto成功、auto回退、双失败、显式Vulkan严格失败7条路径，验证原列表释放和全局名称/label/属性保留。只模拟GPU创建和外层配置容器，不模拟allocator。
+- `set_android_fel_context_options` 对两个列表分别调用 `m_option_copy`；初次选择和自动OpenGL回退复用此函数。权威patch只替换 `video/out/vo_gpu_next.c` 块，其他26块原样保留；`patch-verification.json/static-contract.log` 正向/反向应用、实际源码逐字节往返及既有静态FEL合同通过。
+- 两ABI只执行 `buildall.sh -n --arch arm64 mpv`、`--arch armv7l mpv`，使用同一NDK29/API24与已有静态依赖；`arm64-build.log/armv7l-build.log` 已通过。随后 `scripts/build_mpv_native.sh --abi all --stage-only` 处理依赖命名空间/strip；只复制两份libmpv到assets。第一次ARMv7复制早于stage完成，ELF检查拦截到旧 `libav*` 命名；等待stage结束重新复制后验证通过，错误中间产物未打包。
+- `native-verification.json/native-assets.log`：两库的 `.text/.rodata` 地址与字节对应本次未strip构建；公开动态符号集合和 `SONAME/DT_NEEDED` 与基线相同；其余18库逐字节保持，arm64 AVS3 codec SHA256仍为 `37114bda4673f642229fb71eb3bf4f63d82d3d4939f18cc10556ab51f43359f6`。构建锁四仓及NDK/API沿用9.24，无新依赖或JNI重编。
+
+| 产物 | 字节 | SHA256 |
+| --- | ---: | --- |
+| FEL权威patch | 见仓库文件 | `e96d4e45bba810f4f87c7fda16fd5207c1e054e180699881bffc1bcaf5094818` |
+| arm64 libmpv | 17820224 | `9f231d28bb24c976c7ab89daf2d77ca3197eac3d182119bd4ae926674ebe3c65` |
+| armv7 libmpv | 14635396 | `ec640eefa4517ca1d92536327de963bcf8b3bafd8e351437fa87d6425c425ed1` |
+| Mobile64 debug APK | 165335184 | `73e6c045ca621a70b15c9764ca3ff612481b92e8c8386173555a17d830eaa782` |
+
+最终打包与手机证据：
+
+- Gradle使用既有 `build/avs3-native/app-build.init.gradle` 隔离C++输出，执行 `:app:assembleMobileArm64_v8aDebug --offline --max-workers=4`。首次81秒成功，但包体积门槛发现42132002字节ZIP开销；保留该中间包及日志，移走本次输出后仅重封装37秒，最终ZIP开销764153字节。`apk-verification.json` 验证CRC/v2签名、10份MPV assets与候选逐字节一致，以及27份 `lib/` 原生库与修复前APK一致。
+- 最终包由OEM安装辅助脚本完成风险勾选及安装按钮确认，`final-mobile-install.log` 成功；手机实际base.apk SHA256与表中最终包一致。`device-library-sha256.txt` 确认手机实际提取的arm64 libmpv与候选一致，libmvcodec仍为原AVS3版本。
+- `device-fel-probe.log` 使用已有仪器入口调用真实App方法，无UI点选播放：原 `player=2/FEL=2` 保留，vivo V2453A / Android15 / `10CF6H1D2L0009S`，PID11658，原片 `Download/影音测试库/V01_DV_Profile/P7_FEL_4K24_GIJoe.mkv`。native日志明确 `selected-track=1 profile=7 vo=gpu-next api=vulkan single-load=1`；实际 `current-vo=gpu-next`、`current-gpu-context=androidvk`、`hwdec-current=mediacodec`、gamma=`pq`，App实际FEL激活属性为true。PixelCopy起播7789种色值、seek后9101种色值，12秒跳转后播放位置12614ms，同一PID正常stop/退出；不将色值数量当作逐像素FEL质量标定。
+- `device-fel-logcat.log/device-fel-web.log` 保留本轮原始记录，`device-fel-summary.log` 提取起播、硬解和FEL渲染记录；未重现 `ta.c` canary / SIGABRT。新建辅助包被OEM拒绝后改为更新原有任务仪器包并通过shell包管理器安装，未改产品权限或关闭设备安全开关。
+- 这是FEL起播崩溃修复验收；未重新执行无关AVS3/ASS矩阵，未声称完成电视持续掉帧优化、ARMv7实机或完整画质标定。没有新增逐帧工作；配置分配只发生在GPU上下文初始化/失败回退。用户原有播放与FEL偏好保持，后台监听在12:43:35仍有新日志写入并继续运行。
+
+回滚：以 `8919cf134218a3d3bb30f91f3180e9cd83eac982` 为源/补丁/两份libmpv恢复锚点，修复前两库及Mobile64包保存在证据目录；用本guard提交并创建 `recovery/P2-4-fel-context-ownership/*` annotated本地tag，不推送。最终提交/tag由task guard闭合记录关联，不为填写提交自身ID再重建或重复手机场景。
+
+## 历史 Recovery anchor（9.24，绑定类型对照候选已完成本机验证）
 
 - Objective / acceptance：实施 9.22-B 的第一层裁决：空控制、sampler-only、storage-only、组合布局，均 fresh record，不提交诊断 draw/dispatch。默认不运行，用户主动、独占、30 秒预算，可取消；保留真实 AImage 所有权与 fence，不保存/输出节目像素。
 - Current unit：`feature/mpv-dv7-fel` / `8de0fd70942d513034fb8118de5229d7eb719622`；guard `P2-4-fel-bind-probe` / upstream；保护 104 个原有 `app/.cxx/` 文件。上个单元已提交，tag `recovery/P2-4-fel-startup-selection/20260916124938-8de0fd70942d`。

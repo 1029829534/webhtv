@@ -2,6 +2,8 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
+2026-09-17 P2-4第9.25节：FEL起播的GPU上下文选项改用mpv原有 `m_option_copy` 管理对象列表所有权，修复配置析构释放静态内存导致的native abort。仅修改FEL patch的 `vo_gpu_next.c` 块并增量重建两ARM ABI的libmpv，保留完整FEL、渲染回退和手动视频解码合同；其余18个MPV库（包括AVS3 codec/JNI）逐字节不变，依赖锁和公开导出不变。真实ta/option析构的ASan/UBSan先复现旧错误再通过修复；构建命令、最终产物与手机验证见[任务第9.25节](../docs/P2-4-mpv-android-fel.md)。普通Gradle构建直接包含修复后的assets。
+
 2026-09-16 C-AVS3：固定 uavs3d `0e20d2c291853f196c68922a264bcd8471d75b68`，由共享 `build_avs3_native.sh` 按 MPV 自有 NDK/prefix 构建并静态链接到 codec；支持基准档次 0x20/0x22 的 8/10-bit，未实现 High profile 0x30/0x32。Android ARMv7 使用 softfp，pthread 来自 libc；FFmpeg 包装补丁处理初始化数据边界、错误传播及 flush。只更新两 ABI 的 `libmvcodec.so`，其余 MPV/渲染/FEL/字幕库保持基线字节；Exo 另建 `libavcodec.so`，两套命名空间不混用。来源、手机逐像素证据、限制和回滚见 [C-AVS3](../docs/C-AVS3-video-decoding.md)。日常 APK 构建直接包含提交的能力，不需要额外开关。
 
 2026-09-16 P2-4第9.18节：为无ADB电视补充`WebHTV FEL wait sample`，仅FEL/视频INFO记录开启时每3秒采样一次descriptor bind/push的线程调度计数、CPU/墙钟及acquire fence的poll(0)状态，权限/计数缺失明确未知，采样开销独立记录。`WebHTV FEL descriptors: capability-v=1`独立记录GPU/驱动/API和push扩展支持/启用情况；不改变扩展启用、重建、位深、同步或线程。两ABI同锁libmpv、host与13项Java检查、TV64 APK验证通过，其余18库不变；来源、原始日志、哈希、判读限制及回滚见[任务第9.18节](../docs/P2-4-mpv-android-fel.md)。这是一份诊断候选，电视卡顿尚待新Web日志裁决。

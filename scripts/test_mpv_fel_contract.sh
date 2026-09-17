@@ -3,6 +3,7 @@ set -euo pipefail
 task_root="$(cd "$(dirname "$0")/.." && pwd)"
 mpv_source="${1:-$task_root/build/mpv-native/mpv-android/buildscripts/deps/mpv}"
 test_output="$(mktemp -d /private/tmp/webhtv-fel-contract.XXXXXX)"
+python3 "$task_root/scripts/test_mpv_fel_context_options.py" --mpv-source "$mpv_source"
 awk '
   /^static bool should_use_android_fel_output\(/ || /^void reinit_video_chain_src\(/ ||
   /^static int mp_property_android_fel_active\(/ || /^static int mp_property_video_frame_submitted\(/ { copying = 1 }

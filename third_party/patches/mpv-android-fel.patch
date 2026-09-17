@@ -4503,13 +4503,14 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
  #include <sys/stat.h>
  #include <time.h>
 
-@@ -31,12 +32,14 @@
+@@ -31,12 +32,15 @@
  #include "config.h"
  #include "common/common.h"
  #include "common/stats.h"
 +#include "filters/f_android_fel_perf.h"
  #include "misc/io_utils.h"
  #include "options/m_config.h"
++#include "options/m_option.h"
  #include "options/options.h"
  #include "options/path.h"
  #include "osdep/io.h"
@@ -4518,7 +4519,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
  #include "stream/stream.h"
  #include "sub/draw_bmp.h"
  #include "video/fmt-conversion.h"
-@@ -116,6 +119,7 @@
+@@ -116,6 +120,7 @@
      struct mp_pass_perf hwdec_perf;
      struct ra_hwdec_mapper *el_hwdec_mapper;
      struct timer_pool *el_hwdec_timer;
@@ -4526,7 +4527,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      struct timer_pool *sw_upload_timer;
      struct mp_pass_perf sw_upload_perf;
 
-@@ -170,6 +174,10 @@
+@@ -170,6 +175,10 @@
      // Performance data of last frame
      struct frame_info perf_fresh;
      struct frame_info perf_redraw;
@@ -4537,7 +4538,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
 
      struct mp_image_params target_params;
  };
-@@ -577,10 +585,40 @@
+@@ -577,10 +586,40 @@
      return desc.num_planes;
  }
 
@@ -4578,7 +4579,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      if (*mapper) {
          if (mp_image_params_static_equal(par, &(*mapper)->src_params)) {
              (*mapper)->src_params.repr.dovi = par->repr.dovi;
-@@ -964,6 +1002,7 @@
+@@ -964,6 +1003,7 @@
          }
 
          par = p->hwdec_mapper->dst_params;
@@ -4586,7 +4587,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
          fp->mapped_coordinates =
              p->hwdec_mapper->dst_params_map_coordinates;
          fp->mapped_params = par;
-@@ -1084,6 +1123,13 @@
+@@ -1084,6 +1124,13 @@
          if (el_ok) {
              pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
              frame->enhancement_layer = &fp->el_frame;
@@ -4600,7 +4601,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
          } else {
              MP_WARN(vo, "Failed setting up enhancement layer; "
                      "rendering base layer only.\n");
-@@ -1157,6 +1203,72 @@
+@@ -1157,6 +1204,72 @@
 
      frame->count = info->index + 1;
      pl_dispatch_info_move(&frame->info[info->index], info->pass);
@@ -4673,7 +4674,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
  }
 
  static void update_options(struct vo *vo)
-@@ -1500,8 +1612,45 @@
+@@ -1500,8 +1613,45 @@
      return 1;
  }
 
@@ -4719,7 +4720,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      struct priv *p = vo->priv;
      pl_options pars = p->pars;
      pl_gpu gpu = p->gpu;
-@@ -1550,6 +1699,7 @@
+@@ -1550,6 +1700,7 @@
          }
      }
 
@@ -4727,7 +4728,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      struct mp_image *preloaded = NULL;
      if (p->want_reset && frame->num_frames &&
          frame->frame_id > p->last_id)
-@@ -1639,6 +1789,7 @@
+@@ -1639,6 +1790,7 @@
 
      struct ra_swapchain *sw = p->ra_ctx->swapchain;
 
@@ -4735,7 +4736,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      struct pl_color_space target_csp = {0};
      // TODO: Implement this for all backends
      if (sw->fns->target_csp)
-@@ -1697,6 +1848,7 @@
+@@ -1697,6 +1849,7 @@
          external_params = set_colorspace_hint(p, NULL);
      }
 
@@ -4743,7 +4744,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      struct pl_swapchain_frame swframe;
      bool should_draw = sw->fns->start_frame(sw, NULL); // for wayland logic
      pl_swapchain pl_sw = get_active_swapchain(p);
-@@ -1808,6 +1960,7 @@
+@@ -1808,6 +1961,7 @@
 
          p->hwdec_map_retry = false;
          p->hwdec_map_failed = false;
@@ -4751,7 +4752,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
          switch (pl_queue_update(p->queue, &mix, &qparams)) {
          case PL_QUEUE_ERR:
              if (p->hwdec_map_retry) {
-@@ -1891,8 +2044,11 @@
+@@ -1891,8 +2045,11 @@
      }
 
      // Render frame
@@ -4763,7 +4764,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      stats_time_end(p->stats, "render");
      if (!render_ok) {
          MP_ERR(vo, "Failed rendering frame!\n");
-@@ -1930,7 +2086,10 @@
+@@ -1930,7 +2087,10 @@
      if (!valid)
          pl_tex_clear(gpu, swframe.fbo, (float[4]){0.0, 0.0, 0.0, 1.0});
 
@@ -4774,7 +4775,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      p->frame_pending = true;
      return VO_TRUE;
  }
-@@ -1941,13 +2100,21 @@
+@@ -1941,13 +2101,21 @@
      struct ra_swapchain *sw = p->ra_ctx->swapchain;
      pl_swapchain pl_sw = get_active_swapchain(p);
 
@@ -4796,7 +4797,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
  }
 
  static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
-@@ -2351,6 +2518,8 @@
+@@ -2351,6 +2519,8 @@
      struct priv *p = vo->priv;
 
      switch (request) {
@@ -4805,20 +4806,42 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      case VOCTRL_SET_PANSCAN:
          resize(vo);
          return VO_TRUE;
-@@ -2708,7 +2877,31 @@
+@@ -2694,6 +2864,26 @@
+     vo_control(ctx, VOCTRL_LOAD_HWDEC_API, params);
+ }
+
++static void set_android_fel_context_options(struct ra_ctx_opts *opts, bool vulkan)
++{
++    struct m_obj_settings context[] = {
++        {.name = vulkan ? "androidvk" : "android"}, {0}
++    };
++    struct m_obj_settings api[] = {
++        {.name = vulkan ? "vulkan" : "opengl"}, {0}
++    };
++    struct m_obj_settings *context_list = context;
++    struct m_obj_settings *api_list = api;
++    const struct m_option option = {
++        .type = &m_option_type_obj_settings_list,
++    };
++    // The config owns these lists. Replace and deep-copy through their option
++    // type so both fallback and config destruction can free them normally.
++    m_option_copy(&option, &opts->context_list, &context_list);
++    m_option_copy(&option, &opts->context_type_list, &api_list);
++    opts->probing = false;
++}
++
+ static int preinit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+@@ -2708,7 +2898,23 @@
      struct gl_video_opts *gl_opts = p->opts_cache->opts;
      struct ra_ctx_opts *ctx_opts = mp_get_config_group(vo, vo->global, &ra_ctx_conf);
      update_ra_ctx_options(vo, ctx_opts);
 +    if (vo->extra.android_dovi_fel) {
 +        // Override this context only, never the global option cache. A reused
 +        // player can return to its configured direct/GPU output on the next file.
-+        static struct m_obj_settings vk_context[] = {{.name = "androidvk"}, {0}};
-+        static struct m_obj_settings vk_api[] = {{.name = "vulkan"}, {0}};
-+        static struct m_obj_settings gl_context[] = {{.name = "android"}, {0}};
-+        static struct m_obj_settings gl_api[] = {{.name = "opengl"}, {0}};
-+        ctx_opts->context_list = vo->extra.android_dovi_fel_vulkan ? vk_context : gl_context;
-+        ctx_opts->context_type_list = vo->extra.android_dovi_fel_vulkan ? vk_api : gl_api;
-+        ctx_opts->probing = false;
++        set_android_fel_context_options(ctx_opts,
++                                       vo->extra.android_dovi_fel_vulkan != 0);
 +    }
      p->context = gpu_ctx_create(vo, ctx_opts);
 +    if (!p->context && vo->extra.android_dovi_fel &&
@@ -4826,10 +4849,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
 +    {
 +        // Preserve automatic-renderer fallback before creating any decoder.
 +        // Explicit Vulkan remains strict. Both paths keep the full FEL chain.
-+        static struct m_obj_settings gl_context[] = {{.name = "android"}, {0}};
-+        static struct m_obj_settings gl_api[] = {{.name = "opengl"}, {0}};
-+        ctx_opts->context_list = gl_context;
-+        ctx_opts->context_type_list = gl_api;
++        set_android_fel_context_options(ctx_opts, false);
 +        MP_WARN(vo, "WebHTV FEL startup: automatic Vulkan unavailable; "
 +                    "trying OpenGL in the same load.\n");
 +        p->context = gpu_ctx_create(vo, ctx_opts);
@@ -4837,7 +4857,7 @@ diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
      talloc_free(ctx_opts);
      if (!p->context)
          goto err_out;
-@@ -3178,6 +3371,7 @@
+@@ -3178,6 +3384,7 @@
              VO_CAP_FILM_GRAIN |
              VO_CAP_VFLIP |
              VO_CAP_GPU_DOVI |
