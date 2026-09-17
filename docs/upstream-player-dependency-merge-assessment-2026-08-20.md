@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-16 插入 `C-AVS3` [AVS3 视频解码](C-AVS3-video-decoding.md)：已授权全部可落地能力。uavs3d 基础档次 `0x20/0x22` 的 Exo → MPV 双 ARM 制品已构建；两套 ARM64 手机探针均通过 8/10-bit 逐像素与 flush 重放，提取器/包装/ELF 校验通过，正在完成 APK 实播。用户提供正式 P2 标准后校正 HPM 图片头，但输出 I 帧仍损坏、B slice 仍失败；真实 `0x32`/4K50 样片尚不支持，不能以 baseline 成果替代。P10 资料是语音实现。guard `C-AVS3-video`，基线 `dbff1ffecd973c6d89eef1bf139f7243ac6b3ead`，保护 104 个 `app/.cxx/` 文件；P2-4 保留原待电视结果状态。
+
 - 2026-09-16 P2-4 [9.24 用户主动绑定类型对照](P2-4-mpv-android-fel.md#p2-4-fel-bind-probe)已实现获批 B 第一层：四组 fresh record、默认关闭/独占/可取消、保持源所有权，不提交诊断 shader。真实 C ASan/UBSan、21 项 Java、Web 脚本、27 文件完整补丁、双 ABI/ELF/导出及 18 库边界通过；TV64 `202609161336`（SHA256 `9192d5a6df9cb5615f7bacaed8bd55200fd7240bacfd04727dd4324eca2e876e`）MPV 身份/全部 27 个其他原生库不变、CRC/v2 签名通过。guard `P2-4-fel-bind-probe`，基线 `8de0fd70942d513034fb8118de5229d7eb719622`；保护 104 个既有 `app/.cxx/` 文件。下一步电视主动运行对照，按结果继续 B；C 和整体流畅度验收仍等待设备证据。
 
 - 2026-09-16 P2-4 [9.23 起播一次选择 FEL](P2-4-mpv-android-fel.md#p2-4-fel-startup-selection)已实现：native 在实际选轨后建立 FEL VO/decoder，App 观察结果、取消识别后的销毁重载，并要求视频帧提交证据。guard `P2-4-fel-startup-selection` / upstream，基线 `5df95f475009ed0d04d864b60d7d22b229e87e95`，104 个既有 `app/.cxx/` 文件保护；真实 C 合同、34 项 Java 测试、双 ABI 及 18 库不变已通过。TV64 `202609161235` 内容/ZIP/v2 签名通过，SHA256 `f5c51f91c9bd1889417b813c86cd790ce5c84a861fe3a045cdea29fd65fb76ba`，暂无电视性能结果。下一步 B 有界绑定对照；C 继续等待设备证据。
@@ -50,6 +52,7 @@
 
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
+| 插入需求 | `C-AVS3` | 通用，Exo → MPV | AVS3 视频解码，基准档次与 High profile 分阶段验证 | uavs3d 8/10-bit 双 ARM 制品与两播放器 ARM64 逐像素/flush 验证通过，APK 实播进行中；0x32 正确图像仍未得到 | [C-AVS3-video-decoding.md](C-AVS3-video-decoding.md) |
 | 外挂及容器兼容桥已验收；常规构建开关已移除 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 2026-09-15 外挂/现有 Media3 SSA sample 兼容桥及字体已获用户验收；按用户“必需功能”要求删除实验开关，手机/电视 arm64 无参数 debug 构建及 JNI/编译接线核验通过，公共接线同时适用于 release（第 15 节）。输入 14/14、JNI/包装与设备 5 项通过；容器生命周期素材的基线失败已定位并修正，用户验收后不追加复测，限制见第 14 节。已接受复杂一核 CPU ≤40% / render+upload p95 ≤16.67 ms；MPV 独立修复保留。精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV 等仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
 | 插入需求 | `AV-DIAG-01` | 通用/App，Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D0–D5实现/产物补齐，覆盖与验证见14.13–14.14；设备/性能待用户实测 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
 | 22 | `E9-3` | Exo/App | 普通 HEVC 硬解 + Vulkan/libplacebo 的 DV5 色彩映射默认准入 | 2026-09-12默认准入已实现，三个定向测试类及 Mobile/Leanback arm64 Java 编译通过；保留原生杜比和设备能力门控，待新版包原场景复测 | [E9-3-exo-dv5-vulkan-renderer.md](E9-3-exo-dv5-vulkan-renderer.md) |

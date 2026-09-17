@@ -153,8 +153,10 @@ public class MpvPlayerEngine implements PlayerEngine {
         return decode == HARD;
     }
 
-    static String hardwareDecodeSoftwareFallbackOption() {
-        return HWDEC_SOFTWARE_FALLBACK_DISABLED;
+    static String hardwareDecodeSoftwareFallbackOption(int decode) {
+        // mpv also consults this option when hwdec=no. Explicit software mode
+        // must be allowed to open its decoder; hardware mode keeps its policy.
+        return decode == HARD ? HWDEC_SOFTWARE_FALLBACK_DISABLED : "yes";
     }
 
     @Override
@@ -987,7 +989,7 @@ public class MpvPlayerEngine implements PlayerEngine {
                 .configDir(MpvConfigStore.configDir())
                 .hwdec(surfaceDirect ? "mediacodec" : decode == HARD ? MpvPerformanceSetting.getHwdecOption() : "no")
                 .option(HWDEC_SOFTWARE_FALLBACK_OPTION,
-                        hardwareDecodeSoftwareFallbackOption())
+                        hardwareDecodeSoftwareFallbackOption(decode))
                 .audioSpdif(resolveAudioSpdifCodecs())
                 .multichannelPcm(MpvPerformanceSetting.isMultichannelPcm())
                 .logLevel("all=warn") // Diagnostic verbosity follows DebugLogStore; mpv.conf remains a separate user baseline.

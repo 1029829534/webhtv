@@ -1428,6 +1428,7 @@ public class PlayerManager implements ParseCallback {
         beginIjkRuntimeManualOverride();
         beginPlaybackTrace("switch-player-fresh");
         type = PlayerSetting.sanitizePlayer(type);
+        boolean resetVideoSurface = type != playerType;
         boolean wasPlayWhenReady = player.getPlayWhenReady();
         int decode = engine.getDecode();
         prepareSeq++;
@@ -1442,7 +1443,7 @@ public class PlayerManager implements ParseCallback {
         if (SpiderDebug.isEnabled()) SpiderDebug.log("player", "switch player fresh type=%d position=%d spec=%s", type, position, debugSpec());
         engine = buildEngine(playerType, decode);
         player = engine.getPlayer();
-        callback.onPlayerRebuild(player, false);
+        callback.onPlayerRebuild(player, resetVideoSurface);
         setMediaItem(Constant.TIMEOUT_PLAY);
         if (position > 0) seekTo(position);
         if (speed != 1f) setSpeed(speed);
@@ -1454,6 +1455,7 @@ public class PlayerManager implements ParseCallback {
         beginIjkRuntimeManualOverride();
         beginPlaybackTrace("switch-player-result");
         type = PlayerSetting.sanitizePlayer(type);
+        boolean resetVideoSurface = type != playerType;
         boolean wasPlayWhenReady = player.getPlayWhenReady();
         int decode = engine.getDecode();
         prepareSeq++;
@@ -1466,7 +1468,7 @@ public class PlayerManager implements ParseCallback {
         engine = buildEngine(playerType, decode);
         player = engine.getPlayer();
         playWhenReady = wasPlayWhenReady;
-        callback.onPlayerRebuild(player, false);
+        callback.onPlayerRebuild(player, resetVideoSurface);
         if (result.needParse() || useParse) {
             pendingSwitchRestore = true;
             pendingSwitchPositionMs = position;
@@ -1509,7 +1511,9 @@ public class PlayerManager implements ParseCallback {
         if (SpiderDebug.isEnabled()) SpiderDebug.log("player", "switch player type=%d persist=%s position=%d spec=%s", type, persist, position, debugSpec());
         engine = buildEngine(playerType, decode);
         player = engine.getPlayer();
-        callback.onPlayerRebuild(player, false);
+        // A Surface used by a CPU renderer stays connected after decoder release.
+        // A different player needs a new Surface before its GPU/codec can connect.
+        callback.onPlayerRebuild(player, true);
         if (spec == null || spec.getUrl() == null) return;
         this.playWhenReady = wasPlayWhenReady;
         if (reparseForPlayerSwitch(position, speed, repeat)) return;

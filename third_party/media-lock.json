@@ -76,26 +76,30 @@
       {
         "path": "third_party/patches/media3-playback-diagnostics.patch",
         "sha256": "338ee1df1719d67eb7f679a4ff4f2070a7003ef9cc037ddae57e732e52a52b97"
+      },
+      {
+        "path": "third_party/patches/media3-exo-avs3.patch",
+        "sha256": "d3e867c2e41cb917a1876aef333167a48e369b2174b087e233185fe5bd37dcf3"
       }
     ],
     "artifact_overrides": [
       {
         "coordinate": "androidx.media3:media3-common:1.11.0-alpha01-fongmi",
-        "aar_sha256": "81339bd78814f83987c2d3dd07dfbfd16b32ae34aabd23616abf4938a77bc696",
-        "sources_sha256": "8246ed46c227d87cb40ac5626967f98a32bc4fd29115f8fdaf80c7b9d5bc1dff",
-        "reason": "Committed local baseline including ASS; AV-DIAG-01 optional owner hooks, all unrelated class bytes preserved"
+        "aar_sha256": "4826fe94891fb584951c813a8e67a63aafe0816d6adf836317ed895c7eee9cfd",
+        "sources_sha256": "dc9aefdcf38b0b8a2a55a467476c67ac51094fe6a32995bd5e61bce079140bcc",
+        "reason": "C-AVS3 MIME/MP4/TS/Matroska support; all other committed class bytes preserved, including ASS and diagnostics"
       },
       {
         "coordinate": "androidx.media3:media3-container:1.11.0-alpha01-fongmi",
-        "aar_sha256": "f8ba1799d57439b8906c39fb93ec43b8770f271853ec772589747592d46d3130",
-        "sources_sha256": "b6fdc128c011920046543ba1699f7666eb2cae0567b5b96a15e3b0a4d1af0d62",
-        "reason": "E2-1 Dolby Vision parser safety plus E12-1 av3a sample entry"
+        "aar_sha256": "db23c133556a03df178090eef482ce427ae33f8e2d639ee82bdb6911b79b01e3",
+        "sources_sha256": "c681e7071d709b4826099388ae18d7d2713c2f55b768e4440d9c965734674da0",
+        "reason": "C-AVS3 MIME/MP4/TS/Matroska support; all other committed class bytes preserved, including ASS and diagnostics"
       },
       {
         "coordinate": "androidx.media3:media3-extractor:1.11.0-alpha01-fongmi",
-        "aar_sha256": "a7d798095700568c2f48cd7bc0bed67cb81ba13413f70fd359e530a07ad54b0c",
-        "sources_sha256": "ec22c28c9fef1f4fdb54b495da919a706d4a28b781ac6701790a259beee6dedd",
-        "reason": "E-SP2/E2-1/E3-1b/E4-1/E7-2/E12-1 extractor behavior plus AV3A MP4/CMAF and QuickTime wave/alac parsing"
+        "aar_sha256": "c1eb0ab5118469c128d153665839fd4ecd3be1c22558e741d1670e1bb2ca2725",
+        "sources_sha256": "bc864243c03f29722dddf1bedf58f24e3d83189d3f90c883ec294350651e4559",
+        "reason": "C-AVS3 MIME/MP4/TS/Matroska support; all other committed class bytes preserved, including ASS and diagnostics"
       },
       {
         "coordinate": "androidx.media3:media3-exoplayer:1.11.0-alpha01-fongmi",
@@ -146,16 +150,39 @@
       }
     ]
   },
+  "avs3_video": {
+    "decoder": {
+      "repo": "https://github.com/uavs3/uavs3d",
+      "commit": "0e20d2c291853f196c68922a264bcd8471d75b68",
+      "url": "https://codeload.github.com/uavs3/uavs3d/tar.gz/0e20d2c291853f196c68922a264bcd8471d75b68",
+      "sha256": "1c1eb778b6080bc01493180ea7ae671c6444ce3aa760b5d021ba882eb0f9e3a0",
+      "license": "BSD-3-Clause",
+      "profiles": [
+        "0x20",
+        "0x22"
+      ],
+      "bit_depths": [
+        8,
+        10
+      ],
+      "linkage": "static, separately built for Exo and MPV"
+    },
+    "ffmpeg_patch": {
+      "path": "third_party/patches/ffmpeg-avs3.patch",
+      "sha256": "4a04bf7d11b592602590983fec0e0e12c2769f2623ff19850e1d9e6df9b8a929"
+    }
+  },
   "nextlib": {
     "repo": "https://github.com/anilbeesetti/nextlib.git",
     "branch": "release/1.10.0-0.12.1",
     "commit": "6ff6cf9d0820382b3c233d018c52e4163b09d345",
-    "version": "1.10.0-0.12.1-fongmi-softload-av3a-ffmpeg901-r3",
+    "version": "1.10.0-0.12.1-fongmi-softload-av3a-avs3-ffmpeg901-r4",
     "upstream_version": "1.10.0-0.12.1",
     "patches": [
       "third_party/patches/nextlib-ffmpeg-soft-load-shedding.patch",
       "third_party/patches/nextlib-av3a.patch",
-      "third_party/patches/nextlib-ape-support.patch"
+      "third_party/patches/nextlib-ape-support.patch",
+      "third_party/patches/nextlib-avs3.patch"
     ],
     "ffmpeg_repo": "https://github.com/FongMi/FFmpeg.git",
     "ffmpeg_commit": "177f090e0503b7e013922ca903bde14b1c375f18",
@@ -164,6 +191,10 @@
     "abis": [
       "arm64-v8a",
       "armeabi-v7a"
-    ]
+    ],
+    "avs3_artifact": {
+      "aar_sha256": "bfd9c635cd18613c728e6e4d9635da2f80716d20adb1927b360cf5818085fb16",
+      "sources_sha256": "2a08cc5f58718a3da3dc437784891680a0710c376b322a385cd6e5adcde01492"
+    }
   }
 }

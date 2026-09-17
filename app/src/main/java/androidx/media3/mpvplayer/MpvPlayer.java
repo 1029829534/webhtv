@@ -279,7 +279,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private String initialSubtitleTrackId;
     private boolean pendingOsdSurfaceAttach;
     private volatile long pendingOsdSurfaceRequestId;
-    private long pendingOsdLoadGeneration = C.INDEX_UNSET;
+    private long pendingSurfaceLoadGeneration = C.INDEX_UNSET;
     private Surface pendingOsdSurface;
     private boolean fileLoaded;
     private boolean loadStarted;
@@ -531,7 +531,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         selectedVideoTrackDiagnostics = VideoTrackDiagnostics.empty();
         availableVideoTrackDiagnostics = VideoTrackDiagnostics.empty();
         resetAudioPlaybackDiagnostics();
-        pendingOsdLoadGeneration = C.INDEX_UNSET;
+        pendingSurfaceLoadGeneration = C.INDEX_UNSET;
         osdSurfaceUsedForCurrentMedia = initialOsdSurfaceRequested;
         setOsdSurfaceRequested(initialOsdSurfaceRequested);
         mainHandler.removeCallbacks(initialTrackSelectionGateTimeoutRunnable);
@@ -1266,6 +1266,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         if (videoOutput == null || videoOutput == this.videoOutput) {
             this.videoOutput = null;
             clearVideoOutput();
+            resumePendingSurfaceLoad();
         }
         return Futures.immediateVoidFuture();
     }
@@ -1498,32 +1499,40 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             applyShaderPipeline(true);
             Log.d(TAG, "load scheme=" + safeScheme(currentPlayableUri) + " urlLen=" + (currentPlayableUri == null ? 0 : currentPlayableUri.length()) + " hls=" + currentLikelyHls + " dash=" + currentLikelyDash);
             PlaybackTrace.log("mpv", playbackTraceId, "load scheme=%s urlLen=%d hls=%s dash=%s surface=%s attached=%s hwdec=%s vo=%s gpuContext=%s gpuApi=%s", safeScheme(currentPlayableUri), currentPlayableUri == null ? 0 : currentPlayableUri.length(), currentLikelyHls, currentLikelyDash, surface != null && surface.isValid(), surfaceAttached, config.hwdec(), config.vo(), config.gpuContext(), config.gpuApi());
-            if (deferLoadUntilOsdSurfaceReady(generation)) return;
+            if (deferLoadUntilSurfaceReady(generation)) return;
             startPreparedMedia(generation);
         } catch (Throwable e) {
             fail(classifyLoadError(e, e.getMessage()), PlaybackException.ERROR_CODE_IO_UNSPECIFIED);
         }
     }
 
-    private boolean deferLoadUntilOsdSurfaceReady(long generation) {
-        if (!requiresOsdSurface() || !(videoOutput instanceof SurfaceView)) return false;
-        boolean settled = pendingOsdSurfaceRequestId == 0
-                && osdSurfaceAttached == osdSurfaceRequested;
-        if (settled) return false;
-        pendingOsdLoadGeneration = generation;
-        SpiderDebug.log("mpv", "initial OSD gate waiting before load generation=%d requested=%s attached=%s pending=%d valid=%s",
-                generation, osdSurfaceRequested, osdSurfaceAttached,
-                pendingOsdSurfaceRequestId,
-                osdSurface != null && osdSurface.isValid());
+    private boolean isSurfaceReadyForLoad() {
+        // A visible SurfaceView may exist before Android creates its Surface.
+        // Headless/background audio must not wait for a window that is not shown.
+        if (videoOutput instanceof SurfaceView view && view.isShown()
+                && view.getWindowVisibility() == View.VISIBLE
+                && (surface == null || !surface.isValid() || !surfaceAttached
+                || attachedSurface != surface)) return false;
+        return !requiresOsdSurface() || !(videoOutput instanceof SurfaceView)
+                || (pendingOsdSurfaceRequestId == 0
+                && osdSurfaceAttached == osdSurfaceRequested);
+    }
+
+    private boolean deferLoadUntilSurfaceReady(long generation) {
+        if (isSurfaceReadyForLoad()) return false;
+        pendingSurfaceLoadGeneration = generation;
+        SpiderDebug.log("mpv", "initial surface gate waiting before load generation=%d videoAttached=%s osdRequested=%s osdAttached=%s pending=%d",
+                generation, surfaceAttached, osdSurfaceRequested, osdSurfaceAttached,
+                pendingOsdSurfaceRequestId);
         return true;
     }
 
-    private void resumePendingOsdLoad() {
-        long generation = pendingOsdLoadGeneration;
-        if (generation == C.INDEX_UNSET || pendingOsdSurfaceRequestId != 0
-                || osdSurfaceAttached != osdSurfaceRequested) return;
-        pendingOsdLoadGeneration = C.INDEX_UNSET;
-        SpiderDebug.log("mpv", "initial OSD gate ready before load generation=%d", generation);
+    private void resumePendingSurfaceLoad() {
+        long generation = pendingSurfaceLoadGeneration;
+        if (generation == C.INDEX_UNSET || released || stopping || !initialized
+                || playerError != null || !isSurfaceReadyForLoad()) return;
+        pendingSurfaceLoadGeneration = C.INDEX_UNSET;
+        SpiderDebug.log("mpv", "initial surface gate ready before load generation=%d", generation);
         startPreparedMedia(generation);
     }
 
@@ -3122,7 +3131,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         }
         reconcileOsdSurface();
         if (error >= MPVLib.MpvError.MPV_ERROR_SUCCESS) {
-            resumePendingOsdLoad();
+            resumePendingSurfaceLoad();
         }
     }
 
@@ -3142,6 +3151,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 Log.d(SIZE_TAG, "mpv resize attached surface cached=" + surfaceWidth + "x" + surfaceHeight + " vo=" + targetVo);
                 SpiderDebug.log("mpv", "surface resized surface=%s size=%dx%d vo=%s", surface, surfaceWidth, surfaceHeight, targetVo);
                 reconcileOsdSurface();
+                resumePendingSurfaceLoad();
                 return;
             }
             if (surfaceAttached || osdSurfaceAttached) detachMpvSurface();
@@ -3157,6 +3167,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             Log.d(SIZE_TAG, "mpv bind surface valid=" + surface.isValid() + " cached=" + surfaceWidth + "x" + surfaceHeight + " vo=" + targetVo);
             SpiderDebug.log("mpv", "surface attached video=%s osd=%s size=%dx%d vo=%s", surface, osdSurface, surfaceWidth, surfaceHeight, targetVo);
             reconcileOsdSurface();
+            resumePendingSurfaceLoad();
         } catch (Throwable e) {
             fail(mpvError(ERROR_VIDEO_OUTPUT_FAILED, e.getMessage(), e), PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED);
         }
@@ -3377,6 +3388,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             // before OSD and keep the selected VO for transient window loss,
             // otherwise MPV may reopen MediaCodec on the released Surface.
             detachMpvSurface(false);
+            resumePendingSurfaceLoad();
         }
     };
 
@@ -3418,7 +3430,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     };
 
     private void stopInternal(boolean resetState) {
-        pendingOsdLoadGeneration = C.INDEX_UNSET;
+        pendingSurfaceLoadGeneration = C.INDEX_UNSET;
         initialTrackSelectionGateActive = false;
         mainHandler.removeCallbacks(initialTrackSelectionGateTimeoutRunnable);
         restorePreloadCacheOverlay();

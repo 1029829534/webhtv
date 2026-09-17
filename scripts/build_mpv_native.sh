@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export WEBHTV_ROOT="$ROOT"
 LOCK_FILE="$ROOT/third_party/mpv-native-lock.json"
 OVERRIDE_DIR="$ROOT/third_party/mpv-native-overrides"
 MPV_DISC_PATCH="$ROOT/third_party/patches/mpv-stream-cb-disc-controls.patch"
@@ -345,6 +346,8 @@ prepare_framework() {
   cp "$OVERRIDE_DIR/nghttp2.sh" "$BUILDSCRIPTS/scripts/nghttp2.sh"
   cp "$OVERRIDE_DIR/curl.sh" "$BUILDSCRIPTS/scripts/curl.sh"
   cp "$OVERRIDE_DIR/mpv.sh" "$BUILDSCRIPTS/scripts/mpv.sh"
+  cp "$OVERRIDE_DIR/ffmpeg.sh" "$BUILDSCRIPTS/scripts/ffmpeg.sh"
+  cp "$OVERRIDE_DIR/uavs3d.sh" "$BUILDSCRIPTS/scripts/uavs3d.sh"
   local lock_hash
   lock_hash="$(sha256_file "$LOCK_FILE")"
   printf '\n# WebHTV wrapper cache identity: exact selected lock file.\nci_tarball="prefix-webhtv-%s.tgz"\n' \
@@ -447,6 +450,9 @@ prepare_sources() {
     -r "$deps/mbedtls/scripts/basic.requirements.txt"
   checkout_repo dav1d "$DAV1D_REPO" "$DAV1D_COMMIT" "$deps/dav1d"
   checkout_repo FFmpeg "$FFMPEG_REPO" "$FFMPEG_COMMIT" "$deps/ffmpeg"
+  mkdir -p "$deps/uavs3d"
+  git -C "$deps/ffmpeg" apply --check "$ROOT/third_party/patches/ffmpeg-avs3.patch"
+  git -C "$deps/ffmpeg" apply "$ROOT/third_party/patches/ffmpeg-avs3.patch"
   [ -f "$FFMPEG_PROXY_RANGE_PATCH" ] || die "missing FFmpeg proxy range patch: $FFMPEG_PROXY_RANGE_PATCH"
   git -C "$deps/ffmpeg" apply --check "$FFMPEG_PROXY_RANGE_PATCH"
   git -C "$deps/ffmpeg" apply "$FFMPEG_PROXY_RANGE_PATCH"
@@ -768,6 +774,7 @@ verify_directory() {
   grep -Fq "WebHTV AImageReader uses stable release/acquire flow" <<<"$version_strings" || die "MPV Android stable AImageReader release/acquire patch missing from $directory/libmpv.so"
   grep -Fq "Using declared Matroska segment end for seek metadata." <<<"$version_strings" || die "MPV Matroska segment seek patch missing from $directory/libmpv.so"
   grep -Fq "libarcdav3a AV3A" <<<"$codec_strings" || die "FFmpeg AV3A decoder missing from $directory/libmvcodec.so"
+  grep -Fq "libuavs3d" <<<"$codec_strings" || die "FFmpeg AVS3 decoder missing from $directory/libmvcodec.so"
   grep -Fq "failing hardware decode so the player can fall back" <<<"$codec_strings" || die "FFmpeg MediaCodec fallback patch missing from $directory/libmvcodec.so"
   grep -Fq "WebHTV hardware audio MediaCodec decoder:" <<<"$codec_strings" || die "FFmpeg hardware audio MediaCodec patch missing from $directory/libmvcodec.so"
   grep -Fq "WebHTV MediaCodec output release/flush serialization enabled" <<<"$codec_strings" || die "FFmpeg MediaCodec output serialization missing from $directory/libmvcodec.so"
@@ -883,7 +890,7 @@ build_abi() {
   export WEBHTV_ANDROID_API_LEVEL="$ANDROID_API_LEVEL"
   local targets=(
     libiconv uchardet bzip2 xz zstd mbedtls dav1d libxml2 freetype2
-    libaribcaption ffmpeg fontconfig fribidi harfbuzz unibreak libass lua
+    libaribcaption uavs3d ffmpeg fontconfig fribidi harfbuzz unibreak libass lua
     shaderc libplacebo
   )
   if [ "$ENABLE_LIBCURL" -eq 1 ]; then
@@ -912,6 +919,7 @@ build_abi() {
       libxml2) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libxml2.a" ] ;;
       freetype2) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfreetype.a" ] ;;
       libaribcaption) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libaribcaption.a" ] ;;
+      uavs3d) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libuavs3d.a" ] ;;
       ffmpeg) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libavcodec.so" ] ;;
       fontconfig) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfontconfig.a" ] ;;
       fribidi) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfribidi.a" ] ;;

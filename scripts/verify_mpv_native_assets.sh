@@ -249,6 +249,7 @@ verify_abi() {
   contains_string "$directory/libmpv.so" "WebHTV AImageReader uses stable release/acquire flow"
   contains_string "$directory/libmpv.so" "Using declared Matroska segment end for seek metadata."
   contains_string "$directory/libmvcodec.so" "libarcdav3a AV3A"
+  contains_string "$directory/libmvcodec.so" "libuavs3d"
   contains_string "$directory/libmvcodec.so" "libaribcaption"
   contains_string "$directory/libmvcodec.so" "Timed Text Markup Language subtitle"
   contains_string "$directory/libmvformat.so" "MMT protocol over TLV packets"
