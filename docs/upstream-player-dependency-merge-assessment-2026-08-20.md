@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-17 P2-4 [9.26 显式输出P8 HDR10兼容](P2-4-mpv-android-fel.md)：已修复显式GPU模式跳过现有P8→HDR10判断；48秒Mobile64构建/安装及37份原生库身份检查通过，手机已取得HDR10/MediaCodec/PQ，用户实播确认“可以了，打个tag”。guard `P2-4-p81-hdr10-compat`，回滚 `c9a1ac99d05f2d8bcac0558b725d34e196b468e2` / `v5.6.0-202609171247-fel-crash-fixed`，104个原有 `app/.cxx/` 文件保护；自动取帧/相邻场景边界见任务文档，无native或依赖改动，按用户确认立即提交/tag。
+
 - 2026-09-17 P2-4 [9.25 FEL起播配置所有权修复](P2-4-mpv-android-fel.md)：已用mpv选项深拷贝修复9.23静态GPU配置在析构时触发的native SIGABRT；真实allocator旧错误复现/修复7路径、双ABI/ELF/补丁往返及18库不变通过，最终Mobile64已安装，原DV7样片完整FEL/Vulkan硬解出帧、seek和退出通过。guard `P2-4-fel-context-ownership`，基线 `8919cf134218a3d3bb30f91f3180e9cd83eac982`；AVS3/AV3A及视频手动切换合同保留。9.24电视性能裁决继续等待目标设备日志。
 
 - 2026-09-17 `C-AVS3` [AVS3 视频解码](C-AVS3-video-decoding.md)：基础档次 `0x20/0x22` 双ARM制品、两套ARM64 8/10-bit逐像素/flush、Exo MP4/MKV实播及Surface修复已提交 `769e53471dbb3e9ad4f9b94842099ba97a92fdbd`，并获用户确认/tag。后续已移除Exo硬解模式的AVS3软件后备：视频仅手动切换，音频允许回退；修复APK及MPV/音频定向测试通过，用户确认并要求tag，guard `C-AVS3-video-hardware-only`。保护104个 `app/.cxx/` 文件；原始 `0x32`/4K50仍不支持；P2-4保留待电视结果状态。

@@ -1,6 +1,28 @@
 # P2-4：Android MPV DV7 FEL 双层重建
 
-## Recovery anchor（当前：9.25，FEL 起播配置所有权修复）
+## Recovery anchor（当前：9.26，恢复显式输出模式的 P8 HDR10 兼容）
+
+- 目标/验收：设备不支持原生 P8 时，沿用已有 HDR10 降级，原样片在用户选择的 GPU/Vulkan、视频硬解模式下实际出帧并可跳转；保留完整 FEL。用户已明确要求恢复该行为，无待批准事项。
+- 工作区/回滚：`feature/mpv-dv7-fel` / `c9a1ac99d05f2d8bcac0558b725d34e196b468e2`，已创建 `v5.6.0-202609171247-fel-crash-fixed`；guard `P2-4-p81-hdr10-compat` / quick-fix，保护原有104个 `app/.cxx/` 文件。
+- 范围：仅 `PlayerManager.java` 的既有兼容判断入口、本文/索引及 `build/p81-hdr10-compat/`、既有隔离C++构建输出；不改 native、依赖、解码模式或原生DV能力判断。
+- 已有证据：手机原 `P8.1_4K60_GlassBlowing.mkv` 在显式GPU/Vulkan硬解下 `Video: no video`，native拒绝不支持的DV路径并正确禁止软件后备；App在非AUTO模式提前返回，已有 `updateDv8Handling` 未执行。证据 `/private/tmp/webhtv-p81-regression-20260917/`。
+- 状态：入口修复、48秒Mobile64构建及安装完成，包内27份原生库及10份MPV资产与上个FEL修复包逐字节一致；手机已确认 `hdr10`、`mediacodec`、`pq` 及GPU/Vulkan硬解。用户随后明确“可以了，打个tag”，以用户实播确认闭合该场景，不追加验证。
+- 验证边界：自动探针在起播541ms取到单色帧，未完成画面/seek/FEL相邻场景，不能记为自动验证通过；用户实播确认后停止可选检查。FEL实际激活后的提前返回和全部原生库保持。
+- 唯一下一动作：按用户确认用当前guard原子提交并创建本地恢复tag，不推送；后台监听保持。
+
+## 9.26 显式输出模式下恢复 P8→HDR10（2026-09-17）
+
+这是既有兼容政策的局部回归修复，沿用本任务已完成的mpv/Android能力研究，不增加上游集成。2026-09-17本地读码证据：`PlayerManager.shouldEvaluateMpvOutput/evaluateMpvAutoOutput` 只为AUTO或FEL请求调度，且显式输出在P8兼容判断前返回；`MpvPlayerEngine.getVideoPlaybackDetails` 已可读取未选中源视频轨，`selectDv8Handling` 已规定“原生DV明确不支持且HEVC HDR10明确支持”时选 `hdr10`；native已有 `demuxer-dovi-profile8=hdr10` 保留HEVC Main10/HDR10基础层并移除DV元数据。使用这些现有入口，保留UNKNOWN三态和严格硬解合同。
+
+方案比较：不改会继续无画面；扩展native对样片兼容ID的处理超出恢复既有HDR10功能所需范围；自动转视频软解违反用户合同。采用窄适配：硬解MPV也调度判断，显式模式仅允许源Profile 8执行已有HDR10兼容，随后立即返回，不进入AUTO输出/渲染选择；兼容变化通过 `rebuildAndRestartMpv(null, ...)` 保持用户GPU/直出及Vulkan/OpenGL设置，重用已有位置/速度/播放状态恢复。实际FEL激活仍先返回，无第二次重载。
+
+手机样片名称虽为P8.1，容器实际声明Profile 8、compatibility ID 6；保持原始声明，不把6改成1、不放宽native拒绝条件。已知正常版本 `v5.6.0-202609061650` 中也存在同类native拒绝条件，因此不能归咎于AVS3新增该条件。
+
+最小验证：一次Mobile ARM64离线构建，包内原生库与已安装FEL修复包逐字节相同；原样片在显式GPU/Vulkan+硬解下实际 `hdr10`/MediaCodec/PQ、真实画面与seek，另核对FEL请求关闭时兼容入口和一个FEL相邻场景。无新依赖、ABI、逐帧处理或native重建。完成后本guard原子提交/tag，不推送；回滚为上述已验证FEL提交。
+
+交付结果：`build/p81-hdr10-compat/gradle.log` 显示Mobile64构建48秒通过；APK为 `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk`，165335184字节，SHA256 `18e641a666268a80369bf426d7761f1e9d3d740cacdd63c5d341b677589befe2`。`apk-verification.json` 确认27份原生库、10份MPV资产与基线相同，CRC/v2签名通过，ZIP开销763799字节；`install.log` 确认安装成功。`device-probe.log` 已取得P8 `handling=hdr10 hwdec=mediacodec gamma=pq output=GPU/Vulkan hard=true FEL=false`；首次PixelCopy在541ms仅有一种色值，后续自动场景未执行。随后用户实际播放确认“可以了，打个tag”，接受当前修复并要求立即闭合；未将该自动取帧失败记为通过，未追加构建或相邻测试。
+
+## 历史 Recovery anchor（9.25，FEL 起播配置所有权修复）
 
 - 目标：修复手机开启DV7/FEL后native abort，保留完整FEL及手动视频解码合同；用户2026-09-17明确“修复”，无需再次确认。
 - 工作区/回滚：`feature/mpv-dv7-fel` / `8919cf134218a3d3bb30f91f3180e9cd83eac982`，guard `P2-4-fel-context-ownership` / upstream；保护104个原有 `app/.cxx/` 文件。

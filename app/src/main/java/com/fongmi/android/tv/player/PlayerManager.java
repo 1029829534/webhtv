@@ -4786,16 +4786,19 @@ public class PlayerManager implements ParseCallback {
         Tracks tracks = engine.getCurrentTracks();
         boolean tracksReady = tracks != null && !tracks.isEmpty();
         if (!tracksReady) return false;
-        // Explicit output modes retain their original behavior on all other
-        // content; the extra evaluation is solely for FEL activation.
-        if (MpvPerformanceSetting.getOutputMode() != MpvPerformanceSetting.OUTPUT_AUTO) {
-            mpvAutoOutputEvaluated = true;
-            return true;
-        }
+        boolean automaticOutput = MpvPerformanceSetting.getOutputMode()
+                == MpvPerformanceSetting.OUTPUT_AUTO;
         Format format = tracksReady ? engine.getVideoFormat() : null;
         PlayerEngine.VideoPlaybackDetails videoDetails = engine.getVideoPlaybackDetails();
         boolean dolbyVision = videoDetails != null
                 && videoDetails.hasDolbyVisionSource();
+        // P8 HDR10 compatibility is also required with an explicit output
+        // backend. Leave other explicit-mode content on its existing path.
+        if (!automaticOutput && (!mpv.isHard() || !dolbyVision
+                || videoDetails.dolbyVisionProfile() != 8)) {
+            mpvAutoOutputEvaluated = true;
+            return true;
+        }
         if (!dolbyVision && (format == null || !tracks.containsType(C.TRACK_TYPE_VIDEO))) {
             return false;
         }
@@ -4834,6 +4837,15 @@ public class PlayerManager implements ParseCallback {
         boolean dv8HandlingChanged = dolbyVision
                 && videoDetails.dolbyVisionProfile() == 8
                 && mpv.updateDv8Handling(dolbyVisionSupport, hevcHdr10Support);
+        if (!automaticOutput) {
+            mpvAutoOutputEvaluated = true;
+            if (dv8HandlingChanged) {
+                if (SpiderDebug.isEnabled()) SpiderDebug.log("mpv-output", "P8 compatibility handling=%s dvSupport=%s hdr10Support=%s explicitOutput=%d", mpv.getDv8HandlingOption(), dolbyVisionSupport, hevcHdr10Support, MpvPerformanceSetting.getOutputMode());
+                // Preserve the chosen output/render backend and decode mode.
+                rebuildAndRestartMpv(null, "compat-dv8-" + mpv.getDv8HandlingOption());
+            }
+            return true;
+        }
         dv7Hdr10FallbackEnabled = dolbyVision
                 && videoDetails.dolbyVisionProfile() == 7
                 && mpv.isDv7Hdr10Active();
@@ -4959,7 +4971,8 @@ public class PlayerManager implements ParseCallback {
 
     private boolean shouldEvaluateMpvOutput() {
         return MpvPerformanceSetting.getOutputMode() == MpvPerformanceSetting.OUTPUT_AUTO
-                || engine instanceof MpvPlayerEngine mpv && mpv.isDv7FelRequested();
+                || engine instanceof MpvPlayerEngine mpv
+                && (mpv.isDv7FelRequested() || mpv.isHard());
     }
 
     private boolean prepareMpvFelOutput(MpvPlayerEngine mpv) {
