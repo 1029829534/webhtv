@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-18 `AV-DIAG-01` [14.18 单视频轨无效重选与重复能力日志优化](AV-DIAG-01-playback-diagnostics.md#1418-单视频轨无效重选与重复能力日志优化2026-09-18)：两项优化已实现，32项定向用例通过；日志35的18次实际查询回放将候选事件从222条减至56条。TV32快速Release在3分12秒内打包成功，APK/ZIP/签名证据及SHA-256见唯一文档；未安装、实际电视掉帧收益待在线日志对照。guard `AV-DIAG-01-EXO-RESELECT`，基线 `4818057cd64c2c62c94e7208d9121719b4d11fe0`，保护104个 `app/.cxx/` 文件；仅App Java和定向测试，native保持；本单元原子提交/tag收尾。
+
 - 2026-09-17 `C-AVS3` [AVS3 视频解码](C-AVS3-video-decoding.md)：HPM 15.0 的0x32软件后端已提交 `edf4324034fe1681a658dd4557dd8451fcfdb792`，用户接受设备4K50软件吞吐限制；重复续播seek已修复于 `13053755eaea00aa9c6449e8ad55c2ccf1fbc68a`。获批的MPV AVS3 MediaCodec接入已完成双ARM库与Mobile64 APK；ASan/UBSan、完整补丁链、双ABI/16KB/导出、9项Java检查及手机真实JNI/NDK无硬件拒绝通过，guard `C-AVS3-mpv-mediacodec`收尾。硬解出帧/profile/性能仍需具备AVS3硬件的目标设备实测；手动解码、FEL/ASS/软件后端与其他native制品保持。
 
 - 2026-09-17 新需求 `P10` [MPV全局智能去广](P10-mpv-smart-adblock.md)：已复用Exo识别，借鉴Kodi/mpv SponsorBlock在原时间轴跳过广告，保持原HLS清单、IV/Range及总时长。15项单测、Mobile ARM64构建/安装、37份原生库与资源身份检查、真机开关/自动跳过/手动seek/AES隐式IV/主清单/暂停/切源通过。guard `P10-mpv-smart-adblock`，基线 `54e7947c272a7b3ebad8b80bfab4c889e1ea86d5`，保护104个 `app/.cxx/` 文件；同一原子提交/tag收尾，无native或依赖变更。完整研究、边界和回滚见唯一任务文档。

@@ -18,6 +18,7 @@ import com.github.catvod.crawler.DebugLogStore;
 import com.github.catvod.crawler.diagnostics.DiagnosticEvent;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 import static com.github.catvod.crawler.diagnostics.DiagnosticEvent.Status.*;
@@ -83,27 +84,61 @@ final class ExoDiagnosticCodecAdapter extends ForwardingMediaCodecAdapter {
     }
 
     static void candidates(ExoDiagnosticCollector collector, List<MediaCodecInfo> infos, String mime, boolean secure, boolean tunnel, String policy) {
-        if (collector == null || !PlaybackDiagnosticCollector.enabled()) return;
+        if (collector == null) return;
         boolean video = mime != null && mime.startsWith("video/");
         String event = video ? "video.candidates" : "audio.candidates";
-        if (infos.isEmpty()) collector.log.emit(event, "codec-selector", e -> e.observed("mime", mime)
-                .observed("candidateCount", 0).observed("reason", policy).observed("secure", secure).observed("tunneling", tunnel));
-        for (int i = 0; i < infos.size(); i++) {
-            MediaCodecInfo info = infos.get(i); int index = i;
-            collector.log.emit(event, "codec-selector", e -> e.observed("mime", mime).observed("candidateIndex", index)
-                    .observed("candidateCount", infos.size()).observed("decoderName", info.name)
-                    .observed("hardwareAccelerated", info.hardwareAccelerated).observed("softwareOnly", info.softwareOnly)
-                    .observed("vendor", info.vendor).observed("secure", secure).observed("tunneling", tunnel)
-                    .observed("reason", policy).observed("metricScope", "selector result; renderer may further filter/order"));
+        if (!DebugLogStore.acceptsEvent(event)) return;
+        Context owner = collector.log.context();
+        List<ExoDiagnosticCodecSnapshotCache.Candidate> candidates = new ArrayList<>(infos.size());
+        for (MediaCodecInfo info : infos) {
+            List<ExoDiagnosticCodecSnapshotCache.Profile> levels = new ArrayList<>();
+            int profileCount = 0;
+            boolean readable = true;
             try {
                 android.media.MediaCodecInfo.CodecProfileLevel[] profiles = info.getProfileLevels();
+                profileCount = profiles.length;
                 for (int p = 0; p < Math.min(64, profiles.length); p++) {
-                    android.media.MediaCodecInfo.CodecProfileLevel profile = profiles[p];
-                    collector.log.emit(event, "codec-capabilities", e -> e.observed("decoderName", info.name)
-                            .observed("profile", profile.profile).observed("level", profile.level)
-                            .observed("truncated", profiles.length > 64).observed("metricScope", "Android capability declaration"));
+                    levels.add(new ExoDiagnosticCodecSnapshotCache.Profile(profiles[p].profile, profiles[p].level));
                 }
-            } catch (RuntimeException ignored) { DebugLogStore.collectorFailure(); }
+            } catch (RuntimeException ignored) {
+                readable = false;
+                DebugLogStore.collectorFailure();
+            }
+            candidates.add(new ExoDiagnosticCodecSnapshotCache.Candidate(info.name,
+                    info.hardwareAccelerated, info.softwareOnly, info.vendor, profileCount, levels, readable));
+        }
+        ExoDiagnosticCodecSnapshotCache.Observation observation = collector.codecSnapshots.observe(
+                owner, DebugLogStore.captureGeneration(),
+                new ExoDiagnosticCodecSnapshotCache.Query(mime, secure, tunnel, policy), candidates);
+        String snapshotId = collector.log.instanceId() + "-codecs-" + observation.snapshotId();
+        if (!observation.fullSnapshot()) {
+            collector.log.emit(owner, event, "codec-selector", "engine-context", e -> e
+                    .observed("phase", "snapshot-reuse").observed("snapshotId", snapshotId)
+                    .observed("queryCount", observation.queryCount()).observed("candidateCount", candidates.size())
+                    .observed("mime", mime).observed("secure", secure).observed("tunneling", tunnel)
+                    .observed("reason", policy));
+            return;
+        }
+        if (candidates.isEmpty()) collector.log.emit(owner, event, "codec-selector", "engine-context", e -> e
+                .observed("snapshotId", snapshotId).observed("mime", mime).observed("candidateCount", 0)
+                .observed("reason", policy).observed("secure", secure).observed("tunneling", tunnel));
+        for (int i = 0; i < candidates.size(); i++) {
+            ExoDiagnosticCodecSnapshotCache.Candidate info = candidates.get(i);
+            int index = i;
+            collector.log.emit(owner, event, "codec-selector", "engine-context", e -> e
+                    .observed("snapshotId", snapshotId).observed("mime", mime).observed("candidateIndex", index)
+                    .observed("candidateCount", candidates.size()).observed("decoderName", info.name())
+                    .observed("hardwareAccelerated", info.hardwareAccelerated()).observed("softwareOnly", info.softwareOnly())
+                    .observed("vendor", info.vendor()).observed("secure", secure).observed("tunneling", tunnel)
+                    .observed("reason", policy).observed("metricScope", "selector result; renderer may further filter/order"));
+            for (ExoDiagnosticCodecSnapshotCache.Profile profile : info.profiles()) {
+                collector.log.emit(owner, event, "codec-capabilities", "engine-context", e -> e
+                        .observed("snapshotId", snapshotId).observed("candidateIndex", index).observed("decoderName", info.name())
+                        .observed("profile", profile.profile()).observed("level", profile.level())
+                        .observed("truncated", info.profileCount() > 64).observed("metricScope", "Android capability declaration"));
+            }
+            if (!info.readable()) collector.log.emit(owner, event, "codec-capabilities", "engine-context", e -> e
+                    .observed("snapshotId", snapshotId).observed("decoderName", info.name()).unknown("profiles", READ_ERROR));
         }
     }
 

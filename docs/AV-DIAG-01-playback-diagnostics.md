@@ -889,6 +889,46 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 - 验证：JDK21 下 `:app:compileMobileArm64_v8aDebugJavaWithJavac` 一次通过，耗时38秒，39项任务中2项执行、37项复用；使用既有隔离 CMake init-script。`git diff --check` 通过，编译日志位于 `build/avdiag-audio-hint/compile.log`。无新增测试、native重编或设备操作；未打包/安装 APK，不以编译代替 HDMI/AVR 的真实出声验证。
 - 回滚：将本单元两个文件恢复至基线提交；不回退其他播放器修复。
 
+### 14.18 单视频轨无效重选与重复能力日志优化（2026-09-18）
+
+用户在核对日志35后明确批准两项优化：只有可用的替代视频规格才执行自动约束；解码能力首次/变化时完整记录，重复查询复用快照。作为本诊断任务暴露的 Exo 性能修复，继续使用本文，不另建平行方案。基线 `4818057cd64c2c62c94e7208d9121719b4d11fe0`，guard `AV-DIAG-01-EXO-RESELECT` / standard；原有 `app/.cxx/` 104文件保护。06:35开始，06:55–07:00为代码、定向验证、TV32打包和原子提交/tag的执行目标。
+
+#### 证据与最佳实践决定
+
+| 来源 / 日期 / 等级 | 实际阅读内容、适用性与决定 |
+| --- | --- |
+| 用户 `webhtv-debug-log (35).txt`，2026-09-18 / A（记录事实） | `dvhe.05.09/3840×2160` 使用 `OMX.MS.DOLBY_VISION.DVHE.STN.Decoder`；单视频轨仍恢复/收紧约束。三轮播放线程能力日志各92条，跨度641/530/531ms，`sourceCapturedAtNs→enqueuedAtNs`累计461/365/358ms，含调度/锁等待，不能当纯CPU耗时。两段集中新增166/144掉帧；4条underrun是回调，feed age不是实际断音时长。导出标记partial，不能由此声称完整因果或最终收益 |
+| 当前 `ExoUtil.AutomaticVideoConstraintController`、`ExoDiagnosticCodecAdapter`、`PlaybackDiagnosticCollector`、`DiagnosticLogBuffer.event/offer`，基线同上 / A | 轨道形状只参与日志；`setParameters`仍执行。候选包装器在同步选轨路径逐项生成JSON，再入队；异步落盘并未移走生产端序列化。与用户APK `206a57e0e337304a8b78712c487ef245d7cb0fa0` 比较，相关逻辑仍在当前代码中 |
+| Media3锁 `e3e922d5c01bc0b564849940fe589daf37360d15`及实际本地sources.jar SHA-256 `4d158d63ab0a99688880d6acfdc73ed340f09fa9ac9dd1934fbaa0babfcad086`，2026-09-18 / A | 已读 `DefaultTrackSelector.setParametersInternal`、`MappingTrackSelector.selectTracks`、`ExoPlayerImplInternal.reselectTracksInternal`、`MediaCodecUtil.getDecoderInfos`、`MediaCodecVideoRenderer.maybeDropBuffersToKeyframe`。参数改变会重选并重新调用supportsFormat；列表本身有缓存，相同选轨结果不会必然重建renderer，flush也可能来自丢帧追赶。补读同revision的 `DefaultTrackSelectorTest` 视频约束/override测试，保留Media3本身的ABR和手选语义 |
+| [Media3 Track selection](https://developer.android.com/media/media3/exoplayer/track-selection)，2026-09-18 / A | 准备后以实际Tracks判断可用性，同一group代表同内容的不同格式，override表达用户选择。因此门控使用已选group内受支持的可自适应规格；不靠URL、协议名或仅manifest数量推断。固定轨、手选视频覆盖及尚无轨道信息时保留当前选择 |
+| [Media3 #2316](https://github.com/androidx/media/issues/2316)、[#824](https://github.com/androidx/media/issues/824)，2026-09-18 / D | 已读issue正文：轨道启用可能伴随停顿、ABR行为依赖真实可选轨与输入。未将用户报告当本设备因果或维护者方案；检索中的#2521预览缩略图无关，排除。不移植上游issue补丁 |
+| [spdlog v1.15.3 dup_filter_sink.h](https://github.com/gabime/spdlog/blob/v1.15.3/include/spdlog/sinks/dup_filter_sink.h)，2026-09-18 / B | 已读完整实现，借鉴重复信息计数；拒绝照搬字符串生成之后才过滤、按时间抑制任意事件的做法。WebHTV在逐项JSON生成之前比较结构化能力快照，每次重复查询仍发一条引用/累计查询次数，不抑制真实错误 |
+| [Log4j Performance](https://logging.apache.org/log4j/2.x/manual/performance.html)，2026-09-18 / A（官方实现建议） | 已读生产端避免昂贵参数/消息提前构造的说明；将判重放在候选事件展开之前，不在本修复中重构全局日志writer。此处不是新的调度/解码算法，学术论文和GPU benchmark不适用；目标电视性能仍须同片实测 |
+
+在线原文与哈希保留于 `build/avdiag-exo-reselect/research/`；使用仓库配置的127.0.0.1:7897代理。一次architecture旧URL返回404，线程语义由实际Media3源码确认，不依赖该页面。没有依赖升级、上游提交合入、native或ABI改变。
+
+| 方案 | 取舍 |
+| --- | --- |
+| 不修改 | 单轨无收益的选轨和重复JSON开销继续存在，不采用 |
+| 只恢复为原生Media3策略或关闭调试日志 | 前者移除项目已有多档位保护，后者失去正常诊断能力，不采用 |
+| 窄App适配（采用） | 轨道适用性门控保留初始化基线、实际多档位调整/恢复与手选；每个collector独立、有界、按媒体owner/capture generation隔离的能力快照记录首次/变化与重复引用。保留候选顺序、secure/tunneling/policy区分、完整错误和诊断分类 |
+
+实现范围为 `ExoUtil`、新增轨道适用性策略及测试、Exo诊断适配器/collector/快照缓存及测试、本文/索引。快照覆盖候选顺序、硬软属性、profile/level；读取失败不被当成可复用的成功能力。缓存不改变delegate查询结果，不保存播放器/Surface/native资源，不增加线程或周期采样。
+
+验收：固定单轨/未知/非自适应/不支持替代轨/手选不发自动约束；真实多规格仍使用现有冷却与恢复策略；重复能力不再展开整套候选事件，变化/清空/重新采集/切源重新完整记录，缓存有界且并发安全。一次定向JUnit与TV32快速Release构建；按同一日志三轮候选查询fixture核对输出事件量。电视无法ADB，目标电视DV5掉帧和听感收益不冒充已实测；构建产物供用户用同片段、同设置在线日志对照。
+
+回滚：本guard所有App源、测试、文档作为一个提交回退至上述基线；现有native、手动视频解码和音频直通策略保持。
+
+#### 实现与验证结果
+
+- `ExoVideoConstraintApplicability` 以当前已选video group、adaptive support、受支持格式的尺寸/帧率/码率差异和手选override决定适用性；未知与固定单轨返回不可调整。`AutomaticVideoConstraintController.buildInput` 在普通刷新和掉帧/codec故障两条路径共同门控，并撤销固定轨上的定时重评；切会话仍按原流程恢复初始化基线。多规格的原冷却/恢复策略不改，最低档被选中后也保留恢复资格。
+- `ExoDiagnosticCodecSnapshotCache` 每collector最多32个查询键，每键至多128个候选；以owner和capture generation隔离，准备新媒体/释放时清空。结构化快照包含候选次序、硬软/vendor属性及原有最多64条profile/level展开信息，保留truncated标记；MIME、secure、tunneling、policy分别建键。相同数据只输出带snapshotId/queryCount的单条引用；读取失败不缓存为成功，delegate的真实查询、排序及异常路径原样保留。全部JSON仍走现有脱敏/有界队列。
+- 32项不同的定向用例通过：原自动约束冷却/恢复16项、快照变化/会话/清空/有界/并发计数8项、单轨/手选/最低档恢复/未知规格等门控8项。第一轮24秒完成编译，门控测试因宿主JVM的 `Android TextUtils not mocked` 在构造Media3轨道对象时有7项环境失败；将平台对象读取与纯策略判断分开后，只重跑该8项，未放宽Android mock或断言。其余24项成功证据保留在 `first-test-results/`。
+- 单次最终Gradle执行在3分12秒内通过定向重验及 `:app:assembleLeanbackArmeabi_v7aRelease`，192项任务中33执行、4 from-cache、155 up-to-date；使用JDK21、`-PfastRelease=true` 和既有隔离CMake init-script。因上述测试夹具适配和TV32打包，收尾晚于最初06:55–07:00目标；未重复已通过的缓存/恢复用例，未增加设备矩阵。
+- 将日志35的18次实际codec-selector查询转换为fixture并调用编译后的生产缓存：4个完整快照、14次引用；原222条候选/profile事件变为56条，减少约74.8%。这是同一输入的诊断事件量结果，不是CPU或掉帧收益测量；独立的动态音频能力/错误事件继续记录。原始fixture、Java回放与输出分别为 `codec-query-fixture.json`、`CodecSnapshotReplay.java`、`replay-result.txt`。
+- TV32 APK：`app/build/outputs/apk/leanbackArmeabi_v7a/release/leanback-armeabi_v7a.apk`，125767037字节，SHA-256 `8df919f2188530913f8a3adaf833ab27133afc22ef6339a4da2e8baea4fd4525`。ZIP完整性、29个native条目均为armeabi-v7a及APK签名校验通过；未安装或发布。Java代码由手机/电视共用，构建证据不代替用户电视DV5的同片实测。
+- 所有本轮软件证据集中于 `build/avdiag-exo-reselect/`；源码和产物在本guard内按一个逻辑单元提交/tag。用户电视上的最终掉帧、重缓冲及听感变化仍需新版在线日志确认。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -992,11 +1032,11 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 
 ## 18. Recovery anchor / 后续唯一动作
 
-- Objective：修正音频直通时的面板误报；实际输出与结论一致，名称缺失不作失败证据，真实错误及掉帧仍有提示，见14.17。
-- Plan：局部修复与一次 Java 编译已完成，按本guard原子提交/tag收尾。
-- Current unit：`feature/mpv-dv7-fel` / 基线 `623b069261bf8f9d559969e9c99a6775e547443c`；guard `AV-DIAG-01-AUDIO-HINT`；保护 `app/.cxx/` 104文件。
-- Files：`PlayerOsdController.java` 的 `getDiagnostics/getDiagnosis` 与本文。
-- Evidence：已核对 Exo 实际 AudioOutput、MPV 实际输出快照和手机/电视点播/直播共用路径；手机 arm64 Java 编译38秒通过，diff空白检查通过，见14.17。
-- Unverified：未打包/安装新APK，未进行 HDMI/AVR 真机验证。此前14.16及P2-4的设备验收边界保留在原章节。
-- Rollback：本单元两文件恢复至基线；不推送。
-- Exactly one next action：以编译证据执行本guard的finish，原子提交并创建本地恢复tag。
+- Objective：完成获批的Exo单轨无效自动约束门控和能力日志快照复用，减少选轨时对播放线程的干扰，见14.18。
+- Plan：两项优化、32项定向用例、真实查询fixture回放和TV32快速Release均已完成；按本guard原子提交/tag收尾。
+- Current unit：`feature/mpv-dv7-fel` / 基线 `4818057cd64c2c62c94e7208d9121719b4d11fe0`；guard `AV-DIAG-01-EXO-RESELECT`；保护 `app/.cxx/` 104文件。
+- Files：14.18列出的Exo App源码、两个定向测试与本文/索引。
+- Evidence：32项用例通过；18次真实查询的候选事件222→56；TV32构建、ZIP/ABI条目与签名校验通过。产物SHA及详细证据见14.18与 `build/avdiag-exo-reselect/`。
+- Unverified：未安装/发布新APK；用户电视无法ADB，同片DV5最终掉帧收益需新包在线日志确认。
+- Rollback：本guard单元原子回退至基线；不推送。
+- Exactly one next action：以本节软件验证证据执行guard finish，原子提交并创建本地恢复tag。

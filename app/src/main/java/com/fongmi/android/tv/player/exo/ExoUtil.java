@@ -1149,6 +1149,8 @@ public class ExoUtil {
         private boolean adaptiveVideo;
         private int selectedVideoCandidates;
         private int availableVideoFormats;
+        private Tracks constraintTracks = Tracks.EMPTY;
+        private Boolean constraintEligibility;
         private volatile boolean released;
 
         AutomaticVideoConstraintController(
@@ -1186,6 +1188,7 @@ public class ExoUtil {
         @Override
         public void onTracksChanged(EventTime eventTime, Tracks tracks) {
             bindEventSession();
+            constraintTracks = tracks;
             TrackShape shape = inspectTracks(tracks);
             adaptiveVideo = shape.adaptiveVideo();
             selectedVideoCandidates = shape.selectedVideoCandidates();
@@ -1283,6 +1286,18 @@ public class ExoUtil {
             PlaybackAutoContext context = currentExoContext(now);
             if (context == null) return null;
             if (!context.session().equals(boundSession)) bindSession(context.session());
+            boolean applicable = ExoVideoConstraintApplicability.canAdjust(
+                    constraintTracks, trackSelector.getParameters());
+            if (constraintEligibility == null || constraintEligibility != applicable) {
+                constraintEligibility = applicable;
+                SpiderDebug.log("exo-enhance", "automatic constraint applicable=%s adaptiveVideo=%s selectedVideoCandidates=%d availableVideoFormats=%d reason=%s",
+                        applicable, adaptiveVideo, selectedVideoCandidates, availableVideoFormats,
+                        applicable ? "selectable-video-alternatives" : "preserve-current-video-selection");
+            }
+            if (!applicable) {
+                App.removeCallbacks(refreshRunnable);
+                return null;
+            }
             ExoAutomaticVideoConstraintPolicy.Environment environment =
                     ExoAutomaticVideoConstraintPolicy.environment(context, now);
             return new ExoAutomaticVideoConstraintPolicy.Input(
@@ -1304,6 +1319,8 @@ public class ExoUtil {
             adaptiveVideo = false;
             selectedVideoCandidates = 0;
             availableVideoFormats = 0;
+            constraintTracks = Tracks.EMPTY;
+            constraintEligibility = null;
             apply(baselineLimit);
         }
 

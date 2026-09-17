@@ -36,6 +36,7 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
     private static final Map<ExoPlayer, WeakReference<ExoDiagnosticCollector>> PLAYERS = new WeakHashMap<>();
     private static final Map<Context, WeakReference<PlaybackDiagnosticCollector>> MEDIA = new WeakHashMap<>();
     final PlaybackDiagnosticCollector log = new PlaybackDiagnosticCollector("exo", "1.11.0-alpha01-fongmi");
+    final ExoDiagnosticCodecSnapshotCache codecSnapshots = new ExoDiagnosticCodecSnapshotCache();
     private WeakReference<ExoPlayer> player = new WeakReference<>(null);
     private Handler handler;
     private final Runnable tick = this::sample;
@@ -77,6 +78,7 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
         }
         if (collector == null) return item;
         Context owner = collector.log.begin(trace, "foreground");
+        collector.codecSnapshots.clear();
         synchronized (MEDIA) { MEDIA.put(owner, new WeakReference<>(collector.log)); }
         collector.log.protectedMedia(item.localConfiguration != null && item.localConfiguration.drmConfiguration != null);
         collector.seekEpoch = 0;
@@ -279,6 +281,7 @@ public final class ExoDiagnosticCollector implements AnalyticsListener {
 
     @Override public void onPlayerReleased(EventTime t) {
         if (handler != null) handler.removeCallbacks(tick);
+        codecSnapshots.clear();
         counters(videoOwner, videoCounters, true); counters(audioOwner, audioCounters, false);
         log.end("player-released");
         synchronized (PLAYERS) { ExoPlayer p = player.get(); if (p != null) PLAYERS.remove(p); }
