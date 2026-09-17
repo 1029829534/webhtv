@@ -820,8 +820,8 @@ public final class MpvHlsProxy extends NanoHTTPD {
                 }
                 if (!TextUtils.equals(filtered, text)) {
                     SpiderDebug.log(TAG,
-                            "adblock planned session=%d ranges=%d mode=source-timeline-seek reason=%s url=%s",
-                            session, timeline.ranges().size(), timeline.reason(), shortUrl(url));
+                            "adblock planned session=%d ranges=%d cuts=%s mode=source-timeline-seek reason=%s url=%s",
+                            session, timeline.ranges().size(), timeline.ranges(), timeline.reason(), shortUrl(url));
                 }
                 // Keep timestamps, implicit AES IVs, byte ranges and rendition
                 // synchronization intact; MpvPlayer skips the detected time ranges.

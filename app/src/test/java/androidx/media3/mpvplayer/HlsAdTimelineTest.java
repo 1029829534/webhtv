@@ -105,6 +105,40 @@ public class HlsAdTimelineTest {
     }
 
     @Test
+    public void longFalsePositiveBeforeAndAfterAnAdRemainsSeekable() {
+        String tail = segment("retained.ts", "900");
+        HlsAdTimeline timeline = HlsAdTimeline.from(
+                playlist(segment("programme-before.ts", "496.32"),
+                        "#EXT-X-DISCONTINUITY\n", segment("ad.ts", "16.466666"),
+                        "#EXT-X-DISCONTINUITY\n", segment("programme-after.ts", "800"),
+                        tail), playlist(tail));
+        assertEquals(List.of(new HlsAdTimeline.Range(496320, 512786)), timeline.ranges());
+        assertEquals(0, timeline.skipTargetMs(0));
+        assertEquals(490000, timeline.skipTargetMs(490000));
+        assertEquals(512786, timeline.skipTargetMs(500000));
+        assertEquals(700000, timeline.skipTargetMs(700000));
+    }
+
+    @Test
+    public void uninterruptedLongCandidateIsPreservedAndLimitIsInclusive() {
+        String kept = segment("body.ts", "1000");
+        assertTrue(HlsAdTimeline.from(
+                playlist(segment("uncertain.ts", "120.000001"), kept),
+                playlist(kept)).ranges().isEmpty());
+        assertEquals(List.of(new HlsAdTimeline.Range(0, 120000)), HlsAdTimeline.from(
+                playlist(segment("ad.ts", "120"), kept), playlist(kept)).ranges());
+    }
+
+    @Test
+    public void acceptedAdjacentDiscontinuityBlocksStillMerge() {
+        String kept = segment("body.ts", "1000");
+        HlsAdTimeline timeline = HlsAdTimeline.from(
+                playlist(segment("ad-1.ts", "10"), "#EXT-X-DISCONTINUITY\n",
+                        segment("ad-2.ts", "15"), kept), playlist(kept));
+        assertEquals(List.of(new HlsAdTimeline.Range(0, 25000)), timeline.ranges());
+    }
+
+    @Test
     public void rejectsLiveMalformedNonFiniteAndOverflowingDurations() {
         String filtered = playlist(segment("body.ts", "5"));
         for (String duration : List.of("NaN", "Infinity", "-1", "0", "1e100",
