@@ -687,10 +687,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         positionMs = resolveHlsAdSeekTarget(Math.max(0, positionMs));
         cachedPositionMs = Math.max(0, positionMs);
         resetCacheTimelineForSeek(cachedPositionMs);
-        if (!fileLoaded) initialSeekPositionMs = cachedPositionMs;
-        if (!fileLoaded && MpvDiscMenuPolicy.usesRawIso(currentIsoUri)) {
-            // Do not send a history seek into a disc whose navigation mode is
-            // still being opened. BD-J/ordinary titles restore it at file-loaded.
+        if (!fileLoaded) {
+            // Keep only the latest target until FILE_LOADED restores it once,
+            // or recognizes that loadfile's start option already covered it.
+            initialSeekPositionMs = cachedPositionMs;
             invalidateState();
             return Futures.immediateVoidFuture();
         }
