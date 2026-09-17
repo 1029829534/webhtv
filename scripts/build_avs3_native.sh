@@ -111,3 +111,17 @@ cmake --install "$WORK/build"
 mkdir -p "$PREFIX/share/licenses/uavs3d"
 cp "$SOURCE/COPYING" "$PREFIX/share/licenses/uavs3d/COPYING"
 printf '%s\n' "$UAVS3D_COMMIT" > "$PREFIX/share/licenses/uavs3d/SOURCE"
+
+# The same registered AVS3 decoder dispatches High 10-bit to HPM. Both static
+# backends are mandatory inputs; ordinary debug/release builds cannot omit it.
+bash "$ROOT/scripts/build_hpm_native.sh" --abi "$ABI" --ndk "$NDK" \
+  --prefix "$PREFIX" --work-dir "$WORK/hpm15" --jobs "$JOBS"
+python3 - "$PREFIX/lib/pkgconfig/uavs3d.pc" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+if '-lwebhtvhpm' not in text:
+    text = text.replace('-luavs3d', '-luavs3d -lwebhtvhpm')
+path.write_text(text)
+PY

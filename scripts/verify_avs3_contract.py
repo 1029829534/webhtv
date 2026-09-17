@@ -75,6 +75,13 @@ def main():
         require(decoder[key] == mpv["sources"]["uavs3d"][key], "Exo/MPV uavs3d input mismatch")
     require(decoder["profiles"] == ["0x20", "0x22"] and decoder["bit_depths"] == [8, 10],
             "AVS3 capability declaration needs a new verified contract")
+    high = media["avs3_video"]["high_decoder"]
+    require(high == mpv["avs3_high_decoder"], "Exo/MPV HPM inputs differ")
+    require(high["profiles"] == ["0x32"] and high["bit_depths"] == [10],
+            "HPM capability declaration needs a new verified contract")
+    require(sha((ROOT / high["archive"]).read_bytes()) == high["sha256"], "HPM archive hash mismatch")
+    simd = high["simd_adapter"]
+    require(sha((ROOT / simd["header"]).read_bytes()) == simd["sha256"], "SIMD source hash mismatch")
     for patch in media["fongmi_media"]["patches"] + [media["avs3_video"]["ffmpeg_patch"]]:
         require(sha((ROOT / patch["path"]).read_bytes()) == patch["sha256"], f"Patch hash mismatch: {patch['path']}")
     fixture_manifest = json.loads((FIXTURES / "manifest.json").read_text())
@@ -91,6 +98,10 @@ def main():
             media["nextlib"]["avs3_artifact"]["sources_sha256"], "nextlib sources hash mismatch")
     license_data = next_entries.get("assets/licenses/uavs3d.txt", b"")
     require(b"Redistribution and use in source and binary forms" in license_data, "Missing shipped uavs3d license")
+    require(next_entries.get("assets/licenses/hpm-avs3.txt") ==
+            (ROOT / "third_party/avs3-hpm/LICENSE.HPM").read_bytes(), "Missing original HPM license")
+    require(b"Permission is hereby granted" in next_entries.get("assets/licenses/sse2neon.txt", b""),
+            "Missing SSE2NEON license")
     next_classes = archive(next_entries["classes.jar"])
     require(b"libuavs3d" in next_classes["io/github/anilbeesetti/nextlib/media3ext/ffdecoder/FfmpegLibrary.class"],
             "Shipped nextlib has no AVS3 decoder mapping")
@@ -123,12 +134,21 @@ def main():
             for player, name, data in (("Exo", "libavcodec.so", exo), ("MPV", "libmvcodec.so", mpv_path.read_bytes())):
                 require(b"libuavs3d" in data and decoder["commit"].encode() in data, f"{player}/{abi} decoder not embedded")
                 require(b"Unsupported AVS3 profile" in data, f"{player}/{abi} lacks the raw profile guard")
+                require(b"WebHTV HPM 15.0" in data and high["commit"].encode() in data,
+                        f"{player}/{abi} has no pinned High 10-bit backend")
                 path = work / name
                 path.write_bytes(data)
-                elf = subprocess.check_output([readelf, "-h", "-d", str(path)])
+                elf = subprocess.check_output([readelf, "-h", "-l", "-d", "--wide", str(path)])
                 require(machine in elf and ("Library soname: [" + name + "]").encode() in elf, f"{player}/{abi} ABI or SONAME mismatch")
+                load_alignment = re.findall(rb"^\s+LOAD\s+.*\s+(0x[0-9a-f]+)\s*$", elf, re.M)
+                require(load_alignment and all(int(value, 16) >= 16384 for value in load_alignment),
+                        f"{player}/{abi} lost Android 16 KB page alignment")
                 needed = re.findall(rb"Shared library: \[([^]]+)\]", elf)
-                require(not any(b"uavs3d" in n or b"pthread" in n for n in needed), "AVS3 must be statically linked")
+                require(not any(b"uavs3d" in n or b"webhtvhpm" in n or b"pthread" in n for n in needed),
+                        "AVS3 must be statically linked")
+                exports = subprocess.check_output([readelf, "--dyn-syms", "--wide", str(path)])
+                require(not re.search(rb"GLOBAL\s+DEFAULT\s+(?!UND)\S+\s+(?:webhtv_hpm|com_mc|dec_cnk)", exports),
+                        f"{player}/{abi} leaks internal reference-decoder symbols")
                 forbidden = (b"libmv", b"libmw") if player == "Exo" else (b"libav", b"libsw")
                 require(not any(n.startswith(forbidden) for n in needed), f"Cross-player dependency: {player}/{abi}")
                 print(f"{player}/{abi}: {sha(data)} ({len(data)} bytes)")
@@ -138,7 +158,11 @@ def main():
             old_lock = json.loads(git_bytes(args.baseline, ROOT / "third_party/media-lock.json"))
             old_version = old_lock["nextlib"]["version"]
             old_next = archive(git_bytes(args.baseline, artifact("io.github.anilbeesetti", "nextlib-media3ext", old_version, ".aar")))
-            preserved(old_next, next_entries, {"classes.jar", "assets/licenses/uavs3d.txt", "jni/arm64-v8a/libavcodec.so", "jni/armeabi-v7a/libavcodec.so"}, "nextlib")
+            allowed_entries = {"jni/arm64-v8a/libavcodec.so", "jni/armeabi-v7a/libavcodec.so",
+                               "assets/licenses/hpm-avs3.txt", "assets/licenses/sse2neon.txt"}
+            if "high_decoder" not in old_lock.get("avs3_video", {}) and "avs3_artifact" not in old_lock["nextlib"]:
+                allowed_entries.update({"classes.jar", "assets/licenses/uavs3d.txt"})
+            preserved(old_next, next_entries, allowed_entries, "nextlib")
             old_classes = archive(old_next["classes.jar"])
             allowed = {n for n in old_classes.keys() | next_classes.keys() if re.search(r"/Ffmpeg(?:Library|VideoDecoder|VideoRenderer)(?:\$[^/]*)?\.class$", n)}
             preserved(old_classes, next_classes, allowed, "nextlib class")
@@ -191,8 +215,11 @@ def main():
             for path in (ROOT / "app/src/arm64_v8a/assets/mpv-libs/arm64-v8a").glob("*.so"):
                 require(apk.get("assets/mpv-libs/arm64-v8a/" + path.name) == path.read_bytes(), f"APK MPV mismatch: {path.name}")
             require(apk.get("assets/licenses/uavs3d.txt") == license_data, "APK license missing")
+            for name in ("hpm-avs3.txt", "sse2neon.txt"):
+                entry = "assets/licenses/" + name
+                require(apk.get(entry) == next_entries[entry], "APK license mismatch: " + name)
             print("APK native entries and license match the verified candidates.")
-    print("AVS3 artifact contract passed; High profile 0x30/0x32 is not claimed.")
+    print("AVS3 artifact contract passed: baseline 0x20/0x22 and HPM 0x32; no 0x30 or real-time claim.")
 
 
 if __name__ == "__main__":

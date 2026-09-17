@@ -1,17 +1,36 @@
 diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
 --- a/libavcodec/libuavs3d.c
 +++ b/libavcodec/libuavs3d.c
-@@ -109,6 +109,9 @@
+@@ -32,14 +32,18 @@
+ #include "codec_internal.h"
+ #include "decode.h"
+ #include "uavs3d.h"
++#include "webhtv_hpm.h"
+ 
+ typedef struct uavs3d_context {
+     AVCodecContext  *avctx;
+     void            *dec_handle;
++    WebHpm          *hpm;
+     int              frame_threads;
+     int              got_seqhdr;
+     uavs3d_io_frm_t  dec_frame;
+ } uavs3d_context;
++
++#include "webhtv_hpm_ffmpeg.h"
+ 
+ #define UAVS3D_CHECK_START_CODE(data_ptr, PIC_START_CODE) \
+         (AV_RL32(data_ptr) != (PIC_START_CODE << 24) + AVS3_NAL_START_CODE)
+@@ -108,6 +112,9 @@
+     uavs3d_io_frm_t *frm_dec = &h->dec_frame;
      struct uavs3d_com_seqh_t *seqh = frm_dec->seqhdr;
      int ret;
- 
++
 +    if (!seqh)
 +        return AVERROR_INVALIDDATA;
-+
+ 
      if (UAVS3D_CHECK_INVALID_RANGE(seqh->frame_rate_code, 0, 15)) {
          av_log(avctx, AV_LOG_ERROR, "Invalid frame rate code: %d.\n", seqh->frame_rate_code);
-         seqh->frame_rate_code = 3; // default 25 fps
-@@ -144,6 +147,23 @@
+@@ -144,6 +151,40 @@
      return 0;
  }
  
@@ -21,6 +40,23 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
 +    if (size < 6 || UAVS3D_CHECK_START_CODE(header, AVS3_SEQ_START_CODE))
 +        return AVERROR_INVALIDDATA;
 +
++    uavs3d_context *h = avctx->priv_data;
++    if (header[4] == 0x32) {
++        if (!h->hpm) {
++            h->hpm = webhtv_hpm_create();
++            if (!h->hpm)
++                return AVERROR(ENOMEM);
++            if (h->dec_handle) {
++                uavs3d_delete(h->dec_handle);
++                h->dec_handle = NULL;
++            }
++            h->got_seqhdr = 0;
++            av_log(avctx, AV_LOG_INFO, "AVS3 software backend: %s\n", webhtv_hpm_version());
++        }
++        return 0;
++    }
++    if (h->hpm)
++        return AVERROR_PATCHWELCOME;
 +    // uavs3d's release build coerces unknown profiles to baseline. Reject the
 +    // original byte before parsing either extradata or an in-band sequence.
 +    if (header[4] != 0x20 && header[4] != 0x22) {
@@ -35,7 +71,7 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
  static int libuavs3d_decode_extradata(AVCodecContext *avctx)
  {
      uavs3d_context *h = avctx->priv_data;
-@@ -151,18 +171,21 @@
+@@ -151,19 +192,33 @@
      int header_size = avctx->extradata_size;
      uavs3d_io_frm_t *frm_dec = &h->dec_frame;
  
@@ -58,15 +94,28 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
 -        // Also remove library_dependency_idc at the end
 -        header_size -= 4;
 -    }
+-
 +        header_size = sequence_size;
 +    }
 +    ret = libuavs3d_check_sequence_header(avctx, header, header_size);
 +    if (ret < 0)
 +        return ret;
- 
++
++    if (h->hpm) {
++        WebHpmFrame unused;
++        int consumed;
++        ret = webhtv_hpm_decode(h->hpm, header, header_size,
++                                AV_NOPTS_VALUE, AV_NOPTS_VALUE, &consumed, &unused);
++        if (ret < 0)
++            return libhpm_error(avctx, ret);
++        if (ret || consumed != header_size)
++            return AVERROR_INVALIDDATA;
++        return libhpm_update_info(avctx);
++    }
      frm_dec->nal_type = 0;
      frm_dec->pkt_pos = 0;
-@@ -171,24 +194,21 @@
+     frm_dec->pkt_size = header_size;
+@@ -171,24 +226,21 @@
      frm_dec->bs_len = header_size;
      frm_dec->pts = 0;
      frm_dec->dts = 0;
@@ -101,8 +150,25 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
  
      cdsc.frm_threads = avctx->thread_count > 0 ? avctx->thread_count : av_cpu_count();
      cdsc.check_md5 = 0;
-@@ -225,6 +245,8 @@
+@@ -214,6 +266,8 @@
+         uavs3d_delete(h->dec_handle);
+         h->dec_handle = NULL;
+     }
++    webhtv_hpm_close(h->hpm);
++    h->hpm = NULL;
+     h->got_seqhdr = 0;
  
+     return 0;
+@@ -223,8 +277,16 @@
+ {
+     uavs3d_context *h = avctx->priv_data;
+ 
++    if (h->hpm) {
++        webhtv_hpm_flush(h->hpm);
++        h->got_seqhdr = 0;
++        if (avctx->extradata && libuavs3d_decode_extradata(avctx) < 0)
++            av_log(avctx, AV_LOG_ERROR, "AVS3 HPM sequence reset failed\n");
++    }
      if (h->dec_handle) {
          uavs3d_reset(h->dec_handle);
 +        h->dec_frame.got_pic = 0;
@@ -110,7 +176,21 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
      }
  }
  
-@@ -261,6 +283,11 @@
+@@ -240,6 +302,13 @@
+     int ret, finish = 0;
+ 
+     *got_frame = 0;
++    if (buf_size >= 6 && !UAVS3D_CHECK_START_CODE(buf, AVS3_SEQ_START_CODE)) {
++        ret = libuavs3d_check_sequence_header(avctx, buf, buf_size);
++        if (ret < 0)
++            return ret;
++    }
++    if (h->hpm)
++        return libhpm_decode_frame(avctx, frm, got_frame, avpkt);
+     frm->pts = -1;
+     frm->pict_type = AV_PICTURE_TYPE_NONE;
+ 
+@@ -261,6 +330,11 @@
          while (!finish) {
              int bs_len;
  
@@ -122,7 +202,7 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
              if (h->got_seqhdr) {
                  if (!frm->data[0] && (ret = ff_get_buffer(avctx, frm, 0)) < 0) {
                      return ret;
-@@ -274,11 +301,23 @@
+@@ -274,11 +348,31 @@
                  bs_len = buf_end - buf_ptr;
                  finish = 1;
              }
@@ -132,6 +212,14 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
 +                    av_frame_unref(frm);
 +                    return ret;
 +                }
++            }
++            if (h->hpm) {
++                AVPacket remainder = *avpkt;
++                remainder.data = (uint8_t *)buf_ptr;
++                remainder.size = buf_end - buf_ptr;
++                av_frame_unref(frm);
++                ret = libhpm_decode_frame(avctx, frm, got_frame, &remainder);
++                return ret < 0 ? ret : (int)(buf_ptr - buf) + ret;
 +            }
              frm_dec->bs = (unsigned char *)buf_ptr;
              frm_dec->bs_len = bs_len;
@@ -147,7 +235,7 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
              buf_ptr += bs_len;
  
              if (frm_dec->nal_type == NAL_SEQ_HEADER) {
-@@ -298,7 +337,7 @@
+@@ -298,12 +392,12 @@
          av_frame_unref(frm);
      }
  
@@ -156,7 +244,13 @@ diff --git a/libavcodec/libuavs3d.c b/libavcodec/libuavs3d.c
  }
  
  const FFCodec ff_libuavs3d_decoder = {
-@@ -311,7 +350,7 @@
+     .p.name         = "libuavs3d",
+-    CODEC_LONG_NAME("libuavs3d AVS3-P2/IEEE1857.10"),
++    CODEC_LONG_NAME("AVS3-P2/IEEE1857.10 (uavs3d baseline / HPM 15.0 High 10-bit)"),
+     .p.type         = AVMEDIA_TYPE_VIDEO,
+     .p.id           = AV_CODEC_ID_AVS3,
+     .priv_data_size = sizeof(uavs3d_context),
+@@ -311,7 +405,7 @@
      .close          = libuavs3d_end,
      FF_CODEC_DECODE_CB(libuavs3d_decode_frame),
      .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,

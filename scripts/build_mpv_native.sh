@@ -775,6 +775,7 @@ verify_directory() {
   grep -Fq "Using declared Matroska segment end for seek metadata." <<<"$version_strings" || die "MPV Matroska segment seek patch missing from $directory/libmpv.so"
   grep -Fq "libarcdav3a AV3A" <<<"$codec_strings" || die "FFmpeg AV3A decoder missing from $directory/libmvcodec.so"
   grep -Fq "libuavs3d" <<<"$codec_strings" || die "FFmpeg AVS3 decoder missing from $directory/libmvcodec.so"
+  grep -Fq "WebHTV HPM 15.0" <<<"$codec_strings" || die "FFmpeg AVS3 High 10-bit decoder missing from $directory/libmvcodec.so"
   grep -Fq "failing hardware decode so the player can fall back" <<<"$codec_strings" || die "FFmpeg MediaCodec fallback patch missing from $directory/libmvcodec.so"
   grep -Fq "WebHTV hardware audio MediaCodec decoder:" <<<"$codec_strings" || die "FFmpeg hardware audio MediaCodec patch missing from $directory/libmvcodec.so"
   grep -Fq "WebHTV MediaCodec output release/flush serialization enabled" <<<"$codec_strings" || die "FFmpeg MediaCodec output serialization missing from $directory/libmvcodec.so"
@@ -919,7 +920,8 @@ build_abi() {
       libxml2) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libxml2.a" ] ;;
       freetype2) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfreetype.a" ] ;;
       libaribcaption) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libaribcaption.a" ] ;;
-      uavs3d) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libuavs3d.a" ] ;;
+      uavs3d) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libuavs3d.a" ] &&
+        [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libwebhtvhpm.a" ] ;;
       ffmpeg) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libavcodec.so" ] ;;
       fontconfig) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfontconfig.a" ] ;;
       fribidi) [ -f "$BUILDSCRIPTS/prefix/$prefix_name/lib/libfribidi.a" ] ;;

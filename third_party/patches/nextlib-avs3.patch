@@ -6,7 +6,7 @@ diff --git a/build.gradle.kts b/build.gradle.kts
                  groupId = "io.github.anilbeesetti",
                  artifactId = property("POM_ARTIFACT_ID") as String,
 -                version = "1.10.0-0.12.1-fongmi-softload-av3a-ffmpeg901-r3"
-+                version = "1.10.0-0.12.1-fongmi-softload-av3a-avs3-ffmpeg901-r4"
++                version = "1.10.0-0.12.1-fongmi-softload-av3a-avs3-ffmpeg901-r5"
              )
  
              pom {
@@ -36,7 +36,7 @@ diff --git a/ffmpeg/setup.sh b/ffmpeg/setup.sh
  JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || sysctl -n hw.pysicalcpu || echo 4)
  
  # Set up host platform variables
-@@ -213,6 +215,19 @@
+@@ -213,6 +215,22 @@
  
      done
      popd
@@ -53,10 +53,13 @@ diff --git a/ffmpeg/setup.sh b/ffmpeg/setup.sh
 +      --prefix "$BUILD_DIR/external/$ABI" \
 +      --work-dir "$BUILD_DIR/uavs3d/$ABI" --jobs "$JOBS"
 +  done
++  mkdir -p "$BASE_DIR/../media3ext/src/main/assets/licenses"
++  cp "$WEBHTV_ROOT/third_party/avs3-hpm/LICENSE.HPM" "$BASE_DIR/../media3ext/src/main/assets/licenses/hpm-avs3.txt"
++  cp "$BUILD_DIR/external/arm64-v8a/share/licenses/hpm-avs3/SSE2NEON" "$BASE_DIR/../media3ext/src/main/assets/licenses/sse2neon.txt"
  }
  
  function buildFfmpeg() {
-@@ -293,6 +308,7 @@
+@@ -293,6 +311,7 @@
        --enable-avformat \
        --enable-libvpx \
        --enable-libarcdav3a \
@@ -64,7 +67,7 @@ diff --git a/ffmpeg/setup.sh b/ffmpeg/setup.sh
        --enable-protocol=file,http,https,mmsh,mmst,pipe,rtmp,rtmps,rtmpt,rtmpts,rtp,tls \
        --enable-version3 \
        --enable-mbedtls \
-@@ -320,11 +336,12 @@
+@@ -320,11 +339,12 @@
  }
  
  if [[ "${1:-}" == "--ffmpeg-only" ]]; then
@@ -74,17 +77,17 @@ diff --git a/ffmpeg/setup.sh b/ffmpeg/setup.sh
  fi
  
 -if [[ ! -d "$OUTPUT_DIR" && ! -d "$BUILD_DIR" ]]; then
-+if [[ ! -f "$OUTPUT_DIR/.webhtv-avs3-10bit" ]]; then
++if [[ ! -f "$OUTPUT_DIR/.webhtv-avs3-hpm15" ]]; then
    # Download MbedTLS source code if it doesn't exist
    if [[ ! -d "$MBEDTLS_DIR" ]]; then
      downloadMbedTLS
-@@ -344,5 +361,7 @@
+@@ -344,5 +364,7 @@
    buildMbedTLS
    buildLibVpx
    buildArcDav3a
 +  buildUavs3d
    buildFfmpeg
-+  touch "$OUTPUT_DIR/.webhtv-avs3-10bit"
++  touch "$OUTPUT_DIR/.webhtv-avs3-hpm15"
  fi
 diff --git a/media3ext/src/main/assets/licenses/uavs3d.txt b/media3ext/src/main/assets/licenses/uavs3d.txt
 new file mode 100644

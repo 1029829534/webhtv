@@ -2,6 +2,15 @@
 
 ## Recovery anchor
 
+- **用户确认关闭（2026-09-17）**：用户明确接受设备软件解码性能限制并要求“打tag”。据此关闭本轮额外设备检查，以最终APK、双播放器/双ARM原生制品检查、独立参考像素/时间戳/flush/错误路径验证，以及手机两套codec原片128帧一致性和MPV实际首帧作为本次交付证据。停止额外构建、采样和研究，执行 `C-AVS3-hpm15` 原子提交与本地annotated恢复tag，不推送。**保留限制**：原片4K50不实时，续播预解码等待较长；下方记录的重复seek待修点没有在此单元修复，Exo App持续播放/内核切换的完整设备验收未补跑。用户接受性能不等于宣称不存在其他问题，也不扩大0x30或商业分发的支持范围。**唯一下一动作：执行guard finish并报告生成的commit/tag。** 本段取代下方“验收未通过、不提交/tag”的历史关闭状态。
+
+- **手机复测后的最新结论（2026-09-17，优先于下方检查点）**：最终 APK 已安装，两个 ARM64 原生 codec 对原片前128帧均得到独立参考 SHA-256 `e3b317e5ea200e571184985c070b5c27d569c6e317ed145e85bab830aca04452`。MPV App 从开头手动软解在4.339秒记录首帧，已看到原片画面，但约35秒墙钟只推进到2.44秒媒体时间；用户明确反馈静止、卡顿及续播黑屏，**不视为播放验收通过，不提交/tag**。`hpm15-app-mpv-zero.{log,png,xml}` 留存画面/时间证据，OSD按墙钟推算的29秒不能替代 native `time-pos`。续播日志 `hpm15-user-stall.log` 的 `p-1ac9fgt-e` 在FILE_LOADED前后分别发送一次seek，且尚无首帧；`MpvPlayer.seekToPosition` 和FILE_LOADED分支存在重复发送的具体待修点，本轮尚未修改其代码。另一条SURFACE_LOST发生在用户退出/切换附近，未证实是稳态黑屏根因，不据此更改Vulkan。
+- **性能证据与限制**：原生MPV检查57.32秒包含双重像素哈希；simpleperf采集5674样本、丢失0，结果 `hpm15-device-mpv-profile.log`、`hpm15-mpv-profile-report.txt`、`hpm15-mpv-hotspots.txt`。按同构建未strip符号映射，ESAO标量亮度滤波占全部样本13.55%，两项8抽头运动补偿约12.87%；校验本身也占CPU。没有证据表明单一局部优化即可达到4K50，禁止把原生正确性或一张截图描述为流畅播放。原17:33收尾目标因设备揭示吞吐缺口而失效，停止重复打包与已通过检查。原guard/范围/保护路径保持，未安装任何新探针APK，尚未改手机全局首选项。
+- **用户关于降级的询问**：0x32→baseline 0x20/0x22的一般可行路线是完整解码并重新编码，不是修改profile或剥离DV增强层那样的转换；0x22可保留10-bit，0x20为8-bit。当前手机公开MediaCodec没有AVS3，baseline只能使用已有uavs3d软解；目标若为本机硬解，应考虑提前转码到已支持的HEVC/H.264。此处仅回答可行性，用户尚未要求实施转码功能，没有改原片、加自动转码或改变视频只能手动切换的合同。**唯一下一动作：继续原片Exo实际输出与续播的最小定位，针对已记录的重复seek决定最小修复；在性能和App验收缺口关闭前不创建完成tag。**
+
+- **当前状态（2026-09-17 17:13 Asia/Shanghai）**：元数据补全的四个 codec、制品检查和 Mobile ARM64 APK 已完成；最终 APK SHA-256 为 `1538aa22ec3daed088facd91daeb68e75b5af2e3e2dbb2b4e82968d88b9ae37e`，19 项 native/许可证匹配，已安装到重连的 `10CF6H1D2L0009S`。Exo 实际 ARM64 codec 命令验证原片 128 帧 SHA-256 为 `e3b317e5ea200e571184985c070b5c27d569c6e317ed145e85bab830aca04452`，与独立参考一致，55.43 秒包含逐像素双重哈希，不是纯解码 FPS。用户随后报告 App 内两套软解仍无画面，**App 验收未通过，不提交/tag**。已保存 `hpm15-user-failure-{current.log,logcat.txt,summary.txt,native-summary.txt,ui.xml,png}`；Exo 手动软解从 8.858 秒续播，初始化成功，11.6 秒输入 44 包但提交 0 帧；MPV 软解取得 3840×2160 输出参数后仍无首帧记录，停止前只运行约 12 秒。尚不能区分续播所需预解码耗时与输出链故障。沿用 guard `C-AVS3-hpm15` 与全部原范围，保护 `app/.cxx/`；本轮预计定位5分钟、必要修复/增量打包10分钟、设备验证与关闭5分钟，目标17:33。**唯一下一动作：用现有 APK 从原片开头播放，结合实际帧输出与时间戳定位 App 无画面的原因。** 本段优先于下方历史状态，不重复已通过的源/制品验证。
+
+- **当前实施（2026-09-17 16:11 Asia/Shanghai）**：用户在审阅 HPM 15.0 真实 `0x32` 解码证据后明确要求“那就直接实现”。guard `C-AVS3-hpm15` / upstream；基线 `80fea0039053ab95c2e38150ecb7af63d1fdb8ae`，分支 `feature/mpv-dv7-fel`，保护原有 `app/.cxx/` 104 文件。完成目标：在手动软件视频模式为 Exo → MPV 接入 HPM 15.0 高级 10-bit 后端，保持 baseline uavs3d、硬解禁止自动软解、AV3A/ASS/DV/FEL；交付双 ARM 原生库与 Mobile ARM64 APK。HPM 有界接口、546 个内部符号隔离、原始 0x32 分派和构建接线已完成；独立像素 oracle、两实例/flush、ASan、FFmpeg MP4 时间戳和原有基础档次像素检查通过。Exo NDK28 与 MPV NDK29 双 ARM codec、nextlib r5、锁与制品检查均完成，其他 AAR/MPV 库保持基线字节。APK 已启动构建，ADB 尚无设备，实际 Android NEON/播放器验证待手机连接；没有提交/tag或安装。目标仍为 16:35–16:55，设备等待另行记录。**唯一下一动作：收取 APK 构建结果，手机连接后安装并验证原片的两套软件链、跳转及硬解禁止回退。** 本段优先于下方历史状态；详细证据见“16:10 构建与接口检查点”。
 - 目标：按用户 2026-09-16 明确要求，让当前手机上的 AVS3 视频实际输出画面；按 Exo → MPV 接入成熟实现，保留现有 AV3A 音频、其他解码、ASS、DV/FEL 与性能行为。用户随后明确要求深读论文、文档、issues 和成熟项目代码。
 - 当前阶段：2026-09-17 已移除Exo硬解模式的AVS3软件后备，恢复视频只能手动切换的合同，音频回退保留；单ARM64 APK及MPV/音频定向测试通过，用户随后确认“可以了，打tag”，按关闭快速路径提交。基础AVS3及Surface修复的前一提交为 `769e53471dbb3e9ad4f9b94842099ba97a92fdbd` / `recovery/C-AVS3-video/20260917111624-769e53471dbb`。High profile 0x30/0x32仍未支持。
 - 工作区：`feature/mpv-dv7-fel`，基线/回滚锚点 `dbff1ffecd973c6d89eef1bf139f7243ac6b3ead`；guard `C-AVS3-video` / upstream；保护既有 `app/.cxx/` 104 文件。前一 P2-4 的电视性能验收继续等待设备证据。
@@ -17,6 +26,58 @@
 - 外部资料：用户已提供 `/Users/macbookpro/Downloads/AVS3-P2-TAI109.2-2021.pdf`，437 页，SHA-256 `f357b0fd264cd4a34a31fd4ca261e7b80c94899239af61173775b6cbaf48895b`。正文已提取，并阅读序列/图片头及 ESAO/CCSAO 表；正式表 29 的 DBR 参数顺序与 HPM12.2 不同，首次已证实语义差异在原图片头 bit 100。另一目录 `AVS3P10_RM0_V3p1` 的 README 和 API 明确为实时语音 P10（16/32 kHz、WAV/PG），不提供本次 P2 视频后端。原文件只读，不拷入产品。
 - 设备临时状态：11:10手机 `10CF6H1D2L0009S` 已重连，已调用OEM安装助手安装最终APK，随后用户确认“可以了，打tag”。关闭阶段不再查询安装状态或运行探针。此前临时命令探针包 `com.fongmi.android.tv.avs3probe` 尚在手机，未再次执行；此前仅恢复player首选项为原值2，未覆盖整份配置，无ADB forward。
 - 下一动作：按用户确认执行 `C-AVS3-video-hardware-only` guard finish，原子提交及创建本地恢复tag；不追加设备探针或重复已通过检查。
+
+## HPM 15.0 高级档次实施（2026-09-17）
+
+### 16:10 构建与接口检查点
+
+- 适配器和独立参考的原片 128 帧逐帧一致；两实例交错、关闭另一实例后的 flush 重放共 256 帧一致。首次 oracle 脚本受 HPM CLI 无换行进度输出影响误判，已去掉库内进度输出并修正 matcher；保存日志的实际图像没有不一致。
+- ASan 对有效原片暴露四抽头色度 SSE 函数读取八个系数、越过表尾的问题；仅把这两处 load 改为读取实际使用的四个 `s16`。修正后 128 帧与原始参考逐帧相同，截断序列、失败后 flush/释放以及完整 decode/close 无 ASan 报错。`hpm15-asan-result.json` 保存该检查的二进制哈希。没有通过关闭 sanitizer 或改变像素算法回避错误。
+- FFmpeg 的实际 MP4 → AVPacket → AVFrame 两轮各 128 帧通过：SHA-256 `e3b317e5ea200e571184985c070b5c27d569c6e317ed145e85bab830aca04452`；原始 PTS 为 5000…132000、time_base `1/50000`，相邻帧 20 ms；seek 回开头后图像和时间戳重复一致。基础 8/10-bit 原有两轮各 16 帧 SHA-256 完全保持。裸流本身没有容器 PTS，不用其解封装器合成的包时间戳做显示顺序判定；MP4 独立执行该检查。未知 0x30/0x7f、截断 0x32 的 raw/av3c/in-band 三条错误/清理路径通过。
+- Exo NDK28、MPV NDK29 各自两 ARM ABI codec 构建完成。MPV 增量构建保留原 builder 的 pkg-config sysroot、`--icf=safe` 与 16 KB 页面对齐；只打包 codec，未用旧 build cache 中的 libmpv 覆盖 FEL/P8 修复。nextlib r5 AAR 为 `ebbf79af2f448b5a4f242c3421591484c251c541c898fbc20f7e5d310a3fa95b`，源码 JAR与 r4 相同。
+- `hpm15-artifact-contract.log`：两 ABI ELF/SONAME、16 KB 对齐、静态输入身份、内部符号隐藏、跨播放器依赖隔离、Maven 哈希/锁、许可证通过；相对基线所有非 codec AAR class/条目及其他 18 个 MPV 库逐字节相同。
+- 尚未完成：单 ARM64 APK、真实 Android NEON 解码/播放器播放与跳转。手机仍未出现在 ADB 列表中；当前结果不等于 Android 实时性能验收。**唯一下一动作：完成已启动的 APK 构建，然后在重新连接的手机验证双软件链和硬解禁止回退。**
+
+### 决策与来源
+
+本轮只解决“已验证可解原片的 HPM 15.0 如何可靠接入现有两套软件解码链”。用户已明确批准实现，不重新询问已经批准的接线、构建和必要验证。沿用下面已读完的 FFmpeg、Android/Media3、uavs3d issues、VLC/GPAC 和 DAVS3/GPU 论文证据；它们决定 packet/frame 接口、后端能力分离、移动平台边界和性能验证方法。此前 HPM 12/14 的失败不再作为 15.0 不可用的依据。
+
+| 等级 / 访问日 | 精确来源 / 处置 | 本轮证据及设计影响 |
+| --- | --- | --- |
+| A / 2026-09-17 | `https://github.com/zzZ2001a/avs`，`0c7ac42edfac6d18b92b58a5ef43bca58526ca7a`，`dependencies/hpm-HPM-15.0`；实施该目录的解码算法和公共依赖，外层 mesh/编码器不接入 | 用户资料清单 180 项哈希/大小全部一致；148 个归档源码只有 `com_recon.c` 的内部 inline 链接适配不同；另取固定 GitHub `dec.c`、`com_typedef.h` 与资料逐字节一致。公开 `dec_decode` 是空壳，实际入口为 `dec_cnk` / `dec_pull_frm`。保留算法，用独立 C 库接口管理生命周期。 |
+| A / 2026-09-17 | 用户 `avs3-profile32-result` 与 `/private/tmp/webhtv-avs3-hpm15-review-20260917/` 的独立复验 | 完整 MP4 的 3000 包与无损 ES 逐字节相同，47 个原序列头均 0x32。原始前 128 帧复验实际出帧，退出 0；39.359 秒墙钟、3.716 fps 纯解码、约 521 MiB peak RSS。证明可解该片段，不等于整片一致性认证或 Android 4K50 实时性能。 |
+| A / 2026-09-17 | ETSI TS 101 154 V2.8.1，§5.16.2.2.2，第 177 页；用户原版 PDF | DVB AVS3 HDR 规范明确 High 10-bit `profile_id=0x32`。编号是标准档次，不是专用容器；当前 BT.709 样片也使用它，不能把 0x32 一律标为 HDR。 |
+| A / 2026-09-17 | 同固定 HPM `dec.c`、`dec_eco.c`、`com_util.c`、`dec_bsr.c`、`com_port.h` | 存在共享扫描表、DOI 状态、裸断言、无界失败后续读取。不得直接链接 CLI；添加实例资源所有权、共享状态同步、读取/分配边界和可返回的错误路径，flush 重建完整解码状态。 |
+| A / 2026-09-17 | FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18` 的 `libuavs3d.c`、现有本地 AVS3 补丁；保持该基线，窄适配 | 保留 baseline 的 uavs3d API/线程/图像转换；在原始 profile 判定处分派 0x32。FFmpeg 继续负责容器、packet/frame、缓冲所有权和播放器输出。Exo NDK28 与 MPV NDK29 分别静态链接，不复用 `.so`。 |
+| A / 2026-09-17 | HPM 原文件许可证及用户 `HPM-LICENSE.txt` | 用途限定 AVS 标准开发、测试与推广，并未授予专利权。完整许可和源码身份随二进制提供；本次是用户授权的本地兼容性实现/测试，不把它改称 BSD/MIT 或据此授权商业分发。没有发布、推送或对外提交资料的操作。 |
+
+相关 issue/维护者讨论及独立论文继续引用本文件“研究证据”，没有新发现的 HPM15 Android 维护者实现或官方性能保证；不以缺少该类公开证据声称不存在实现，也不重复广泛搜索。源版本只有上述 HPM 目录新增，现有 FFmpeg/uavs3d/mpv/Media3 均保持原完整 revision。
+
+### 方案取舍与实现合同
+
+- **不改动**：原片仍无法播放，不满足用户需求。**原样调用 HPM CLI/空壳 API**：不能作为播放器库，并有全局状态、退出进程、无时间戳和内存所有权问题，拒绝。**窄适配**：选择在现有 AVS3 FFmpeg 入口增加静态 HPM 后端；保持 0x20/0x22 的成熟 uavs3d 路径，只将真实 0x32 交给 HPM。不修改 profile，不转码，不降分辨率/位深/特效，不为新后端添加 Debug/Release 开关。
+- HPM 只编译解码器和必要公共源。保留原始语法算法；编译证实 BIO/DMVR 的纯 C 分支不完整，故改为固定 `DLTcollab/sse2neon@3cf69760cc6fdc45a5d70f0d42a8f079489f9867`（v1.8.0，MIT）映射既有 SSE 整数计算到 ARM NEON，ESAO 复用完整 C 函数。已读 README、`_mm_madd_epi16` / `_mm_mulhi_epi16` 的真实映射及独立标量期望测试、issue #622（旧 GCC 编译限制）；NDK Clang 满足其版本要求，精确浮点兼容宏显式启用。头文件 SHA-256 `07723c9f9457dd4316f1fde3dd4eb6f31dd67d9955f6c21f4e609ac1698be48a`，使用原整数算法而非继续手工补整个 SIMD 内核。所有 App 硬解/软解选择不变：设备没有 AVS3 硬件时硬解模式报不支持，绝不自动进入 HPM。
+- 包装层负责防竞争字节还原、完整 chunk 边界、有限 padding、输入/尺寸/分配边界；所有断言继续求值，失败转为解码错误，不能用 `NDEBUG` 丢掉断言中的读位。一次失败使该实例停止继续使用损坏状态，flush/close 可释放所有本实例资源。
+- 共享只读表和临时全局工作区同步，流相关 DOI/图片状态归属实例；不得因第二个实例创建/删除而破坏第一个实例。按原始 PTS/DTS 关联实际图片，使用 DPB 显示顺序输出，不用 packet 到达顺序冒充显示顺序。序列结束 drain 与 seek flush 分离。
+- HPM 图像由适配层持有到 FFmpeg 拷贝完成，输出转换保持真实编码位深与颜色元数据。拒绝未提供外部参考的 library stream，不对未知档次误报支持。当前验收目标为 0x32，0x30 的能力不冒称已验收。
+- 静态依赖无新增运行时 SONAME。nextlib 仅替换两 ABI codec 与附加许可证，使用新 r5 坐标；MPV 仅替换各自 codec 及来源清单，其余 native 库必须与 `80fea0039053ab95c2e38150ecb7af63d1fdb8ae` 一致。FFmpeg 配置及现有 FEL/AV3A 补丁完整保留。
+
+### 最小验收、交付与回滚
+
+1. 适配后原始 0x32 片段实际出帧，图像哈希与未改算法参考输出对照；验证 B 帧 PTS 顺序、序列边界 drain、seek/flush 重放、两实例交错及失败后释放。
+2. 对截断序列/图像/chunk、未知 profile、异常尺寸做有界错误返回检查；用主机 ASan 覆盖实际解析路径。不能以吞错、关闭校验或安装只有占位 API 的包通过。
+3. Exo → MPV，各自双 ARM 构建、ELF/namespace/符号/固定输入/许可证检查；baseline 8/10-bit 输出保留。只构建受影响的 codec 和 Mobile ARM64 APK，避免无关 native 矩阵。
+4. 手机对原 MP4 的两套软件链验证真实画面、时间戳/跳转、停止退出与切换；确认硬解模式不自动软解。测量实际速度/内存，明确报告 4K50 是否实时，不承诺参考解码器已有实时优化。
+5. 源码、补丁、锁、制品、记录作为同一 guard 单元提交并创建 annotated 本地 recovery tag。需要回滚时恢复本单元前 `80fea0039053ab95c2e38150ecb7af63d1fdb8ae` 的对应整组文件，保留其后已验证智能去广、P8 HDR10 和 FEL 修复。绝不覆盖原 `app/.cxx/` 或跨播放器替换库。
+
+### 接口阶段记录
+
+- 已完成：有界 C 接口、按实例记录的分配/错误边界、全局表指针与 DOI 保存/恢复、序列和图片 metadata/PTS 关联、FFmpeg 0x32 分派、固定源码/NEON adapter、两个构建链的 mandatory 输入接线。主机库编译通过，截断序列和失败后释放检查通过。
+- 新安全实证：固定数组边界检查发现原 HPM `esao_on_block()` 在某 LCU 关闭滤波时先读 `esao_adaptive_param[...][-1]`，再检查关闭标志。适配只把零标志返回提前，保留原来的“不修改该 LCU 像素”行为；没有关闭边界校验。非消费式 `com_bsr_next(32)` 对三字节结束哨兵仍允许补零 peek，真正读过末尾会返回解码错误。
+- 当前源码/构建：`third_party/avs3-hpm/`；临时输出 `build/avs3-native/hpm15-host{,-prefix}`；FFmpeg 合成源码 `build/avs3-native/hpm15-ffmpeg/libavcodec/libuavs3d.c`。尚未替换已提交的 AAR/MPV codec、未构建/安装新 App。上游原文件只读，打包 source archive 保留原许可证。
+- 手机状态：本轮 `adb devices -l` 为空，已请求重新连接，独立构建继续。磁盘可用约 1 GB，像素 oracle 走 FIFO 流式哈希，不生成 3 GB YUV。
+- 原片接口结果：128 帧、checksum `a4d0f6cfddf70dbc`、最后一帧 `e5c3dfc79218ed72`，累计受管分配 633550512 字节；33.213 秒 CPU 含逐像素哈希，不能当作纯解码性能。符号隔离后 host 重编译通过，待下列 oracle 执行；分配量和参考进程 RSS 是不同指标，不据此断言泄漏。
+- **唯一下一动作**：执行 FIFO 参考像素对照及交错实例/flush 重放，随后 Exo ARM 构建。
 
 ## 授权、范围与验收
 

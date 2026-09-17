@@ -2,6 +2,8 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
+2026-09-17 C-AVS3 高级档次：在原有 uavs3d 之外，加入固定 HPM 15.0 `0c7ac42edfac6d18b92b58a5ef43bca58526ca7a` 的 `0x32` 软件后端，由 `build_avs3_native.sh` 强制调用 `build_hpm_native.sh`，按 MPV 自有 NDK29/ABI 独立静态链接。HPM 内部符号统一隔离，ARM SIMD 使用固定 SSE2NEON；输入、分配、错误、时间戳与 flush 由适配层管理。只更新两 ABI codec，保留其他 MPV/FEL/字幕库；硬解模式不自动切软件。原 HPM 许可证限定标准开发、测试与推广，原文与 SSE2NEON MIT 许可随 nextlib AAR/APK 提供，本地构建成功不代表已取得对外商业分发授权。具体已验收范围、性能与未验收项以 [C-AVS3 当前记录](../docs/C-AVS3-video-decoding.md) 为准。
+
 2026-09-17 P2-4第9.25节：FEL起播的GPU上下文选项改用mpv原有 `m_option_copy` 管理对象列表所有权，修复配置析构释放静态内存导致的native abort。仅修改FEL patch的 `vo_gpu_next.c` 块并增量重建两ARM ABI的libmpv，保留完整FEL、渲染回退和手动视频解码合同；其余18个MPV库（包括AVS3 codec/JNI）逐字节不变，依赖锁和公开导出不变。真实ta/option析构的ASan/UBSan先复现旧错误再通过修复；构建命令、最终产物与手机验证见[任务第9.25节](../docs/P2-4-mpv-android-fel.md)。普通Gradle构建直接包含修复后的assets。
 
 2026-09-16 C-AVS3：固定 uavs3d `0e20d2c291853f196c68922a264bcd8471d75b68`，由共享 `build_avs3_native.sh` 按 MPV 自有 NDK/prefix 构建并静态链接到 codec；支持基准档次 0x20/0x22 的 8/10-bit，未实现 High profile 0x30/0x32。Android ARMv7 使用 softfp，pthread 来自 libc；FFmpeg 包装补丁处理初始化数据边界、错误传播及 flush。只更新两 ABI 的 `libmvcodec.so`，其余 MPV/渲染/FEL/字幕库保持基线字节；Exo 另建 `libavcodec.so`，两套命名空间不混用。来源、手机逐像素证据、限制和回滚见 [C-AVS3](../docs/C-AVS3-video-decoding.md)。日常 APK 构建直接包含提交的能力，不需要额外开关。

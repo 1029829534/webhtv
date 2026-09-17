@@ -434,9 +434,17 @@ verify_nextlib_aar() {
       echo "Missing $abi AVS3 video decoder in $aar" >&2
       return 1
     fi
+    if ! grep -aFq "WebHTV HPM 15.0" "$temp_dir/jni/$abi/libavcodec.so"; then
+      echo "Missing $abi AVS3 High 10-bit decoder in $aar" >&2
+      return 1
+    fi
   done
   [[ -s "$temp_dir/assets/licenses/uavs3d.txt" ]] || {
     echo "Missing uavs3d license in $aar" >&2
+    return 1
+  }
+  [[ -s "$temp_dir/assets/licenses/hpm-avs3.txt" && -s "$temp_dir/assets/licenses/sse2neon.txt" ]] || {
+    echo "Missing HPM/sse2neon notices in $aar" >&2
     return 1
   }
   rm -rf "$temp_dir"
