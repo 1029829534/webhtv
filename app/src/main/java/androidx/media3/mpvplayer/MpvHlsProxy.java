@@ -140,6 +140,37 @@ public final class MpvHlsProxy extends NanoHTTPD {
         return proxy(url, headers, url);
     }
 
+    HlsAdTimeline adTimeline(long selectedBitsPerSecond) {
+        if (kernel != PlayerSetting.MPV || !Setting.isAdblock()) return HlsAdTimeline.NONE;
+        SessionStats stats = sessionStats.get(sessionId);
+        if (stats == null || !stats.vod) return HlsAdTimeline.NONE;
+        return resolveAdTimeline(stats.directAdTimeline, stats.adTimelines,
+                selectedBitsPerSecond, stats.variants.size());
+    }
+
+    static HlsAdTimeline resolveAdTimeline(
+            @Nullable HlsAdTimeline direct,
+            Map<HlsPlaylistRewriter.Variant, HlsAdTimeline> variants,
+            long selectedBitsPerSecond, int declaredVariantCount) {
+        if (direct != null) return direct;
+        HlsAdTimeline candidate = null;
+        int matched = 0;
+        for (Map.Entry<HlsPlaylistRewriter.Variant, HlsAdTimeline> entry : variants.entrySet()) {
+            HlsPlaylistRewriter.Variant variant = entry.getKey();
+            if (variant.kind() != HlsPlaylistRewriter.VariantKind.STREAM) continue;
+            if (selectedBitsPerSecond > 0 && selectedBitsPerSecond != variant.bandwidth()
+                    && selectedBitsPerSecond != variant.averageBandwidth()) continue;
+            if (candidate != null && !candidate.sameCuts(entry.getValue())) return HlsAdTimeline.NONE;
+            candidate = entry.getValue();
+            matched++;
+        }
+        // Probing a rendition does not mean it is selected. Until native selection
+        // is known, require agreement from every declared regular video variant.
+        if (selectedBitsPerSecond <= 0
+                && (declaredVariantCount <= 0 || matched != declaredVariantCount)) return HlsAdTimeline.NONE;
+        return candidate == null ? HlsAdTimeline.NONE : candidate;
+    }
+
     public synchronized String proxy(
             String url, Map<String, String> headers, String mediaKey) throws IOException {
         ensureStarted();
@@ -516,7 +547,7 @@ public final class MpvHlsProxy extends NanoHTTPD {
                 SpiderDebug.log(TAG, "invalid playlist session=%d code=%d bytes=%d url=%s", id, response.code(), text.length(), shortUrl(session.url));
                 return error(Status.BAD_REQUEST, "invalid playlist");
             }
-            text = applyAdblock(text, id, session.url);
+            text = applyAdblock(text, id, session.url, null, true);
             String rewritten = rewritePlaylist(response.request().url().toString(), text, id, null);
             byte[] data = rewritten.getBytes(StandardCharsets.UTF_8);
             SpiderDebug.log(TAG, "playlist session=%d code=%d bytes=%d rewritten=%d url=%s", id, response.code(), text.length(), data.length, shortUrl(session.url));
@@ -708,7 +739,10 @@ public final class MpvHlsProxy extends NanoHTTPD {
                         SpiderDebug.log(TAG, "invalid nested playlist id=%s code=%d bytes=%d url=%s", id, response.code(), text.length(), shortUrl(target.url));
                         return error(Status.BAD_REQUEST, "invalid playlist");
                     }
-                    text = applyAdblock(text, target.sessionId, target.url);
+                    text = applyAdblock(text, target.sessionId, target.url, target.variant(),
+                            target.role() == HlsPlaylistRewriter.UriRole.VARIANT_PLAYLIST
+                                    && target.variant() != null
+                                    && target.variant().kind() == HlsPlaylistRewriter.VariantKind.STREAM);
                     String rewritten = rewritePlaylist(finalUrl, text, target.sessionId, target.variant());
                     byte[] data = rewritten.getBytes(StandardCharsets.UTF_8);
                     SpiderDebug.log(TAG, "nested playlist id=%s code=%d bytes=%d url=%s", id, response.code(), data.length, shortUrl(target.url));
@@ -770,18 +804,30 @@ public final class MpvHlsProxy extends NanoHTTPD {
         return client.newCall(builder.build()).execute();
     }
 
-    private String applyAdblock(String text, int session, String url) {
+    private String applyAdblock(String text, int session, String url,
+            @Nullable HlsPlaylistRewriter.Variant variant, boolean videoPlaylist) {
         if (!Setting.isAdblock() || !isVodPlaylist(text)) return text;
+        if (kernel == PlayerSetting.MPV && !videoPlaylist) return text;
         try {
             String filtered = HlsAdsParser.process(text);
-            if (!TextUtils.equals(filtered, text)) {
-                if (kernel == PlayerSetting.MPV) {
-                    SpiderDebug.log(TAG,
-                            "adblock bypassed session=%d bytes=%d candidateBytes=%d reason=mpv-ts-timestamp-integrity url=%s",
-                            session, text.length(), filtered.length(),
-                            shortUrl(url));
-                    return text;
+            if (kernel == PlayerSetting.MPV) {
+                HlsAdTimeline timeline = HlsAdTimeline.from(text, filtered);
+                SessionStats stats = sessionStats.get(session);
+                if (stats != null) {
+                    if (variant == null) stats.directAdTimeline = timeline;
+                    else stats.adTimelines.merge(variant, timeline,
+                            (previous, next) -> previous.sameCuts(next) ? previous : HlsAdTimeline.NONE);
                 }
+                if (!TextUtils.equals(filtered, text)) {
+                    SpiderDebug.log(TAG,
+                            "adblock planned session=%d ranges=%d mode=source-timeline-seek reason=%s url=%s",
+                            session, timeline.ranges().size(), timeline.reason(), shortUrl(url));
+                }
+                // Keep timestamps, implicit AES IVs, byte ranges and rendition
+                // synchronization intact; MpvPlayer skips the detected time ranges.
+                return text;
+            }
+            if (!TextUtils.equals(filtered, text)) {
                 SpiderDebug.log(TAG,
                         "adblock filtered session=%d bytes=%d->%d url=%s",
                         session, text.length(), filtered.length(), shortUrl(url));
@@ -2013,6 +2059,9 @@ public final class MpvHlsProxy extends NanoHTTPD {
         private final HlsProxyLiveLagTracker liveLag =
                 new HlsProxyLiveLagTracker();
         private volatile HlsPlaylistRewriter.Variant selectedVariant;
+        private volatile HlsAdTimeline directAdTimeline;
+        private final Map<HlsPlaylistRewriter.Variant, HlsAdTimeline> adTimelines =
+                new ConcurrentHashMap<>();
         private volatile int variantCount;
         private volatile List<HlsVariant> variants = List.of();
         private volatile List<HlsPlaylistRewriter.Segment> segments = List.of();

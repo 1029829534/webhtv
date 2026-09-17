@@ -182,6 +182,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private final Runnable initialTrackSelectionGateTimeoutRunnable;
     private final Runnable isoTrackMetadataReadyListener;
     private final MpvHlsProxy hlsProxy;
+    private final HlsAdTimeline.SkipState hlsAdSkipState = new HlsAdTimeline.SkipState();
     private final MpvAutoCacheBaselineState autoCacheBaselineState;
     private final MpvAutoHlsBitrateState autoHlsBitrateState;
     private final MpvCacheObserverState cacheObserverState;
@@ -676,8 +677,14 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     protected ListenableFuture<?> handleSeek(int mediaItemIndex, long positionMs, int seekCommand) {
+        return seekToPosition(positionMs, false);
+    }
+
+    private ListenableFuture<?> seekToPosition(long positionMs, boolean automaticAdSkip) {
         if (positionMs == C.TIME_UNSET) positionMs = 0;
         if (discMenuActive) return Futures.immediateVoidFuture();
+        if (!automaticAdSkip) hlsAdSkipState.clear();
+        positionMs = resolveHlsAdSeekTarget(Math.max(0, positionMs));
         cachedPositionMs = Math.max(0, positionMs);
         resetCacheTimelineForSeek(cachedPositionMs);
         if (!fileLoaded) initialSeekPositionMs = cachedPositionMs;
@@ -703,6 +710,24 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         }
         invalidateState();
         return Futures.immediateVoidFuture();
+    }
+
+    private long resolveHlsAdSeekTarget(long positionMs) {
+        return currentLikelyHls
+                ? hlsProxy.adTimeline(cachedSelectedHlsBitrate).skipTargetMs(positionMs)
+                : positionMs;
+    }
+
+    private void maybeSkipHlsAd() {
+        if (!currentLikelyHls || !fileLoaded || !playbackRestarted || !playWhenReady
+                || released || stopping || eofReached || !initialized) return;
+        HlsAdTimeline timeline = hlsProxy.adTimeline(cachedSelectedHlsBitrate);
+        long targetMs = hlsAdSkipState.nextTargetMs(timeline, cachedPositionMs);
+        if (targetMs < 0) return;
+        PlaybackTrace.log("mpv-adblock", playbackTraceId,
+                "skip from=%d to=%d ranges=%d timeline=source detector=exo-hls",
+                cachedPositionMs, targetMs, timeline.ranges().size());
+        seekToPosition(targetMs, true);
     }
 
     @Override
@@ -1961,8 +1986,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         cacheObservedVideoProperty(property, value);
         boolean stateChanged = false;
         switch (property) {
-            case "time-pos", "time-pos/full" -> cachedPositionMs =
-                    stabilizedPositionMs(doubleSecondsToMs(value, cachedPositionMs));
+            case "time-pos", "time-pos/full" -> {
+                cachedPositionMs = stabilizedPositionMs(doubleSecondsToMs(value, cachedPositionMs));
+                maybeSkipHlsAd();
+            }
             case "duration", "duration/full" -> {
                 long durationMs = doubleSecondsToMs(value, cachedDurationMs);
                 if (durationMs != cachedDurationMs) {
@@ -2396,6 +2423,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         }
         switch (eventId) {
             case MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
+                hlsAdSkipState.clear();
                 androidFelActive = false;
                 videoFrameSubmitted = false;
                 firstVideoFrameReported = false;
@@ -2473,7 +2501,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 if (shouldCollectDebugDetails()) PlaybackTrace.log("mpv", playbackTraceId, "event=file-loaded duration=%d size=%dx%d path=%s", cachedDurationMs, videoSize.width, videoSize.height, MpvDiagnosticsPolicy.sourceSummary(currentPlayableUri));
                 addSubtitleConfigurations();
                 if (initialSeekPositionMs != C.TIME_UNSET) {
-                    long targetPositionMs = initialSeekPositionMs;
+                    long targetPositionMs = resolveHlsAdSeekTarget(initialSeekPositionMs);
                     initialSeekPositionMs = C.TIME_UNSET;
                     resetCacheTimelineForSeek(targetPositionMs);
                     seekPositionState.begin(
@@ -3443,6 +3471,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         closeContentFds();
         loading = false;
         fileLoaded = false;
+        hlsAdSkipState.clear();
         fileLoadedAtElapsedRealtimeMs = 0;
         loadStarted = false;
         playbackRestarted = false;

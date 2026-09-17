@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-17 新需求 `P10` [MPV全局智能去广](P10-mpv-smart-adblock.md)：已复用Exo识别，借鉴Kodi/mpv SponsorBlock在原时间轴跳过广告，保持原HLS清单、IV/Range及总时长。15项单测、Mobile ARM64构建/安装、37份原生库与资源身份检查、真机开关/自动跳过/手动seek/AES隐式IV/主清单/暂停/切源通过。guard `P10-mpv-smart-adblock`，基线 `54e7947c272a7b3ebad8b80bfab4c889e1ea86d5`，保护104个 `app/.cxx/` 文件；同一原子提交/tag收尾，无native或依赖变更。完整研究、边界和回滚见唯一任务文档。
+
 - 2026-09-17 P2-4 [9.26 显式输出P8 HDR10兼容](P2-4-mpv-android-fel.md)：已修复显式GPU模式跳过现有P8→HDR10判断；48秒Mobile64构建/安装及37份原生库身份检查通过，手机已取得HDR10/MediaCodec/PQ，用户实播确认“可以了，打个tag”。guard `P2-4-p81-hdr10-compat`，回滚 `c9a1ac99d05f2d8bcac0558b725d34e196b468e2` / `v5.6.0-202609171247-fel-crash-fixed`，104个原有 `app/.cxx/` 文件保护；自动取帧/相邻场景边界见任务文档，无native或依赖改动，按用户确认立即提交/tag。
 
 - 2026-09-17 P2-4 [9.25 FEL起播配置所有权修复](P2-4-mpv-android-fel.md)：已用mpv选项深拷贝修复9.23静态GPU配置在析构时触发的native SIGABRT；真实allocator旧错误复现/修复7路径、双ABI/ELF/补丁往返及18库不变通过，最终Mobile64已安装，原DV7样片完整FEL/Vulkan硬解出帧、seek和退出通过。guard `P2-4-fel-context-ownership`，基线 `8919cf134218a3d3bb30f91f3180e9cd83eac982`；AVS3/AV3A及视频手动切换合同保留。9.24电视性能裁决继续等待目标设备日志。
@@ -56,6 +58,7 @@
 
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
+| 插入需求 | `P10` | MPV/App | 全局智能去广开关接入，复用Exo识别并保持HLS时间轴/跳转 | 已实现；15项单测及真机开关/跳转/AES/主清单/暂停/切源通过，Mobile64已安装；原生库保持 | [P10-mpv-smart-adblock.md](P10-mpv-smart-adblock.md) |
 | 插入需求 | `C-AVS3` | 通用，Exo → MPV | AVS3 视频解码，基准档次与 High profile 分阶段验证 | baseline及Surface修复已提交/tag；Exo严格视频解码模式修复构建/定向测试通过并获用户确认，音频回退保留；0x32仍不支持 | [C-AVS3-video-decoding.md](C-AVS3-video-decoding.md) |
 | 外挂及容器兼容桥已验收；常规构建开关已移除 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 2026-09-15 外挂/现有 Media3 SSA sample 兼容桥及字体已获用户验收；按用户“必需功能”要求删除实验开关，手机/电视 arm64 无参数 debug 构建及 JNI/编译接线核验通过，公共接线同时适用于 release（第 15 节）。输入 14/14、JNI/包装与设备 5 项通过；容器生命周期素材的基线失败已定位并修正，用户验收后不追加复测，限制见第 14 节。已接受复杂一核 CPU ≤40% / render+upload p95 ≤16.67 ms；MPV 独立修复保留。精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV 等仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
 | 插入需求 | `AV-DIAG-01` | 通用/App，Exo → MPV → IJK | 无 ADB 音视频分层诊断、脱敏和可判读的日志导出 | D0–D5实现/产物补齐，覆盖与验证见14.13–14.14；设备/性能待用户实测 | [AV-DIAG-01-playback-diagnostics.md](AV-DIAG-01-playback-diagnostics.md) |
