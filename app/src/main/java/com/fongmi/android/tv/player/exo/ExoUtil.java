@@ -984,19 +984,9 @@ public class ExoUtil {
                         dolbyVisionPlaybackState));
             } catch (Throwable ignored) {
             }
-            if (videoRenderMode == EXTENSION_RENDERER_MODE_OFF) {
-                // AVS3 is commonly absent from MediaCodec. Limit this fallback
-                // to AVS3 so the hardware-only policy for other codecs is intact.
-                out.add(new FfmpegVideoRenderer(allowedVideoJoiningTimeMs, eventHandler,
-                        eventListener, MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY) {
-                    @Override
-                    public int supportsFormat(Format format) {
-                        return "video/avs3".equals(format.sampleMimeType)
-                                ? super.supportsFormat(format) : C.FORMAT_UNSUPPORTED_TYPE;
-                    }
-                });
-                return;
-            }
+            // Video decode mode is explicit: hardware mode must never register
+            // a software fallback, including for AVS3. Audio has its own policy.
+            if (videoRenderMode == EXTENSION_RENDERER_MODE_OFF) return;
             try {
                 out.add(getExtensionRendererIndex(videoRenderMode, videoPrefer, out), buildFfmpegVideoRenderer(allowedVideoJoiningTimeMs, eventHandler, eventListener));
             } catch (Throwable ignored) {

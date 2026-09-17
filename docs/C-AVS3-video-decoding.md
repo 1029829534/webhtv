@@ -3,7 +3,7 @@
 ## Recovery anchor
 
 - 目标：按用户 2026-09-16 明确要求，让当前手机上的 AVS3 视频实际输出画面；按 Exo → MPV 接入成熟实现，保留现有 AV3A 音频、其他解码、ASS、DV/FEL 与性能行为。用户随后明确要求深读论文、文档、issues 和成熟项目代码。
-- 当前阶段：2026-09-17 用户明确“可以了，打tag”接受本次结果，按关闭快速路径提交并创建本地恢复tag。主Surface就绪修复已应用，Mobile ARM64 debug APK构建通过；先前Exo两种位深MP4/MKV的实机出帧、双播放器native解码及来源校验继续有效。最终MPV切换场景以用户确认为验收依据，本轮没有运行handoff命令探针，不能冒称自动实机复测通过。High profile 0x30/0x32仍未支持。
+- 当前阶段：2026-09-17 已移除Exo硬解模式的AVS3软件后备，恢复视频只能手动切换的合同，音频回退保留；单ARM64 APK及MPV/音频定向测试通过，用户随后确认“可以了，打tag”，按关闭快速路径提交。基础AVS3及Surface修复的前一提交为 `769e53471dbb3e9ad4f9b94842099ba97a92fdbd` / `recovery/C-AVS3-video/20260917111624-769e53471dbb`。High profile 0x30/0x32仍未支持。
 - 工作区：`feature/mpv-dv7-fel`，基线/回滚锚点 `dbff1ffecd973c6d89eef1bf139f7243ac6b3ead`；guard `C-AVS3-video` / upstream；保护既有 `app/.cxx/` 104 文件。前一 P2-4 的电视性能验收继续等待设备证据。
 - 设备：`10CF6H1D2L0009S`，vivo V2453A / PD2453，Android 15/API 35，arm64-v8a，QTI SM8735。`MediaCodecList.ALL_CODECS` 枚举得到 **55 条视频 decoder/MIME 条目，AVS 为 0**（含别名，不代表 55 个不同硬件单元）。本机无公开的 AVS3 MediaCodec 解码路径，需要软件后端。已通过 OEM 安装助手安装候选 APK；未重启手机或清空日志。
 - 样片：手机 `/sdcard/Download/影音测试库/A09_AVS3A/AVS3_4K50_DASH.mp4`，31,308,084 字节，SHA-256 `e780726556974bc84e9b6307336c97bcc5082b9813fe9d9d85a2b225da6df677`；60 秒、3840×2160、50fps、约 4.3Mbps、BT.709，**仅视频轨**。裸 MP4 本身无音轨；配套 DASH 音频另行引用。
@@ -16,7 +16,7 @@
 - 原始证据：`/private/tmp/webhtv-avs3-20260916-1412/`。
 - 外部资料：用户已提供 `/Users/macbookpro/Downloads/AVS3-P2-TAI109.2-2021.pdf`，437 页，SHA-256 `f357b0fd264cd4a34a31fd4ca261e7b80c94899239af61173775b6cbaf48895b`。正文已提取，并阅读序列/图片头及 ESAO/CCSAO 表；正式表 29 的 DBR 参数顺序与 HPM12.2 不同，首次已证实语义差异在原图片头 bit 100。另一目录 `AVS3P10_RM0_V3p1` 的 README 和 API 明确为实时语音 P10（16/32 kHz、WAV/PG），不提供本次 P2 视频后端。原文件只读，不拷入产品。
 - 设备临时状态：11:10手机 `10CF6H1D2L0009S` 已重连，已调用OEM安装助手安装最终APK，随后用户确认“可以了，打tag”。关闭阶段不再查询安装状态或运行探针。此前临时命令探针包 `com.fongmi.android.tv.avs3probe` 尚在手机，未再次执行；此前仅恢复player首选项为原值2，未覆盖整份配置，无ADB forward。
-- 下一动作：执行原 `C-AVS3-video` guard 的finish，原子提交任务文件并创建唯一annotated本地恢复tag，不推送；commit/tag以该提交的Task-Guard记录及guard输出为准。
+- 下一动作：按用户确认执行 `C-AVS3-video-hardware-only` guard finish，原子提交及创建本地恢复tag；不追加设备探针或重复已通过检查。
 
 ## 授权、范围与验收
 
@@ -45,7 +45,7 @@
 
 - `third_party/media-lock.json`：nextlib `6ff6cf9d0820382b3c233d018c52e4163b09d345`，制品 `1.10.0-0.12.1-fongmi-softload-av3a-ffmpeg901-r3`，FFmpeg `177f090e0503b7e013922ca903bde14b1c375f18`，独立 Exo 构建。
 - nextlib sources jar：`FfmpegLibrary.getCodecName()` 没有 AVS3；`FfmpegVideoDecoder.getExtraData()` 只转交 H.264/H.265 初始化数据；`FfmpegVideoRenderer.supportsFormat()` 要求 MIME→可用 native decoder。Media3 当前 `MimeTypes` 和 MP4 reader 没有 AVS3 视频接线。
-- `ExoUtil.FfmpegRenderersFactory.buildVideoRenderers()`：默认硬解模式不创建 FFmpeg video renderer；接入时必须保留硬解优先和其他编码的选择合同，不能全局打开无关软解回退。
+- `ExoUtil.FfmpegRenderersFactory.buildVideoRenderers()`：硬解模式不创建 FFmpeg video renderer，视频解码模式必须手动切换，不能按编码添加软件回退例外。音频独立允许软件回退。
 - MPV `third_party/mpv-native-lock.json`：mpv `cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`，相同 FFmpeg 源码独立按 NDK29 构建；两 ABI `CONFIG_LIBUAVS3D=0`、`CONFIG_LIBUAVS3D_DECODER=0`，parser/demuxer 已启用。
 - FFmpeg `libavcodec/libuavs3d.c`：官方 wrapper 负责帧输出、线程、flush、初始化数据；`libavformat/isom_tags.c` 已映射 `avs3`，`mpegts.c` 已映射 AVS3 stream type。官方 wrapper 本身不能扩大 uavs3d 的 profile 能力。
 - AV3A 已有 native decoder、MIME、TS/MP4/DASH reader 与多声道适配，不重复实施。
@@ -125,7 +125,7 @@
 1. 先核对真实 `0x32` 字段语义，得到首个完整图像和可用的正确性对照；明确支持的工具集、位深、输入边界，所有解析失败返回错误，不退出 App 进程。
 2. 在可复用的许可明确代码基础上补齐 Phase 2。解码状态按实例持有，参考帧计数和输出重排有界，支持 flush/seek/EOS；避免把 HPM 全局变量、裸数组和 assert 作为输入校验直接移入播放器。
 3. FFmpeg 负责正常 packet/frame、时间戳、AVBufferRef 生命周期；Exo 与 MPV 从相同固定源码分别构建，维持库名/SONAME 隔离。AV3A/ASS/DV/FEL 补丁及现有 ABI 合同完整保留。
-4. Exo 补 MP4/TS/DASH 等实际需要的格式接线，只有 native 确实有 decoder 才报告可解码；默认硬解模式下仅为 AVS3 增加必要软件回退，其余格式的选择策略不变。Exo 实测成立后再接 MPV。
+4. Exo 补 MP4/TS/DASH 等实际需要的格式接线，只有 native 确实有 decoder 才报告可解码；AVS3软件视频renderer仅在用户手动选择软解后注册。此前“AVS3例外回退”设计错误，按2026-09-17用户明确要求纠正。Exo 实测成立后再接 MPV。
 5. 正确性成立后参考 uavs3d、DAVS3 的帧/LCU 调度、SIMD 数据布局及内存复用，先测 CPU 热点再决定 NEON 优化；CUDA 论文只提供异构调度思路，不直接搬到 Android，也不预先承诺 4K50 实时。
 
 16:25 历史状态（已由下方基础档次实施记录更新）：当时尚未实现视频后端，High profile 的正确图像仍未得到。后续不重启已有仓库调查。
@@ -137,7 +137,7 @@
 ### 已决设计
 
 1. 采用 `uavs3/uavs3d@0e20d2c291853f196c68922a264bcd8471d75b68` 和已固定 FFmpeg 官方 wrapper；该源码本单元处置为“实施”。启用 10-bit 编译；wrapper 的 `uavs3d_img_cpy_cvt()` 根据实际位深输出 8/10-bit，不能通过关闭检查将 0x32 当成 baseline。Android ARMv7 沿用 NDK softfp ABI，修正源码面向 musleabihf 的 hard-float 构建选项。
-2. Exo 补齐 AVS3 MIME/codec string、MP4 初始化信息和实际可用的容器入口；nextlib 添加 MIME→`libuavs3d` 映射、初始化数据传递。硬解优先模式仅为 AVS3 创建软件后备 renderer；其他编码继续遵守现有策略，软件性能模式不强制改变 AVS3 画质。
+2. Exo 补齐 AVS3 MIME/codec string、MP4 初始化信息和实际可用的容器入口；nextlib 添加 MIME→`libuavs3d` 映射、初始化数据传递。仅手动软解模式注册软件视频renderer；不存在硬解优先模式或AVS3自动软解例外，软件性能模式不强制改变 AVS3 画质。
 3. Exo 与 MPV 分别使用既有 NDK/FFmpeg 配置构建，uavs3d 静态链接进入各自 libavcodec；保持 `libav*` 与 `libmv*`/`libmw*` 隔离，不增加冲突的同名动态依赖。保留 AV3A、ASS、DV/FEL 及全部现有补丁。
 4. 正式标准表 29、38、39、37用于解释 HPM 参考失败；最先修正已证实的 DBR 顺序和 ESAO 亮度参数顺序。HPM 仅作为标准验证参考，尚无正确图像前不纳入产品；P10 实时语音不冒充 P2 视频能力。
 
@@ -152,7 +152,7 @@
 
 - 共享 builder 固定 uavs3d 源码/归档哈希并按播放器、ABI 隔离构建；`COMPILE_10BIT=ON` 的同一后端支持实际 8/10-bit 输出。版本头不读取外层 WebHTV Git；ARMv7 使用 Android softfp，Android pthread 由 libc 提供。BSD-3-Clause 许可证进入 nextlib AAR/APK 的 `assets/licenses/uavs3d.txt`。
 - `media3-exo-avs3.patch` 补 MIME/codec string、`avs3`/`av3c` MP4 box、MKV `V_AVS3`、TS `0xD4`；`Avs3Config` 按标准读取 profile、库标记、尺寸、位深、宽高比与帧率，有界检查截断初始化数据；`Avs3Reader` 沿用 Media3 ElementaryStreamReader/PES 生命周期，处理跨块 start code、I/P/B 边界、seek 和 EOS。
-- nextlib 映射 `video/avs3` 到 `libuavs3d`，转交初始化数据；只对 AVS3 禁用低分辨率/跳帧/滤波降质参数。renderer 类和 `supportsFormat` 允许继承，`ExoUtil` 在硬解优先模式仅添加 AVS3 专用软件后备；既有其他格式策略保持。
+- nextlib 映射 `video/avs3` 到 `libuavs3d`，转交初始化数据；只对 AVS3 禁用低分辨率/跳帧/滤波降质参数。renderer 类和 `supportsFormat` 允许继承。上一提交误在硬解模式添加AVS3软件后备，此行为已被用户认定为bug，本次移除；AVS3仅在手动软解时使用FFmpeg。
 - FFmpeg wrapper 补 av3c 长度/起始码检查，传递 uavs3d 错误、空序列保护、配置零初始化、失败清理、flush 后输出指针清除及 EOS 空指针算术修正；不放宽 profile 检查。
 - 两套播放器均只替换各自 `libavcodec.so` / `libmvcodec.so`；nextlib 其余 `.so` 与 AAR 项、Media3 非目标 class、MPV 其余 18 个库均与基线逐字节一致。含原始 profile 拒绝的最终 MPV codec 增量为 ARM64 488,440 字节、ARMv7 443,572 字节（未压缩），无新增独立动态库。ASS/FEL/渲染/音频库保持原制品。
 - 首次 APK 定向编译抓到 `FfmpegVideoRenderer` 类仍为 final，已在源码、补丁、sources.jar 与 classes.jar 同步修正。未重编无关 native 库。新 nextlib r4 不再声明未提供的旧 javadoc 制品。
@@ -245,3 +245,15 @@
 - 实际Gradle构建通过：`app-surface-gate-build-final.log`，`assembleMobileArm64_v8aDebug --offline --max-workers=4`，103项任务中7项执行。首次命令因沙箱不能写Gradle缓存锁而未开始构建；获准使用缓存后成功。Gradle报告56分33秒，超出原4分钟估计；未重复成功构建。
 - 最终APK：`app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk`；SHA-256 `2e40323b300942eecc88482e3254b8a36f9c6e240fcd0f8eadb0a30651ee978f`。首次安装遇设备断开；11:10设备重连后再次调用OEM安装助手，用户随后明确“可以了，打tag”。此确认关闭该场景的额外验证，不把它记录为命令探针结果。
 - 交付范围是uavs3d可落地的baseline 0x20/0x22、8/10-bit接线与相关容器/内核切换修复；实测fixtures均为0x22。原始4K50/0x32样片仍不支持，本次tag不代表High profile或4K实时软件性能已经实现。
+
+### 严格视频解码模式修复（2026-09-17 11:28）
+
+- 用户合同：视频只能人工手动切换硬解/软解，绝对禁止自动切软解；音频允许自动回退。此前将硬解解释为“硬解优先”错误，不能通过改文案保留违规行为。
+- 根因及证据：`769e53471dbb3e9ad4f9b94842099ba97a92fdbd` 在 `ExoUtil.FfmpegRenderersFactory.buildVideoRenderers` 的 `EXTENSION_RENDERER_MODE_OFF` 分支仍追加了仅支持 `video/avs3` 的 `FfmpegVideoRenderer`，绕过原硬解模式的提前返回；故系统无AVS3 MediaCodec也能悄悄出帧。
+- 最小修复：恢复该分支直接返回，不更改AVS3 native decoder/容器接线、视频Surface逻辑或UI文字。原 `getVideoCodecSelector` 在硬解时只接受 `hardwareAccelerated`；手动软解仍注册FFmpeg。`buildAudioRenderers` 独立保留初始化失败回退及软件音频renderer。MPV硬解继续 `hwdec-software-fallback=no`，只有手动软解才使用 `hwdec=no` 与允许软件decoder的参数。
+- 决策：这是已建立合同的局部回归，证据已由原提交、本地调用链和现有MPV源码研究确定；不重复泛搜或变更依赖。保留异常分支或修改标签均违背用户要求，选择移除例外。验证必须覆盖视频硬解排除软件、人工软解可用、音频软件renderer仍可用。
+- 范围/回滚：新guard `C-AVS3-video-hardware-only` / quick-fix；仅 `ExoUtil.java`、本文件、任务索引及 `build/avs3-native` 临时验证；保护既有104个 `app/.cxx/` 文件。回滚锚点为上述基础AVS3提交，源/库未变更。
+- 11:28 Asia/Shanghai估计：修复核对3分钟、单ARM64打包和定向验证5分钟、提交tag1分钟，目标11:37；不重新构建native或重复通过的容器矩阵。
+- 修复已完成：移除硬解分支的匿名 `FfmpegVideoRenderer`，恢复直接返回。核对 `getVideoCodecSelector` 仍仅提供硬件视频decoder；`buildAudioRenderers` 保留FFmpeg与初始化失败回退。`PlayerManager.retryHardDecodeSwitch` 明确重建HARD模式，没有自动改成SOFT；预缓存的renderer能力查询不负责实际播放解码。
+- 验证：`app-strict-video-build.log` 显示单ARM64 APK及 `MpvHardwareDecodePolicyTest`、`ExoAudioCodecSelectorTest` 通过，2分19秒，112项任务中11项执行。未重编native；MPV硬解禁用自动软解、手动软解允许软件decoder，音频硬件排序及软件候选保留。
+- APK已重新生成在 `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk`，并已发起OEM安装助手安装；随后用户明确“可以了，打tag”。上节SHA-256属于前一版APK，不用于标识本次修复包。用户确认后停止额外验证：新的renderer策略探针只准备了代码，未执行，不冒称手机探针通过。
