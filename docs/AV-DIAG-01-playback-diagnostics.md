@@ -880,6 +880,15 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 - TV64 buildTime=`202609160721`，APK为`app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk`；164143897字节，SHA-256=`f5f13571b3a210ab689d8aed3963620399bbcd75f191ecdf7e49debc98938eab`。10个MPV包内库全部与已提交资产一致，v2签名通过，ZIP开销802588字节。libmpv仍为FEL候选`240935cf90a8ff660bc11cf8f3d20ef2be228ee559317db952af1ee1d1a1a62d`。固定副本为证据目录`webhtv-tv64-debug-web-actions.apk`；旧候选另存`prior-fel-candidate-tv64.apk`，未安装或推送。
 - 本轮证据统一位于`/private/tmp/webhtv-debug-web-actions.ALJuwC/`。FEL电视实际像素、bind/map收益及p95验收继续归属P2-4，不能把本轮软件/打包通过作为卡顿已解决的证据。
 
+### 14.17 音频直通的面板结论误报（2026-09-18）
+
+- 用户确认音频行已显示实际直通，但结论仍报“decoder 未初始化”。根因位于共用 `PlayerOsdController.getDiagnosis`：只检查 Exo analytics 的 decoder 名称为空，没有使用音频行的实际输出快照；名称缺失不能证明解码失败。本文既有音频诊断约定明确直通无需 App 音频解码器，本轮是落实既有诊断设计的局部修复，无上游/播放策略变更。
+- 实现：每次面板刷新只读取一次 `AudioPlaybackDiagnostics.Snapshot`，音频行与结论复用它。实际 `ACTIVE` 直通说明“无需 App 解码器”，压缩直出/卸载说明由音频设备解码；PCM 名称缺失说明“名称未上报”，尚未观测到输出说明待确认，不据此断言无声。
+- 优先级：实际音频 `FAILED` 仍提示音频链路失败，播放器错误、轨道不支持/未选中、网络和掉帧提示继续优先于正常输出说明。音频失败不会再被当前视频硬解选项误解释成视频硬解失败。手机/电视、点播/直播共用此控制器。
+- 范围：仅上述控制器与本文；guard `AV-DIAG-01-AUDIO-HINT` / `quick-fix`，基线 `623b069261bf8f9d559969e9c99a6775e547443c`，保护既有 `app/.cxx/` 104个文件。采样频率、音频输出、解码选择及计数逻辑保持原行为。
+- 验证：JDK21 下 `:app:compileMobileArm64_v8aDebugJavaWithJavac` 一次通过，耗时38秒，39项任务中2项执行、37项复用；使用既有隔离 CMake init-script。`git diff --check` 通过，编译日志位于 `build/avdiag-audio-hint/compile.log`。无新增测试、native重编或设备操作；未打包/安装 APK，不以编译代替 HDMI/AVR 的真实出声验证。
+- 回滚：将本单元两个文件恢复至基线提交；不回退其他播放器修复。
+
 ## 15. 验收矩阵：如何证明日志真的够用
 
 ### 15.1 无ADB原则
@@ -983,11 +992,11 @@ Web默认两行固定顶部；搜索在手机按需展开、桌面限宽260px；
 
 ## 18. Recovery anchor / 后续唯一动作
 
-- Objective：完成用户插入的无配对日志页、高频动作固定顶部、删除手工单参数对照，见14.16；此前PR #107桥接与FEL原生候选保留。
-- Plan：14.16的无配对操作、固定顶部按钮及对照入口删除均已实现并通过定向软件验证，TV64已打包；不重复已完成的研究、构建或FEL检查。
-- Current unit：`feature/mpv-dv7-fel` / `ed3d710ef551210278920ba4cd25e8dda6e19ad6`；guard `AV-DIAG-01-WEB-ACTIONS`；保护 `app/.cxx/` 104文件。
-- Files：`DebugLogs.java`、`DebugLogDialog.java`、`DiagnosticControls.java`、`DiagnosticAccess.java`、`DiagnosticReport.java`及对应JUnit/网页检查、本文/索引；无native或依赖修改。
-- Evidence：`/private/tmp/webhtv-debug-web-actions.ALJuwC/`保留来源、5项JUnit、四视口浏览器结果、61秒构建及包内库/签名/ZIP校验；TV64 `202609160721`、APK SHA-256=`f5f13571b3a210ab689d8aed3963620399bbcd75f191ecdf7e49debc98938eab`。详见14.16。
-- Unverified：无未验证代码编辑；未安装电视，真实电视FEL像素与性能仍是P2-4独立待验收项。
-- Rollback：本单元基线及 `recovery/P2-4-fel-descriptor-content/20260916065330-ed3d710ef551`；不推送。
-- Exactly one next action：电视安装本节TV64产物后，以同片播放和调试日志完成P2-4候选的真实设备验收。
+- Objective：修正音频直通时的面板误报；实际输出与结论一致，名称缺失不作失败证据，真实错误及掉帧仍有提示，见14.17。
+- Plan：局部修复与一次 Java 编译已完成，按本guard原子提交/tag收尾。
+- Current unit：`feature/mpv-dv7-fel` / 基线 `623b069261bf8f9d559969e9c99a6775e547443c`；guard `AV-DIAG-01-AUDIO-HINT`；保护 `app/.cxx/` 104文件。
+- Files：`PlayerOsdController.java` 的 `getDiagnostics/getDiagnosis` 与本文。
+- Evidence：已核对 Exo 实际 AudioOutput、MPV 实际输出快照和手机/电视点播/直播共用路径；手机 arm64 Java 编译38秒通过，diff空白检查通过，见14.17。
+- Unverified：未打包/安装新APK，未进行 HDMI/AVR 真机验证。此前14.16及P2-4的设备验收边界保留在原章节。
+- Rollback：本单元两文件恢复至基线；不推送。
+- Exactly one next action：以编译证据执行本guard的finish，原子提交并创建本地恢复tag。
