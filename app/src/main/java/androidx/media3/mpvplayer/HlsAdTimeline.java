@@ -161,6 +161,17 @@ final class HlsAdTimeline {
         return range == null ? positionMs : range.endMs();
     }
 
+    Range nextRange(long positionMs) {
+        int low = 0;
+        int high = ranges.size();
+        while (low < high) {
+            int mid = (low + high) >>> 1;
+            if (ranges.get(mid).endMs() <= positionMs) low = mid + 1;
+            else high = mid;
+        }
+        return low == ranges.size() ? null : ranges.get(low);
+    }
+
     private Range rangeAt(long positionMs) {
         int low = 0;
         int high = ranges.size() - 1;

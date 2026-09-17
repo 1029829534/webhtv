@@ -2,6 +2,8 @@
 
 ## Recovery anchor
 
+- 2026-09-17 广告闪现续修（已验收，待原子收尾）：上一单元已提交 `76a78c343974639f12257743a1baa339ca00929b`，tag `recovery/P10-ad-seek-timeline/20260917201113-76a78c343974`。guard `P10-ad-frame-boundary` / standard，范围为MPV适配层、定向测试、本文/索引和既有build证据目录；保护104个原有 `app/.cxx/` 文件。第6节原生边界实现及Surface复用补丁完成：25项广告定向测试、4项Surface生命周期测试通过；最新Mobile64已安装，50个原生条目与基线相同。手机fixture蓝到绿的661帧中广告红帧为0；原链接496.301秒受控截停、512.786秒恢复正文并持续播放。用户随后确认“看起来正常了”，关闭本场景可选验证；不追加回跳/退出操作。唯一下一动作：guard原子提交并生成恢复tag，不推送。
+
 - 2026-09-17 续修（当前）：guard `P10-ad-seek-timeline` / quick-fix，基线 `98a7f9033d46651d019e2b29a7a75ad4dac317de`，保护原104个 `app/.cxx/` 文件。第5节修复已通过定向验证、打包和安装；用户确认“好像可以了”并要求先打tag，关闭本次可选验证。仍有广告边界闪现的独立优化项，不包含在本次已验收回跳修复中。唯一下一动作：guard原子提交并生成恢复tag。
 
 - 目标：开启现有全局“智能去广”时，MPV复用Exo广告判定并自动跳过广告，保留HLS播放、时间轴、音画/字幕同步、seek与切源；关闭开关保持原播放。用户2026-09-17提出实现需求并要求深读成熟实现。
@@ -115,3 +117,42 @@
 - 用户随后确认“好像可以了。你先打个tag”，本次回跳修复按该确认收尾。用户同时观察到广告会闪现后再跳过；这是当前位置事件触发seek的边界限制，仍待后续独立优化，不能声称已实现广告首帧完全不可见。
 - 本次受手机取源、Android测试桩和命令控制环境处理影响，超出最初估计；正式原生库未重建，未安装辅助探针APK，未推送远端。
 - 提交/tag由 `Task-Guard: P10-ad-seek-timeline` 和对应 `recovery/P10-ad-seek-timeline/` 记录；回滚范围为本次两个MPV源文件、对应测试及本文。
+
+## 6. 广告帧进入显示前裁剪（2026-09-17，已实现并验收）
+
+### 来源与本地合同
+
+访问日期2026-09-17；用户已授权修复广告闪现，并明确要求参考Exo或成熟开源实现。本节在原时间轴和同一native二进制合同内补足第3节的已知边界限制，不引入提前截断正文或图像遮挡。
+
+| 证据 | 修订、等级、结论与适用限制 |
+| --- | --- |
+| Exo `HlsPlaylistParser`、`HlsMediaChunk` | 固定Media3 `e3e922d5c01bc0b564849940fe589daf37360d15` 的本地sources jar，A；解析清单前移除广告，分片按discontinuity调整时间戳，因此不依赖已显示后的进度回调。直接移植文本删除仍违反本节原时间轴、隐式IV与Range合同。 |
+| Exo `ClippingMediaPeriod.ClippingSampleStream.readData` | 同修订 `media3-exoplayer` sources jar，A；`buffer.timeUs >= endUs` 时输出EOS而非样本。支持在原生输出之前实施时间边界，而非提高UI轮询频率。 |
+| MPV视频/音频边界 | <https://github.com/FongMi/mpv/blob/cca559b41ceb0bb7731cf6ef2e1f33276cd30c42/player/video.c>、同修订 `player/audio.c` / `player/misc.c`，A；`get_play_end_pts` 在 `add_new_frame` 前拒绝边界及之后的帧，音频用 `mp_aframe_clip_timestamps` 裁样本。普通硬解、软解复用此路径，不增加GPU滤镜或下载硬解帧。 |
+| MPV原生接口和生命周期 | 同修订 `DOCS/man/options.rst` 的 `end` / `keep-open` / `keep-open-pause`、`player/playloop.c::handle_keep_open`，A；保留最后一帧和已打开文件，后续seek继续；文件局部设置随切源恢复。必须避免把广告边界EOS当成整片结束。 |
+| MPV EDL | 同修订 `demux/demux_edl.c`、`DOCS/edl-mpv.rst`，A；实际源码显示同一URL可复用demuxer，修正此前“每段必重新打开”的过强推断。但显式offset使用源起点，压缩后的时间轴还需同步改造缓存/字幕/恢复位置，本次不采用。 |
+| 上游现场反馈 | <https://github.com/mpv-player/mpv/issues/9602> 及其评论，B/C；keep-open EOF停在最后一帧PTS，不能要求进度等于边界毫秒。该报告不是Android性能证据，只支持小范围EOF位置容差和实际输出检查。 |
+
+上述MPV源码已从锁定本地checkout读取全文相关函数；外部issues通过GitHub接口读取原文和评论。既有Kodi/SponsorBlock代码和博文见第2、3节：播放位置回调适合普通跳段，无法证明首帧不可见。此次不更换检测算法；学术广告分类论文不能决定已知区间的原生输出边界，沿用第2节的明确不适用结论，不重复检索分类论文。未合入或升级任何上游提交。
+
+### 实施决策与验收
+
+- 不变：完整源清单、源总时长、媒体字节、AES/Range、AVS3/FEL/P8、视频手动解码、已有广告误识别保护。
+- 拒绝：等待已播放位置后才seek（可闪帧）；任意提前几十/几百毫秒seek（丢正文）；视频滤镜/遮挡（硬解性能或掩盖输出）；整条链切为EDL（本次不扩大时间轴/字幕映射）。
+- 采用：在已加载HLS上设置下一已识别广告起点为MPV文件局部 `end`，并临时保留文件/最后正文帧；原生输出触及边界后，由受控EOF执行现有精确seek至广告末尾，并配置下一边界。先设置下一边界再seek。没有候选、关闭开关、切源和停止时归还本任务拥有的设置。
+- 保存/恢复用户原 `end`、`keep-open`、`keep-open-pause`；不覆盖已明确指定的自定义裁剪或AB循环语义。原生单片循环在中间边界临时关闭，到最后正文区间恢复App循环设置，防止广告边界触发整片循环；手动seek重新选择对应边界。原生设置写入失败应归还已写入项，保持现有seek处理并记录原因。
+- 仅把已武装边界附近、无未完成手动seek的EOF作为广告边界；旧EOF、提前断流、真正结尾不得被吞掉。受控跳转保持App的暂停意图、缓存失效和观察会话合同。保持原有真实EOF/错误处理。
+- 验收：边界状态定向单测；一次Mobile ARM64打包/安装；明确颜色广告fixture实际输出、原URL跨广告及回跳、暂停/切源/循环必要邻接路径；原生库身份保持。不能用编译代替广告帧不可见的运行证据。
+- 回滚：撤销本单元App/测试/记录原子提交，上一恢复tag即第5节已验收回跳版本。无native重建和依赖变更。
+
+### 执行记录
+
+- 已接入文件局部 `end` / keep-open 与受控EOF状态，记录已写入值以避免归还设置时覆盖用户后来修改的值。状态测试覆盖末帧EOF容差、无关EOF、手动seek、重复事件、重置和双向边界查找。
+- 首次定向验证25项通过（边界6、时间轴13、代理6），Mobile ARM64打包通过，耗时1分29秒；日志 `build/p10-mpv-smart-adblock/ad-boundary-gradle.log`。首候选APK SHA-256 `01c62526567f0acbea2619390c83237a912cda748a727152c5c6c6c59d736216`，181893921字节，与AVS3 MediaCodec基线的50个原生条目完全相同；已安装手机。
+- 手机原生日志 `clip armed start=6000 end=8000`，在 `position=5988` 收到受控EOF并跳至8000。录屏 `ad-boundary-device.mp4` 共1438帧；切换到fixture后的313帧蓝色正文紧接348帧绿色正文，红色广告为0。录制开头包含之前播放的真实视频（有红色画面），初次全录屏颜色断言因此失败；依据已保存的逐帧结果，将评估起点限定为fixture的首个纯蓝帧777，不重录、不改变播放器，结果 `ad-boundary-frame-result.json`。
+- 阻断项与定点补丁（21:06）：用户报告退出后视频无法播放。手机直接读取原链接两级清单均HTTP 200；日志显示同一MpvPlayer在 `20:50:12 terminal Surface release requested` 后仍被PlaybackService复用，之后 `surface=true attached=false`，没有发出loadfile，最终把正常idle误报为网络失败。`MpvSurfaceTeardownPolicy` 的终止标记原来仅置位，不能在新媒体时恢复。本补丁先销毁已准备终止的旧native上下文，再在新媒体边界恢复绑定许可；不复用已终止的mediacodec_embed上下文，等待Surface时不将idle误判加载失败。原有退出解绑抑制保持到旧上下文销毁之后。
+- Surface生命周期4项测试通过，补丁后Mobile ARM64打包通过（45秒），日志 `ad-boundary-surface-gradle.log`。最终APK SHA-256 `25210897072d3d11d0747a9db9e89a3c5482037720ffd3684ecab0de0740fc5c`，181893921字节；50个原生条目仍全部与基线相同，身份记录 `ad-boundary-final-apk.json`。手机安装返回Success。
+- 原链接最终日志 `ad-boundary-final-device.log`：21:09:28正常file-loaded，21:09:29从487888毫秒续播；21:09:37在496301毫秒收到受控EOF，先配置第二段广告边界2013507–2031173，再跳到512786；21:09:38 playback-restart，随后 `/media` 为播放中、位置526164、原总时长2847880。原链接已恢复并越过广告，没有再次提前结束或报加载失败。
+- 用户确认“看起来正常了”，据此收尾并关闭后续可选回跳、退出重进检查；不能将这两项未追加的操作写成最终包真机验证。Surface复用序列由新增状态测试覆盖，广告逐帧证据来自同一边界实现的前一候选，后续补丁仅修改Surface生命周期与提前失败判断。
+- 范围限制：仍使用已有清单检测结果和120秒候选保护；保留源时长及正常seek可能带来的短暂停顿。用户明确的 `end` / `length` / AB-loop优先，此时原生广告边界不接管，沿用原有跳过逻辑，不承诺自定义裁剪场景也逐帧无广告。未增加解码滤镜、native构建或辅助探针APK。安装确认及Surface复用故障处理使本轮超出原估计，未以重复成功检查或上游扩展研究拖延收尾。
+- 提交与tag以 `Task-Guard: P10-ad-frame-boundary` 及 `recovery/P10-ad-frame-boundary/` 定位；同一原子提交包含实现、定向测试及本文/索引。回滚为撤销该提交，恢复本节开头的已验收回跳tag。

@@ -61,6 +61,7 @@ import com.fongmi.android.tv.player.mpv.PlaybackRecoveryMonitor;
 import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.setting.MpvPerformanceSetting;
 import com.fongmi.android.tv.setting.PreloadSetting;
+import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.utils.FileUtil;
 import com.github.catvod.crawler.SpiderDebug;
 import com.google.common.collect.ImmutableList;
@@ -183,6 +184,12 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private final Runnable isoTrackMetadataReadyListener;
     private final MpvHlsProxy hlsProxy;
     private final HlsAdTimeline.SkipState hlsAdSkipState = new HlsAdTimeline.SkipState();
+    private final MpvHlsAdBoundaryState hlsAdBoundary = new MpvHlsAdBoundaryState();
+    private String hlsAdOriginalEnd;
+    private String hlsAdOriginalKeepOpen;
+    private String hlsAdOriginalKeepOpenPause;
+    private String hlsAdAppliedEnd;
+    private boolean hlsAdBoundaryUnavailable;
     private final MpvAutoCacheBaselineState autoCacheBaselineState;
     private final MpvAutoHlsBitrateState autoHlsBitrateState;
     private final MpvCacheObserverState cacheObserverState;
@@ -514,6 +521,9 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     @Override
     protected ListenableFuture<?> handleSetMediaItems(List<MediaItem> mediaItems, int startIndex, long startPositionMs) {
+        restoreHlsAdBoundary();
+        hlsAdBoundary.clear();
+        hlsAdBoundaryUnavailable = false;
         restorePreloadCacheOverlay();
         clearCoalescedPropertyEvents();
         boolean reusingContext = canReuseContextForMediaReplacement();
@@ -564,6 +574,9 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             mediaReplacementCoordinator.reset();
         } else {
             if (initialized && !reusingContext) releaseNativeContext("new media");
+            // PlaybackService may keep this player after preparing a terminal
+            // Surface detach. Retire that context before allowing a new binding.
+            surfaceTeardownPolicy.beginNewMedia();
             long generation = mediaReplacementCoordinator.begin(reusingContext, hadActiveMedia, stopping);
             if (reusingContext) {
                 SpiderDebug.log("mpv", "context reused reason=new-media generation=%d stopPending=%s active=%s player=%s", generation, stopping, hadActiveMedia, identity(this));
@@ -618,13 +631,16 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     }
 
     private boolean canReuseContextForMediaReplacement() {
-        return initialized && !released && nativeContextOwner == this && "mediacodec_embed".equals(config.vo());
+        return initialized && !released && nativeContextOwner == this
+                && surfaceTeardownPolicy.shouldBindSurface()
+                && "mediacodec_embed".equals(config.vo());
     }
 
     @Override
     protected ListenableFuture<?> handleSetPlayWhenReady(boolean playWhenReady) {
         this.playWhenReady = playWhenReady;
         hlsProxy.setPlaybackPaused(!playWhenReady);
+        updateHlsAdBoundary(cachedPositionMs);
         if (initialized && playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED) {
             safeSetPropertyBoolean("pause", shouldPauseNativePlayback());
         }
@@ -670,7 +686,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     @Override
     protected ListenableFuture<?> handleSetRepeatMode(int repeatMode) {
         repeatOne = repeatMode == Player.REPEAT_MODE_ONE;
-        if (initialized) safeSetPropertyString("loop-file", repeatOne ? "inf" : "no");
+        if (initialized) safeSetPropertyString("loop-file",
+                hlsAdOriginalEnd != null ? "no" : repeatOne ? "inf" : "no");
         invalidateState();
         return Futures.immediateVoidFuture();
     }
@@ -683,7 +700,10 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     private ListenableFuture<?> seekToPosition(long positionMs, boolean automaticAdSkip) {
         if (positionMs == C.TIME_UNSET) positionMs = 0;
         if (discMenuActive) return Futures.immediateVoidFuture();
-        if (!automaticAdSkip) hlsAdSkipState.clear();
+        if (!automaticAdSkip) {
+            hlsAdSkipState.clear();
+            hlsAdBoundary.clear();
+        }
         positionMs = resolveHlsAdSeekTarget(Math.max(0, positionMs));
         cachedPositionMs = Math.max(0, positionMs);
         resetCacheTimelineForSeek(cachedPositionMs);
@@ -704,6 +724,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
             if (currentLikelyHls && playbackRestarted) {
                 hlsProxy.cancelAutomaticPreloadForDiscontinuity();
             }
+            updateHlsAdBoundary(cachedPositionMs);
             seekMpv(cachedPositionMs);
             if (currentLikelyHls && playbackRestarted) requestHlsPreload(cachedPositionMs);
             if (playbackState == Player.STATE_ENDED) playbackState = Player.STATE_BUFFERING;
@@ -728,6 +749,110 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 "skip from=%d to=%d ranges=%d timeline=source detector=exo-hls",
                 cachedPositionMs, targetMs, timeline.ranges().size());
         seekToPosition(targetMs, true);
+    }
+
+    private void updateHlsAdBoundary(long positionMs) {
+        if (!initialized || !fileLoaded || released || stopping) return;
+        HlsAdTimeline.Range next = currentLikelyHls
+                ? hlsProxy.adTimeline(cachedSelectedHlsBitrate).nextRange(positionMs) : null;
+        if (next == null) {
+            if (hlsAdBoundary.pending() && hlsAdOriginalEnd != null) {
+                // Lift the clip before seeking into the final programme part,
+                // but keep native looping/EOF handling held until that seek lands.
+                if (!hlsAdOriginalEnd.equals(hlsAdAppliedEnd)) {
+                    safeSetPropertyString("file-local-options/end", hlsAdOriginalEnd);
+                    hlsAdAppliedEnd = stringProperty("options/end", hlsAdOriginalEnd);
+                }
+                hlsAdBoundary.arm(null);
+                return;
+            }
+            restoreHlsAdBoundary();
+            return;
+        }
+        if (hlsAdBoundaryUnavailable || next.equals(hlsAdBoundary.range())) return;
+        try {
+            if (hlsAdOriginalEnd == null) {
+                String end = stringProperty("options/end", "none");
+                String length = stringProperty("options/length", "none");
+                String loopA = stringProperty("options/ab-loop-a", "no");
+                String loopB = stringProperty("options/ab-loop-b", "no");
+                // Explicit user clipping/AB looping owns those boundaries.
+                if (!"none".equals(end) || !"none".equals(length)
+                        || !"no".equals(loopA) && !"no".equals(loopB)) {
+                    hlsAdBoundaryUnavailable = true;
+                    PlaybackTrace.log("mpv-adblock", playbackTraceId,
+                            "clip unavailable reason=user-play-range");
+                    return;
+                }
+                hlsAdOriginalEnd = end;
+                hlsAdOriginalKeepOpen = stringProperty("options/keep-open", "no");
+                hlsAdOriginalKeepOpenPause = stringProperty("options/keep-open-pause", "yes");
+                if (mpvSetPropertyString("file-local-options/keep-open", "always") < 0
+                        || mpvSetPropertyString("file-local-options/keep-open-pause", "no") < 0
+                        || mpvSetPropertyString("file-local-options/loop-file", "no") < 0) {
+                    throw new IllegalStateException("clip lifecycle options rejected");
+                }
+            }
+            String end = String.format(Locale.US, "%.3f", next.startMs() / SECONDS_TO_MS);
+            if (mpvSetPropertyString("file-local-options/end", end) < 0) {
+                throw new IllegalStateException("clip end rejected");
+            }
+            hlsAdAppliedEnd = stringProperty("options/end", end);
+            hlsAdBoundary.arm(next);
+            PlaybackTrace.log("mpv-adblock", playbackTraceId,
+                    "clip armed start=%d end=%d mode=native-output-boundary",
+                    next.startMs(), next.endMs());
+        } catch (Throwable e) {
+            restoreHlsAdBoundary();
+            hlsAdBoundaryUnavailable = true;
+            PlaybackTrace.log("mpv-adblock", playbackTraceId,
+                    "clip unavailable reason=%s", e.getClass().getSimpleName());
+        }
+    }
+
+    private boolean handleHlsAdBoundaryEof() {
+        if (hlsAdBoundary.pending()) return true;
+        if (hlsAdBoundary.range() == null || !currentLikelyHls
+                || !Setting.isAdblock()) return false;
+        // EOF is at the last output frame, normally just before the clip end.
+        // playback-time is not in the coalesced time-pos cache.
+        long position = doubleSecondsToMs(doubleProperty("playback-time",
+                cachedPositionMs / SECONDS_TO_MS), cachedPositionMs);
+        long target = hlsAdBoundary.consumeEof(position, seekPositionState.hasTarget());
+        if (target < 0) return false;
+        PlaybackTrace.log("mpv-adblock", playbackTraceId,
+                "clip reached position=%d target=%d mode=native-output-boundary", position, target);
+        eofReached = false;
+        if (cachedDurationMs > 0 && target >= cachedDurationMs - 1) {
+            restoreHlsAdBoundary();
+            hlsAdBoundary.clear();
+            if (repeatOne) seekToPosition(0, false);
+            else markPlaybackEnded("adblock:terminal-boundary");
+            return true;
+        }
+        seekToPosition(target, true);
+        return true;
+    }
+
+    private void restoreHlsAdBoundary() {
+        if (hlsAdOriginalEnd != null && initialized) {
+            if (hlsAdAppliedEnd != null
+                    && hlsAdAppliedEnd.equals(stringProperty("options/end", "none"))) {
+                safeSetPropertyString("file-local-options/end", hlsAdOriginalEnd);
+            }
+            if ("always".equals(stringProperty("options/keep-open", "no"))) {
+                safeSetPropertyString("file-local-options/keep-open", hlsAdOriginalKeepOpen);
+            }
+            if ("no".equals(stringProperty("options/keep-open-pause", "yes"))) {
+                safeSetPropertyString("file-local-options/keep-open-pause", hlsAdOriginalKeepOpenPause);
+            }
+            safeSetPropertyString("file-local-options/loop-file", repeatOne ? "inf" : "no");
+        }
+        hlsAdOriginalEnd = null;
+        hlsAdOriginalKeepOpen = null;
+        hlsAdOriginalKeepOpenPause = null;
+        hlsAdAppliedEnd = null;
+        hlsAdBoundary.arm(null);
     }
 
     @Override
@@ -1988,6 +2113,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         switch (property) {
             case "time-pos", "time-pos/full" -> {
                 cachedPositionMs = stabilizedPositionMs(doubleSecondsToMs(value, cachedPositionMs));
+                updateHlsAdBoundary(cachedPositionMs);
                 maybeSkipHlsAd();
             }
             case "duration", "duration/full" -> {
@@ -2046,6 +2172,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                 playbackState = nextPlaybackState;
             }
             case "eof-reached" -> {
+                if (Boolean.TRUE.equals(value) && handleHlsAdBoundaryEof()) break;
                 boolean wasEnded = playbackState == Player.STATE_ENDED;
                 eofReached = MpvDiscMenuPolicy.isTerminalEof(
                         Boolean.TRUE.equals(value), discNavigationActive);
@@ -2424,6 +2551,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
         switch (eventId) {
             case MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
                 hlsAdSkipState.clear();
+                hlsAdBoundary.clear();
                 androidFelActive = false;
                 videoFrameSubmitted = false;
                 firstVideoFrameReported = false;
@@ -2516,11 +2644,14 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
                     }
                 }
                 loadStartPositionMs = C.TIME_UNSET;
+                updateHlsAdBoundary(resolveHlsAdSeekTarget(cachedPositionMs));
                 safeSetPropertyBoolean("pause", shouldPauseNativePlayback());
                 updatePreloadCacheOverlay();
                 startStateRefresh();
             }
             case MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
+                hlsAdBoundary.playbackRestarted(doubleSecondsToMs(
+                        doubleProperty("playback-time", cachedPositionMs / SECONDS_TO_MS), cachedPositionMs));
                 playbackRestarted = true;
                 if (config.deferStartupTrackRefresh()) {
                     scheduleTrackRefresh("event=playback-restart");
@@ -3458,6 +3589,9 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
     };
 
     private void stopInternal(boolean resetState) {
+        restoreHlsAdBoundary();
+        hlsAdBoundary.clear();
+        hlsAdBoundaryUnavailable = false;
         pendingSurfaceLoadGeneration = C.INDEX_UNSET;
         initialTrackSelectionGateActive = false;
         mainHandler.removeCallbacks(initialTrackSelectionGateTimeoutRunnable);
@@ -3901,6 +4035,7 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void refreshPlaybackState() {
         if (released || mediaItem == null || playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED || playerError != null) return;
+        updateHlsAdBoundary(cachedPositionMs);
         updatePreloadCacheOverlay();
         if (currentLikelyHls) requestHlsPreload(cachedPositionMs);
         refreshCacheState();
@@ -3959,6 +4094,8 @@ public final class MpvPlayer extends SimpleBasePlayer implements MPVLib.EventObs
 
     private void validateEarlyEndFile() {
         if (released || stopping || fileLoaded || eofReached || playerError != null || playbackState != Player.STATE_BUFFERING) return;
+        // An idle native player is expected until the visible Surface is bound.
+        if (pendingSurfaceLoadGeneration != C.INDEX_UNSET) return;
         if (booleanProperty("idle-active", idleActive)) {
             fail(classifyLoadError(null, "idle-active=true"), PlaybackException.ERROR_CODE_IO_UNSPECIFIED);
         } else {
