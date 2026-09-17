@@ -698,7 +698,8 @@ public final class MpvHlsProxy extends NanoHTTPD {
         boolean foregroundHandedOff = false;
         try {
             String range = requestHeader(httpSession, "range");
-            boolean targetPlaylist = isPlaylistUrl(target.url, null);
+            boolean targetPlaylist = MpvHlsSegmentContentPolicy.isPlaylist(
+                    target.role(), target.url, null);
             if (targetPlaylist) recordSelectedVariant(target);
             if (kernel == PlayerSetting.IJK
                     && !targetPlaylist
@@ -725,7 +726,8 @@ public final class MpvHlsProxy extends NanoHTTPD {
             }
             String finalUrl = response.request().url().toString();
             MediaType type = body.contentType();
-            if (isPlaylistUrl(target.url, type) || isPlaylistUrl(finalUrl, type)) {
+            if (targetPlaylist || MpvHlsSegmentContentPolicy.isPlaylist(
+                    target.role(), finalUrl, type == null ? null : type.toString())) {
                 recordSelectedVariant(target);
                 try (response; body) {
                     if (!response.isSuccessful()) {
@@ -1081,8 +1083,8 @@ public final class MpvHlsProxy extends NanoHTTPD {
         try (okhttp3.Response response = fetch(session, url, null, true)) {
             if (!preloadGate.allows(preloadGeneration)) return false;
             ResponseBody body = response.body();
-            if (!response.isSuccessful() || body == null
-                    || isPlaylistUrl(url, body.contentType())) return false;
+            // The caller supplies parsed media segments, including *.m3u8?ts=... URLs.
+            if (!response.isSuccessful() || body == null) return false;
             long upstreamLength = body.contentLength();
             if (upstreamLength < MIN_CACHE_FILE_BYTES) return false;
             boolean stripPngPrefix = MpvHlsSegmentContentPolicy.shouldProbePngPrefix(
@@ -1441,15 +1443,6 @@ public final class MpvHlsProxy extends NanoHTTPD {
         } catch (Throwable e) {
             return uri;
         }
-    }
-
-    private static boolean isPlaylistUrl(String url, @Nullable MediaType type) {
-        String mime = type == null ? "" : type.toString().toLowerCase(Locale.US);
-        if (mime.contains("mpegurl") || mime.contains("m3u8")) return true;
-        String lower = url == null ? "" : url.toLowerCase(Locale.US);
-        int query = lower.indexOf('?');
-        if (query >= 0) lower = lower.substring(0, query);
-        return lower.endsWith(".m3u8") || lower.endsWith(".m3u");
     }
 
     private static boolean looksLikePlaylist(String text) {

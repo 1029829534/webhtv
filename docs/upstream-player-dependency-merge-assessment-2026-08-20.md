@@ -60,6 +60,7 @@
 
 | 顺序 | 任务 ID | 类别 | 功能/能力 | 状态 | 唯一文档 |
 | ---: | --- | --- | --- | --- | --- |
+| 插入修复 | `P11` | MPV/App | AV3A 直播使用 `.m3u8?ts=…` 媒体端点时保持分片语义，修复代理误报 HTTP 400 | 已修复；19 项定向测试、Debug/快速 Release 构建和手机同源实播通过，持续超过 6 分钟、AV3A 音频输出无写入错误；Release 已安装，视频手动解码合同保持；源内迅雷插件 Debug JNI 问题独立记录 | [P11-mpv-live-av3a.md](P11-mpv-live-av3a.md) |
 | 插入需求 | `P10` | MPV/App | 全局智能去广开关接入，复用Exo识别并保持HLS时间轴/跳转 | 已实现并续修误跳正文、广告闪帧及Surface复用；原生输出边界fixture零广告帧，原链接正常跨广告；25项广告测试与4项Surface测试通过，Mobile64已安装且用户确认正常；原生库保持 | [P10-mpv-smart-adblock.md](P10-mpv-smart-adblock.md) |
 | 插入需求 | `C-AVS3` | 通用，Exo → MPV | AVS3 视频解码，基准档次与 High profile 分阶段验证 | baseline/0x32软件后端及MPV MediaCodec接入已交付；手机不具备AVS3硬件，硬解实际出帧与性能待目标设备验证 | [C-AVS3-video-decoding.md](C-AVS3-video-decoding.md) |
 | 外挂及容器兼容桥已验收；常规构建开关已移除 | `E4-LIBASS` | Exo/字幕 | 独立实现 ASS 特效字幕：libass、Media3 接线及跨播放器开源参考 | 2026-09-15 外挂/现有 Media3 SSA sample 兼容桥及字体已获用户验收；按用户“必需功能”要求删除实验开关，手机/电视 arm64 无参数 debug 构建及 JNI/编译接线核验通过，公共接线同时适用于 release（第 15 节）。输入 14/14、JNI/包装与设备 5 项通过；容器生命周期素材的基线失败已定位并修正，用户验收后不追加复测，限制见第 14 节。已接受复杂一核 CPU ≤40% / render+upload p95 ≤16.67 ms；MPV 独立修复保留。精确 MKV duration/未缓存长事件 seek、双 ABI、HDR/DV 等仍属后续阶段 | [E4-LIBASS-exo-ass-rendering.md](E4-LIBASS-exo-ass-rendering.md) |
