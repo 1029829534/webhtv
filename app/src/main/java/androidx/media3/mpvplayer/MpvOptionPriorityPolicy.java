@@ -8,6 +8,8 @@ import java.util.Set;
 
 final class MpvOptionPriorityPolicy {
 
+    static final String HARDWARE_CODECS = "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1,avs3";
+
     // Native applies the decoder/renderer contract to the selected DV7 chain.
     // Protect only the request and original bitstream; a FEL preference must
     // not override ordinary videos' VO, decoder shortcuts, or mpv.conf priority.
@@ -61,7 +63,7 @@ final class MpvOptionPriorityPolicy {
         if (config.gpuApi() != null && !config.gpuApi().isEmpty()) candidates.put("gpu-api", config.gpuApi());
         if (config.openglEs() || fel) candidates.put("opengl-es", config.openglEs() ? "yes" : "no");
         candidates.put("hwdec", config.hwdec());
-        candidates.put("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1");
+        candidates.put("hwdec-codecs", HARDWARE_CODECS);
         candidates.put("ao", config.ao());
         candidates.put("ad", MpvAudioDecoderPolicy.hardwareFirstDecoderList());
         candidates.put("audio-spdif", config.audioSpdif());

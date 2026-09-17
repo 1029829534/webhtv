@@ -2,6 +2,8 @@
 
 本文是 WebHTV 重新生成 `libmpv.so` 及其 FFmpeg 依赖的权威说明。
 
+2026-09-17 C-AVS3 MediaCodec：`ffmpeg-avs3-mediacodec.patch` 接在FFmpeg diagnostics补丁后，加入 `avs3_mediacodec` / `video/avs3`，将raw/av3c序列配置交给现有MediaCodec会话。显式硬件上下文与hardware-only查询均为必需，无NDK按MIME绕过筛选的兜底；设备不支持时不自动软解，软件后端保留。正式FFmpeg override显式启用并校验该decoder，日常Debug/Release直接打包已提交资产。仅更新两ARM codec，其他18个MPV库保持；依赖锁定revision、JNI/渲染/HPM与Exo制品不变。两ABI/16KB/导出、9项Java检查和手机JNI/NDK无硬件拒绝已通过；AVS3硬件实际出帧/profile兼容/性能仍需目标设备验收。精确制品、补丁哈希、原始结果与回滚见 [C-AVS3 MediaCodec](../docs/C-AVS3-video-decoding.md#mpv-avs3-mediacodec2026-09-17)。
+
 2026-09-17 C-AVS3 高级档次：在原有 uavs3d 之外，加入固定 HPM 15.0 `0c7ac42edfac6d18b92b58a5ef43bca58526ca7a` 的 `0x32` 软件后端，由 `build_avs3_native.sh` 强制调用 `build_hpm_native.sh`，按 MPV 自有 NDK29/ABI 独立静态链接。HPM 内部符号统一隔离，ARM SIMD 使用固定 SSE2NEON；输入、分配、错误、时间戳与 flush 由适配层管理。只更新两 ABI codec，保留其他 MPV/FEL/字幕库；硬解模式不自动切软件。原 HPM 许可证限定标准开发、测试与推广，原文与 SSE2NEON MIT 许可随 nextlib AAR/APK 提供，本地构建成功不代表已取得对外商业分发授权。具体已验收范围、性能与未验收项以 [C-AVS3 当前记录](../docs/C-AVS3-video-decoding.md) 为准。
 
 2026-09-17 P2-4第9.25节：FEL起播的GPU上下文选项改用mpv原有 `m_option_copy` 管理对象列表所有权，修复配置析构释放静态内存导致的native abort。仅修改FEL patch的 `vo_gpu_next.c` 块并增量重建两ARM ABI的libmpv，保留完整FEL、渲染回退和手动视频解码合同；其余18个MPV库（包括AVS3 codec/JNI）逐字节不变，依赖锁和公开导出不变。真实ta/option析构的ASan/UBSan先复现旧错误再通过修复；构建命令、最终产物与手机验证见[任务第9.25节](../docs/P2-4-mpv-android-fel.md)。普通Gradle构建直接包含修复后的assets。

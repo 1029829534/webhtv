@@ -52,6 +52,7 @@ args=(
 	--extra-cflags="-I$prefix_dir/include $cpuflags" --extra-ldflags="-L$prefix_dir/lib"
 
 	--enable-{jni,mediacodec,mbedtls,libdav1d,libxml2,libaribcaption,libarcdav3a,libuavs3d} --disable-vulkan
+	--enable-decoder=avs3_mediacodec
 	--disable-static --enable-shared --enable-{gpl,version3}
 
 	# disable unneeded parts
@@ -68,6 +69,11 @@ args=(
 	--enable-muxer=mov,matroska,mpegts,spdif
 )
 ../configure "${args[@]}"
+
+if ! grep -Fqx '#define CONFIG_AVS3_MEDIACODEC_DECODER 1' config_components.h; then
+	echo "Required AVS3 MediaCodec decoder is missing from the FFmpeg build." >&2
+	exit 1
+fi
 
 make -j$cores
 make DESTDIR="$prefix_dir" install

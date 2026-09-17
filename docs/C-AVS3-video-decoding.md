@@ -2,6 +2,10 @@
 
 ## Recovery anchor
 
+- **MPV MediaCodec 接入交付（2026-09-17 19:22 Asia/Shanghai）**：本轮代码、双ARM codec、Mobile ARM64 APK及定向验证已完成；guard `C-AVS3-mpv-mediacodec`，回滚基线仍为 `13053755eaea00aa9c6449e8ad55c2ccf1fbc68a`。最终ASan/UBSan、原始FFmpeg+7补丁对照、双ABI/16KB/178导出符号、9项Java测试通过；最终codec在原手机的JNI/NDK查询均返回“无AVS3硬件”，并拒绝无显式硬件上下文的wrapper重试。APK `build/avs3-native/deliverables/WebHTV-5.6.0-AVS3-MediaCodec-mobile-arm64-debug.apk`，SHA-256 `eba62c78bb1aeef6ff6f6643358e1003f8c0e4e503270987a6b85ade378d45cc`。50个APK native条目只有目标MPV codec变化；Exo及其他MPV库保持。此APK未安装到用户App；命令检查仅使用临时native库和dex，没有安装探针APK。**未实测：具备AVS3硬件的电视/盒子的真实出帧、profile兼容和性能。唯一下一动作：执行guard finish原子提交并生成本地恢复tag。** 本段取代下方构建中状态。
+
+- **MPV AVS3 MediaCodec 接入（2026-09-17 18:47 Asia/Shanghai）**：用户在询问可行性后明确“实施”。本轮为 `C-AVS3-mpv-mediacodec` / upstream；基线 `13053755eaea00aa9c6449e8ad55c2ccf1fbc68a`，恢复 tag `recovery/C-AVS3-resume-seek/20260917180827-13053755eaea`。保护既有 `app/.cxx/` 104 文件。完成目标：注册 FFmpeg AVS3 MediaCodec、接通 App 硬解列表、交付双 ARM codec 和 Mobile ARM64 APK；硬解失败禁止自动软解，现有软件后端保留。方案、来源和验证边界见文末“MPV AVS3 MediaCodec”。预计研究/修改15分钟、增量构建/定向验证15–20分钟、关闭3分钟，目标19:25。**唯一下一动作：按已记录方案应用 AVS3 wrapper 与硬件选择补丁。**
+
 - **重复续播跳转修复（2026-09-17 18:03 Asia/Shanghai）**：用户授权快速修复并明确不运行测试。基线 `edf4324034fe1681a658dd4557dd8451fcfdb792` / `recovery/C-AVS3-hpm15/20260917175103-edf4324034fe`；guard `C-AVS3-resume-seek` / quick-fix，仅 `MpvPlayer.java` 和本文件，保护已有 `app/.cxx/`。原日志已证实同一媒体在FILE_LOADED前后各发送一次seek；原代码仅为raw ISO提前返回，普通媒体先立即跳转、随后又恢复同一待执行位置。现将提前返回统一用于尚未加载完成的媒体，只更新最新 `initialSeekPositionMs`，由既有FILE_LOADED分支执行一次；已随 `loadfile start=` 定位时继续免去额外seek。已加载媒体的人工跳转、光盘导航、HLS去广位置解析、stop/替换清理沿用原逻辑。此为既定方案的局部修正，无native、ABI、依赖或解码策略改动，不重新开展外部研究。代码审读覆盖未加载/已加载、起播参数与清理分支；按用户要求不运行测试，本轮不打包安装，运行时效果尚未经复测。预计修复/审读2分钟、文档及提交tag1分钟，目标18:06。**唯一下一动作：审读最终局部diff并执行guard finish。** 本段关闭下方历史记录中的重复seek待修项，不改变4K50软件吞吐限制。
 
 - **用户确认关闭（2026-09-17）**：用户明确接受设备软件解码性能限制并要求“打tag”。据此关闭本轮额外设备检查，以最终APK、双播放器/双ARM原生制品检查、独立参考像素/时间戳/flush/错误路径验证，以及手机两套codec原片128帧一致性和MPV实际首帧作为本次交付证据。停止额外构建、采样和研究，执行 `C-AVS3-hpm15` 原子提交与本地annotated恢复tag，不推送。**保留限制**：原片4K50不实时，续播预解码等待较长；下方记录的重复seek待修点没有在此单元修复，Exo App持续播放/内核切换的完整设备验收未补跑。用户接受性能不等于宣称不存在其他问题，也不扩大0x30或商业分发的支持范围。**唯一下一动作：执行guard finish并报告生成的commit/tag。** 本段取代下方“验收未通过、不提交/tag”的历史关闭状态。
@@ -320,3 +324,57 @@
 - 修复已完成：移除硬解分支的匿名 `FfmpegVideoRenderer`，恢复直接返回。核对 `getVideoCodecSelector` 仍仅提供硬件视频decoder；`buildAudioRenderers` 保留FFmpeg与初始化失败回退。`PlayerManager.retryHardDecodeSwitch` 明确重建HARD模式，没有自动改成SOFT；预缓存的renderer能力查询不负责实际播放解码。
 - 验证：`app-strict-video-build.log` 显示单ARM64 APK及 `MpvHardwareDecodePolicyTest`、`ExoAudioCodecSelectorTest` 通过，2分19秒，112项任务中11项执行。未重编native；MPV硬解禁用自动软解、手动软解允许软件decoder，音频硬件排序及软件候选保留。
 - APK已重新生成在 `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk`，并已发起OEM安装助手安装；随后用户明确“可以了，打tag”。上节SHA-256属于前一版APK，不用于标识本次修复包。用户确认后停止额外验证：新的renderer策略探针只准备了代码，未执行，不冒称手机探针通过。
+
+## MPV AVS3 MediaCodec（2026-09-17）
+
+### 已批准的设计与研究
+
+决定性问题：能否复用现有 FFmpeg/MPV 的 MediaCodec 会话，把原始 AVS3 数据交给系统真实硬件组件，同时保持手动软硬解和现有播放器输出合同。用户已明确批准该接入；没有新增转码、自动降级、厂商私有服务或强制软件后备。
+
+| 证据 / 访问日 | 固定来源及处置 | 结论、适用性与限制 |
+| --- | --- | --- |
+| A / 2026-09-17 | `FongMi/FFmpeg@177f090e0503b7e013922ca903bde14b1c375f18`，`mediacodecdec.c`、`mediacodecdec_common.c`、`mediacodec_wrapper.c`、`configure`、`allcodecs.c`、`Makefile`；保留版本，窄补接线 | 共用 wrapper 已负责 CSD、输入/输出队列、Surface、PTS、flush 和资源释放；缺 AVS3 注册和 MIME。现有本地音频补丁已提供 `hardware_only` 查询，API29+核对 `isHardwareAccelerated`，旧系统使用现有软件名称排除；可直接复用。NDK 按 MIME 创建的兜底无法保证硬件属性，AVS3 必须禁止该兜底。 |
+| A / 2026-09-17 | 同 FFmpeg 的 `movenc.c:mov_write_av3c` 和现有 `libuavs3d_decode_extradata`；保留软件实现 | `av3c` 为 version=1、16位序列长度、序列头和library字段；不是可直接送给设备的原始序列。硬件 wrapper 只做有界解包，保留原 `00 00 01 B0`、profile及位深，不调用软件解码器、不修改输入。无extradata时保留流内序列头路径。 |
+| A / 2026-09-17 | [AOSP MediaCodec.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/media/java/android/media/MediaCodec.java#L416)、[MediaCodecInfo.java](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/media/java/android/media/MediaCodecInfo.java#L149)，revision `android-15.0.0_r1`；接口依据 | `csd-0` 随configure提交、start自动送入，不额外重复提交；硬件属性由厂商提供。AOSP没有标准化AVS3 profile常量，不能把码流0x32当作Android profile枚举强塞；交原序列给硬件configure/解码判断，失败如实返回。 |
+| A / 2026-09-17 | `FongMi/mpv@cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`，`vd_lavc.c:add_all_hwdec_methods`、`hwdec-codecs`与软件fallback分支；已覆盖，无MPV native修改 | MPV按 `avcodec_get_hw_config` 枚举 wrapper 的 MediaCodec direct/copy能力；App在 `MpvPlayer` 和性能参数overlay两处覆盖硬解编码列表，必须都加avs3。继续复用既有软件模式及禁止硬解自动软解策略。 |
+| B / 2026-09-17 | [VLC MediaCodec](https://github.com/videolan/vlc/blob/778ec071ff216602f2a6e4ddd522dfdb6b791472/modules/codec/omxil/mediacodec.c)，`ParseExtra` / CSD / flush；参考，不移植 | 成熟做法是按codec准备CSD并复用公共会话；没有证据支持为AVS3复制一套Surface/解码循环。此版本未提供AVS3专属硬解证明。 |
+| A / 2026-09-17 | [GPAC codec registry](https://github.com/gpac/gpac/blob/768fe974c4a6c2328a3ffd79107fcfe61616cfcc/src/utils/constants.c#L156)；参考 | `GF_CODECID_AVS3_VIDEO` 映射 `video/avs3`，与现有Exo一致。它证明媒体类型映射，不证明某款电视暴露该MIME或支持特定档次。没有证据的厂商别名不猜测添加。 |
+| B / C / 2026-09-17 | [mpv PR16304](https://github.com/mpv-player/mpv/pull/16304)、[PR5602](https://github.com/mpv-player/mpv/pull/5602)、[issue7777](https://github.com/mpv-player/mpv/issues/7777) 原文；参考，均非本轮移植提交 | GPU输出可支持MediaCodec；Surface、暂停和copy路径历史上有独立生命周期/掉帧问题。因此保留当前已修复的输出实现，不因新增codec修改默认VO或承诺性能数值。报告不能替代当前设备验收。 |
+
+原文保存在 `build/avs3-native/mediacodec-research/`。经配置代理 `127.0.0.1:7897` 访问；grep.app限流、Google返回挑战页，改读固定AOSP/VLC/GPAC及GitHub原文。晶晨公开vendor树 `41bd0acec72455d30424a37799d558b0e67623a1` 本轮未找到适用的AVS3 MediaCodec接口实现，故不声称已验证厂商CSD私有约定。论文/新算法基准本轮不适用：只接标准压缩输入和现有设备API，不改编码算法、渲染/调度，也不据文献预测4K吞吐。设备性能与厂商差异需实际硬件，停止继续泛搜。
+
+### 取舍与保持的合同
+
+- **不改动**：MPV硬解无法发现AVS3，不满足需求。**原样照用通用wrapper**：传av3c原包装会给出错误CSD，且无JVM的NDK按MIME兜底可能选软件组件，拒绝。**窄适配（选择）**：独立 `ffmpeg-avs3-mediacodec.patch` 接在现有FFmpeg补丁之后，注册wrapper、规范化CSD，只对AVS3启用hardware-only及失败关闭；App两处列表同步增加avs3。
+- 无新增外部依赖/公开ABI、无Java/native会话或Surface所有权更改，复用已验收的缓冲释放锁和flush。两套ARM只替换MPV `libmvcodec.so`，其他18个MPV库与Exo所有制品逐字节保持基线。uavs3d/HPM、AV3A、ASS、FEL和P8 HDR10已提交实现必须保留。HPM原许可不变。
+- 有限CSD解包只检查读取所需边界和序列起始码，完整语法/profile由设备判断；不声称校验全部AVS3标准。标准流内序列原样送入，容器时间戳和色彩沿用公共wrapper。硬解只创建枚举验证过的组件，失败由用户手动选软解。软件设置不会因新增wrapper变成硬解。
+- API29+信任平台硬件属性；较旧平台复用既有名称分类能力，无法从应用证明物理ASIC实现。不以设置按钮、注册标记、成功configure或一个Surface对象作为真实出帧证明。
+
+### 验收、边界和回滚
+
+1. 用生产函数的定向C检查覆盖raw/av3c、原0x32字节保留、截断/错误长度/无初始化数据；直接执行硬件选择函数，验证查无硬件时JNI/NDK都不走按MIME创建，并覆盖原HEVC和音频合同。
+2. 两ARM按当前已打补丁源码和原工具链增量构建codec；补丁能在固定基线+既有补丁链应用。ELF/SONAME/DT_NEEDED、16KB对齐、符号与所有非目标native哈希核对；正式构建脚本强制包含wrapper，普通Debug/Release打包无需额外开关。
+3. 最小App验证包含硬解列表/选项优先级与现有禁止软解fallback检查、单Mobile ARM64 APK，核对APK内native字节。已有软件像素验证不无因重跑；native软件源/依赖和其他库身份作为本轮保留证据。
+4. 当前vivo设备既有枚举无AVS3 MediaCodec，且ADB尚未连接；**真实AVS3硬解出帧、4K50性能和厂商特定profile/CSD为未实测边界**。本单元交付通用接入，不能把编译/模拟平台接口检查当作硬件播放验收。若设备公开兼容 `video/avs3`，手动硬解才会尝试该组件。
+5. 源码补丁、构建/校验、双ARMcodec、App列表及记录同一guard原子提交并创建annotated本地恢复tag，不推送。回滚本单元提交即可整体回到 `13053755eaea00aa9c6449e8ad55c2ccf1fbc68a`；保持已完成0x32软件和续播修复。
+
+### 实施中的补充边界
+
+- `f_decoder_wrapper.c:reinit_decoder` / `common/codecs.c:mp_select_decoders` 会在初始化失败后尝试下一个同编码wrapper；`hwdec=no` 本身不排除直接选到 `_mediacodec` decoder。新增AVS3必须要求调用方显式提供MediaCodec硬件上下文（MPV direct/copy的现有路径均提供），防止未知软件profile失败后反向绕入硬件。该约束只落在新AVS3分支，保持既有HEVC和音频路径；没有修改MPV native或扩大其他格式行为。
+- 首次ASan/UBSan生产函数检查已通过配置解包与硬件查询拒绝、原HEVC/音频邻接合同。首轮双ARM构建中ARMv7已完成；ARM64完成后补上上述上下文约束，再仅重编受改的MediaCodec对象，不重复configure。源码固定基线+全部补丁字节对照和最终制品校验将在最终代码上执行一次。
+- 19:00前后ADB已恢复识别原vivo设备。已准备通过 `app_process` 加载最终codec的JNI/NDK命令检查，不安装探针APK、不改变用户播放器设置。它只验证设备无AVS3组件时安全拒绝，不能代替AVS3硬件实际出帧。
+
+### 最终实现与验证
+
+- `ffmpeg-avs3-mediacodec.patch` 注册 `avs3_mediacodec` / `video/avs3`，按公共MediaCodec HW配置供MPV发现direct/copy；CSD接受原始序列或有界av3c解包，保留profile/位深和原始packet。AVS3专用分支要求显式MediaCodec上下文、只选硬件、无按MIME绕过筛选的兜底。`MpvOptionPriorityPolicy.HARDWARE_CODECS` 同时供初始化及性能overlay使用。正式MPV构建显式启用并校验新wrapper，普通App构建无需额外功能开关。
+- 最终补丁SHA-256：`4dcd2c4d95664d154150b7d3c26ab4cfbb90e1159b33a4b4ccea1e40e2aa4704`。依赖revision、NDK29/API24、原有patch/静态HPM/uavs3d输入保持，`mpv-native-lock.json`无版本变更。`mediacodec-patch-chain-complete.log`证明从固定FFmpeg原提交顺序应用7个补丁，11个涉及文件与实际构建源逐字节一致。首次验证驱动只解析git格式头，漏收普通unified patch中的两个文件；修正文件枚举后完整链通过，无生产补丁放宽。
+- `mediacodec-build-{arm64,armv7l}.log` 为同一配置和源的双ARM构建；新增显式上下文检查后，各自 `*-final.log` 只重编 `mediacodecdec_common.o` 并重链接，没有再次configure或重建其他播放器。`mediacodec-contract-final.log` 的真实生产函数ASan/UBSan覆盖raw/av3c、长度截断/坏起始码/空CSD、profile原样保留、JNI/NDK无硬件及无显式上下文拒绝、Surface参数转交、HEVC和音频邻接分支；平台调用为mock，未伪称真实硬件输出。
+- `mediacodec-device-final.log`：原vivo/Android15公开 `video/avs3` 硬件组件为0；最终已打包ARM64 codec通过 `app_process` 调用真实Android MediaCodecList，JNI和NDK的raw/av3c四项返回 `AVERROR_DECODER_NOT_FOUND`，两项无硬件上下文返回EINVAL。注册的HW设备配置正确，默认软件decoder仍为 `libuavs3d`。初次Java编译路径误写 `android-37`，实际SDK为 `android-37.0`；修正路径后通过，没有把调用环境错误算作播放器错误。
+- `mediacodec-assets.log`：官方仓库校验脚本双ABI版本/能力/命名空间/ELF检查通过。`mediacodec-artifact-contract.log`：两ABI各178个公开符号完全不变，LOAD均至少16KB对齐；相对前一已交付APK，50个native条目只有ARM64目标codec改变。原Exo制品、其他18个MPV库和全部许可证保持。所有最终设备检查与APK使用同一codec字节。
+- `mediacodec-app-build.log`：40秒完成单Mobile ARM64 APK与9项定向测试（选项优先级7项、手动解码策略2项），112项任务中13项执行。APK 181,893,921字节；副本与原Gradle输出逐字节一致，SHA见最新Recovery anchor。未触发安装助手、未更改用户首选项、未重跑原HPM逐像素/整片/性能矩阵。
+- `mediacodec-checkpoint.log` 为0 errors，1项预期的本任务目标二进制/补丁未提交warning，由同一guard负责关闭。目标设备硬解实际出帧与吞吐继续明确为未测；恢复tag只代表本次接入及上述已验证合同。
+
+| 最终MPV codec | SHA-256 | 字节数 / 相对基线 |
+| --- | --- | --- |
+| ARM64 `libmvcodec.so` | `275c63b297bb1357580c925faa23dba7de2d9f044555de762ba5843219abf1d6` | 16,526,960 / +1,216 |
+| ARMv7 `libmvcodec.so` | `74e5289c1f6457a9c270cd34198c2a6f886e7092bed3eb89a8d04d1db714706c` | 15,470,492 / +832 |
