@@ -33,6 +33,7 @@ import com.fongmi.android.tv.player.exo.ExoFrameSchedulingPlayerSettings;
 import com.fongmi.android.tv.player.exo.ExoFrameSchedulingSessionLock;
 import com.fongmi.android.tv.player.exo.ExoUtil;
 import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
+import com.fongmi.android.tv.player.exo.subtitle.ExoSubtitleSession;
 import com.fongmi.android.tv.player.exo.ExoTunnelingProgressWatchdog;
 import com.fongmi.android.tv.player.exo.ExoTunnelingRuntimeState;
 import com.fongmi.android.tv.player.exo.ExoTunnelingWatchdog;
@@ -47,6 +48,7 @@ import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.github.catvod.crawler.SpiderDebug;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -67,6 +69,7 @@ public class ExoPlayerEngine implements PlayerEngine {
     private String activeFormat;
     private ExoPlayer player;
     private ExoAssSession assSession;
+    private ExoSubtitleSession subtitleSession;
     private int decode;
     private boolean playWhenReady;
     private boolean cacheSessionActive;
@@ -153,6 +156,7 @@ public class ExoPlayerEngine implements PlayerEngine {
                 ExoUtil.isTunnelingEnabled(decode, false));
         MediaSourceFactory.acquireCacheSession();
         this.assSession = ExoAssSession.createIfEnabled(App.get(), ExoUtil.isTunnelingEnabled(decode, false));
+        this.subtitleSession = new ExoSubtitleSession();
         try {
             this.player = ExoUtil.buildPlayer(
                     decode,
@@ -162,9 +166,11 @@ public class ExoPlayerEngine implements PlayerEngine {
                     frameSchedulingSettings,
                     dolbyVisionPlaybackState,
                     compressedAudioDirectPolicy,
-                    assSession);
+                    assSession,
+                    subtitleSession);
         } catch (RuntimeException | Error e) {
             if (assSession != null) assSession.release();
+            subtitleSession.release();
             MediaSourceFactory.releaseCacheSession();
             throw e;
         }
@@ -187,6 +193,10 @@ public class ExoPlayerEngine implements PlayerEngine {
         return assSession;
     }
 
+    public ExoSubtitleSession getSubtitleSession() {
+        return subtitleSession;
+    }
+
     @Override
     public void release() {
         Runnable cacheRelease = null;
@@ -205,6 +215,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         dolbyVisionFallbackPreparedForNextStart = false;
         dolbyVisionFallbackSpec = null;
         if (assSession != null) assSession.release();
+        subtitleSession.release();
         player.release();
     }
 
@@ -220,6 +231,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         PlaybackAnalyticsListener.finishSession(player.getCurrentPosition());
         dolbyVisionPlaybackState.resetAttempt();
         if (assSession != null) assSession.release();
+        subtitleSession.release();
         player.release();
         PlaybackTrace.log("player-engine", getPlaybackTraceId(), "rebuild decode=%d", decode);
         tunnelingEnabledForSession = ExoUtil.isTunnelingEnabled(decode, tunnelingFallbackAttempted);
@@ -230,6 +242,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         frameSchedulingOutput = ExoDecoderRuntimeProfiles.currentOutput(
                 tunnelingEnabledForSession);
         assSession = ExoAssSession.createIfEnabled(App.get(), tunnelingEnabledForSession);
+        subtitleSession = new ExoSubtitleSession();
         player = ExoUtil.buildPlayer(
                 decode,
                 listener,
@@ -238,7 +251,8 @@ public class ExoPlayerEngine implements PlayerEngine {
                 schedulingSettings,
                 dolbyVisionPlaybackState,
                 compressedAudioDirectPolicy,
-                assSession);
+                assSession,
+                subtitleSession);
         frameSchedulingSettings = schedulingSettings;
         frameSchedulingSessionLock.onRendererRebuilt(
                 schedulingSettings.decision());
@@ -530,6 +544,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         cancelDecoderRuntimeStableWindow();
         finishDecoderRuntimeAttempt();
         PlaybackAnalyticsListener.finishSession(player.getCurrentPosition());
+        subtitleSession.reset();
         player.stop();
     }
 
@@ -569,12 +584,39 @@ public class ExoPlayerEngine implements PlayerEngine {
 
     @Override
     public void setTrack(List<Track> tracks) {
-        TrackUtil.setTrackSelection(player, tracks);
+        List<Track> allowed = new ArrayList<>(tracks.size());
+        for (Track track : tracks) {
+            if (subtitleSession.canSelectPrimary(player, track)) allowed.add(track);
+        }
+        if (!allowed.isEmpty()) TrackUtil.setTrackSelection(player, allowed);
     }
 
     @Override
     public void resetTrack() {
+        subtitleSession.reset();
         TrackUtil.reset(player);
+    }
+
+    @Override
+    public boolean supportsSecondarySubtitle() {
+        return true;
+    }
+
+    @Override
+    public boolean isPrimarySubtitleSelected(Format format) {
+        return subtitleSession.isPrimarySelected(format);
+    }
+
+    @Override
+    public boolean isSecondarySubtitleSelected(Format format) {
+        return subtitleSession.isSecondarySelected(format);
+    }
+
+    @Override
+    public void setSecondarySubtitleTrack(Track track) {
+        boolean selected = subtitleSession.selectSecondary(player, track);
+        PlaybackTrace.log("exo-subtitle", getPlaybackTraceId(), "role=secondary accepted=%s disabled=%s",
+                selected, track == null || track.isDisabled());
     }
 
     @Override
@@ -955,6 +997,7 @@ public class ExoPlayerEngine implements PlayerEngine {
         if (!playWhenReady) player.pause();
         MediaItem item = ExoUtil.getMediaItem(spec.copyWithFormat(activeFormat), decode);
         item = com.fongmi.android.tv.player.exo.ExoDiagnosticCollector.prepare(player, item, spec.getPlaybackTraceId());
+        subtitleSession.reset();
         player.setMediaItem(item, position);
         preCache.start(player, item, spec.getPlaybackTraceId(), spec.getPlaybackRoute());
         player.prepare();

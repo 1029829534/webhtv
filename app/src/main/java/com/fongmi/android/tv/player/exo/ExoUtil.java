@@ -67,6 +67,7 @@ import com.fongmi.android.tv.player.engine.PlaySpec;
 import com.fongmi.android.tv.player.engine.PlayerEngine;
 import com.fongmi.android.tv.player.exo.ass.AssInput;
 import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
+import com.fongmi.android.tv.player.exo.subtitle.ExoSubtitleSession;
 import com.fongmi.android.tv.player.lut.LutSetting;
 import com.fongmi.android.tv.player.track.LangUtil;
 import com.fongmi.android.tv.setting.ExoPerformanceSetting;
@@ -184,6 +185,20 @@ public class ExoUtil {
             @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState,
             @Nullable ExoCompressedAudioDirectPolicy compressedAudioDirectPolicy,
             @Nullable ExoAssSession assSession) {
+        return buildPlayer(decode, listener, tunnelingFallbackAttempted, decoderRuntimeSession,
+                frameSchedulingSettings, dolbyVisionPlaybackState, compressedAudioDirectPolicy, assSession, null);
+    }
+
+    public static ExoPlayer buildPlayer(
+            int decode,
+            Player.Listener listener,
+            boolean tunnelingFallbackAttempted,
+            @Nullable ExoDecoderRuntimeSession decoderRuntimeSession,
+            ExoFrameSchedulingPlayerSettings frameSchedulingSettings,
+            @Nullable ExoDolbyVisionPlaybackState dolbyVisionPlaybackState,
+            @Nullable ExoCompressedAudioDirectPolicy compressedAudioDirectPolicy,
+            @Nullable ExoAssSession assSession,
+            @Nullable ExoSubtitleSession subtitleSession) {
         ExoFrameSchedulingPlayerSettings schedulingSettings =
                 frameSchedulingSettings == null
                         ? ExoFrameSchedulingPlayerSettings.capture(decode)
@@ -200,15 +215,14 @@ public class ExoUtil {
                 ExoDecoderRuntimeProfiles.currentOutput(
                         isTunnelingEnabled(decode, tunnelingFallbackAttempted));
         ExoDiagnosticCollector diagnostics = new ExoDiagnosticCollector();
+        RenderersFactory renderersFactory = withAssObserver(buildPlaybackRenderersFactory(
+                decode, automaticProfile ? decoderRuntimeSession : null, decoderOutput,
+                schedulingSettings, dolbyVisionPlaybackState, compressedAudioDirectPolicy, diagnostics), assSession);
+        // Install the primary ASS observer before appending the independent secondary renderer.
+        if (subtitleSession != null) renderersFactory = subtitleSession.wrapRenderersFactory(renderersFactory);
         ExoPlayer.Builder builder = new ExoPlayer.Builder(App.get())
-                .setTrackSelector(trackSelector)
-                .setRenderersFactory(withAssObserver(buildPlaybackRenderersFactory(
-                        decode,
-                        automaticProfile ? decoderRuntimeSession : null,
-                        decoderOutput,
-                        schedulingSettings,
-                        dolbyVisionPlaybackState,
-                        compressedAudioDirectPolicy, diagnostics), assSession))
+                .setTrackSelector(subtitleSession == null ? trackSelector : subtitleSession.wrapTrackSelector(trackSelector))
+                .setRenderersFactory(renderersFactory)
                 .setMediaSourceFactory(buildMediaSourceFactory(
                         dolbyVisionPlaybackState, assSession))
                 .setVideoChangeFrameRateStrategy(ExoPerformanceSetting.getFrameRateStrategy());
@@ -299,7 +313,7 @@ public class ExoUtil {
         return decode != PlayerEngine.SOFT && PlayerSetting.isAudioPrefer(PlayerSetting.EXO);
     }
 
-    private static CaptionStyleCompat getCaptionStyle() {
+    public static CaptionStyleCompat getCaptionStyle() {
         return PlayerSetting.isCaption() ? CaptionStyleCompat.createFromCaptionStyle(((CaptioningManager) App.get().getSystemService(Context.CAPTIONING_SERVICE)).getUserStyle()) : new CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null);
     }
 

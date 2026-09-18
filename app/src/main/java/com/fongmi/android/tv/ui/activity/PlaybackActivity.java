@@ -45,6 +45,7 @@ import com.fongmi.android.tv.player.exo.ExoUtil;
 import com.fongmi.android.tv.service.PlaybackService;
 import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
 import com.fongmi.android.tv.player.exo.ass.ExoAssSession;
+import com.fongmi.android.tv.player.exo.subtitle.ExoSubtitleSession;
 import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.dialog.DiscMenuDialog;
@@ -71,6 +72,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
     private int requestedResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT;
     private ExoOutputModeManager exoOutputModeManager;
     private ExoAssSession attachedAssSession;
+    private ExoSubtitleSession attachedSubtitleSession;
     private final com.fongmi.android.tv.player.SurfaceDiagnosticCollector surfaceDiagnostics =
             new com.fongmi.android.tv.player.SurfaceDiagnosticCollector();
 
@@ -449,6 +451,12 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
             attachedAssSession = assSession;
         }
         if (attachedAssSession != null) attachedAssSession.attach(getExoView());
+        ExoSubtitleSession subtitleSession = player().getSubtitleSession();
+        if (attachedSubtitleSession != subtitleSession) {
+            if (attachedSubtitleSession != null) attachedSubtitleSession.detach();
+            attachedSubtitleSession = subtitleSession;
+        }
+        if (attachedSubtitleSession != null) attachedSubtitleSession.attach(getExoView());
         onSurfaceAttached();
         logSurfaceState("attach done");
     }
@@ -554,6 +562,8 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
     private void detachAssSurface() {
         if (attachedAssSession != null) attachedAssSession.detach();
         attachedAssSession = null;
+        if (attachedSubtitleSession != null) attachedSubtitleSession.detach();
+        attachedSubtitleSession = null;
     }
 
     private void resetVideoSurfaceForDecoderSwitch() {

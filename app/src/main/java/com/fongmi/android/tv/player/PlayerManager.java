@@ -459,6 +459,10 @@ public class PlayerManager implements ParseCallback {
         return engine instanceof ExoPlayerEngine exo ? exo.getAssSession() : null;
     }
 
+    public com.fongmi.android.tv.player.exo.subtitle.ExoSubtitleSession getSubtitleSession() {
+        return engine instanceof ExoPlayerEngine exo ? exo.getSubtitleSession() : null;
+    }
+
     public Tracks getCurrentTracks() {
         return engine.getCurrentTracks();
     }
@@ -732,6 +736,10 @@ public class PlayerManager implements ParseCallback {
 
     public boolean isSecondarySubtitleSelected(Format format) {
         return engine != null && engine.isSecondarySubtitleSelected(format);
+    }
+
+    public boolean isPrimarySubtitleSelected(Format format) {
+        return engine != null && engine.isPrimarySubtitleSelected(format);
     }
 
     public String getAudioPassThroughText() {

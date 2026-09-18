@@ -2,6 +2,17 @@
 
 ## Recovery anchor
 
+- 当前目标/授权（2026-09-18）：用户明确要求“exo实现双字幕，对标mpv播放器”，直接实施此前评估的 MPV 默认双字幕行为：主字幕保留当前 ASS/libass 字体和特效，副字幕默认置顶、使用普通字幕样式；两路独立选择/关闭，共享一个 ExoPlayer 的媒体时钟。第 2、10 节原先不包含双字幕的边界被本次授权扩展，其他历史限制不变。
+- 当前单元：`E4-LIBASS-dual-subtitles`，`upstream`；分支 `feature/mpv-dv7-fel`，基线/回滚锚点 `e2f39f240743ba4f8adf75bc6599f4ef7899d48a`。guard 保护原有 `app/.cxx/` 104 个文件；仅修改 App 的 Exo 字幕适配、既有播放器接口/管理与共用播放页/选轨页、对应测试、本文件和索引，不改 Media3/MPV/FFmpeg/独立 ASS JNI 产物或锁。
+- 决定/进度：第 16 节完成源码、官方接口、维护者讨论和 MPV 实现取证。`DualSubtitleTrackSelector`、`ExoSubtitleSession`、`SecondarySubtitleCues` 和共用 UI/engine 接线已实现；主 ASS observer 只接原主渲染器，副轨绑定实际 stream 与媒体代次拒绝旧回调。13 项本机检查通过，包含真正 ExoPlayer/合并 MediaPeriod/SubtitleView 接线；最终手机 Release/Debug/测试 APK 和电视 32 位 Java 编译通过，产物见第 16.5 节。
+- 验证：真实选轨/Renderer 合约检查，覆盖默认关闭、同时选中、主副独立关闭、冲突拒绝、切源/旧回调、暂停/偏移/seek；代表性手机播放覆盖主 ASS 与副文本共存和宿主重挂。手机/电视公共 Java 接线编译，单 ARM64 APK；不重跑所有 ABI/native 矩阵。
+- 时间/设备：2026-09-18 08:06 Asia/Shanghai（UTC+8）开始，约 2 小时，目标 10:06；取证 10 分钟、实现 65 分钟、构建/验证 35 分钟、归档 10 分钟。08:06 ADB 无设备，已请求用户连接，同时继续实现。
+- 恢复进度（11:57 Asia/Shanghai）：上一轮 10 项选轨/Cue 合约全部通过，测试体 15.437 秒，Gradle 命令总耗时 1 小时 28 分 8 秒；期间会话中断，原 10:06 目标已超时。已停止扩展研究，剩余目标约 30 分钟；ADB 仍无设备，实机同屏尚未验收。
+- 归档：使用本单元 guard 一次提交源代码、测试和两份现有文档，并创建 `recovery/E4-LIBASS-dual-subtitles/` 前缀的本地注释 tag；提交以 `Task-Guard: E4-LIBASS-dual-subtitles` 定位，不推送。12:27 因打包尚未完成延后收尾，12:30 最终构建成功；没有追加研究或重复已通过的检查。
+- 唯一下一步：实体手机连接后安装本轮 APK，执行现成的内嵌/外挂 ASS 双字幕实机同屏场景。当前没有设备，不将本机检查冒充实体设备的字体、Surface 或性能验收。
+
+### 上一阶段：常规构建必需功能（已归档）
+
 - 当前目标/授权（2026-09-15）：用户指出自行构建 debug 包又使用系统字体，并明确“这是一个必须的功能，根本不存在关闭的场景”。删除 ASS 实验构建开关，使常规手机/电视 arm64 debug/release 使用此前已验收的渲染接线；不要求额外 Gradle 参数。
 - 当前单元：`E4-LIBASS-required-build`，`quick-fix`；分支 `feature/mpv-dv7-fel`，基线 `248a947ba8dcd834e386cba25e4de83984ebc1ab`。仅修改 `app/build.gradle`、`ExoUtil.java`、`ExoAssSession.java`、本文件及评估索引；初始 `app/.cxx/` 的 70 个文件继续保护。
 - 原因与决定：`exoAssPrototype` 默认 false，同时控制 BuildConfig、JNI 打包、外挂标记及会话创建。历史验收包额外传 true，普通构建未启用。按第 15 节删除配置和运行时对此配置的依赖；已有能力判定、惰性 worker、失败回退保持。
@@ -143,7 +154,7 @@ AOSP 文档确认 SurfaceView 可直接作为 EGL/GLES 输出，单独交给 Sur
 | 同一 MatroskaExtractor 的 ContentEncoding 分支 | 本地已接受文本 zlib，处理解压并在提交时裁切 NUL；还保留 header stripping 相关路径。第三方 #85 的再次探测解压不能直接移植；阶段 2 钩子应取得明确编码处理后的有效字节和原始 duration，对不支持的组合明示失败 |
 | [PlaybackActivity.java](../app/src/main/java/com/fongmi/android/tv/ui/activity/PlaybackActivity.java) `attachSurface/detachSurface/resetVideoSurfaceForDecoderSwitch/syncVideoSurfaceSize` | 公共 Activity 负责手机/电视宿主挂接；`setRender` 会更换底层 View，Surface buffer 尺寸也可能与 View 布局不同。这里接 host 生命周期，不能只在 `ExoUtil.setPlayerView` 一次性创建层 |
 | [ExoPlayerEngine.java](../app/src/main/java/com/fongmi/android/tv/player/engine/ExoPlayerEngine.java) `rebuild/release` | 播放器重建和 Activity 配置变化不是同一生命周期。会话属于 engine/player，Surface 属于当前 Activity；detach 只释放显示资源，engine release 才关闭会话；rebuild 必须失效旧回调 |
-| [PlayerManager.java](../app/src/main/java/com/fongmi/android/tv/player/PlayerManager.java) `setTextOffsetMs`，`PlayerEngine.supportsSecondarySubtitle` | 复用当前延迟设置。Exo 目前没有声明原生双字幕能力，本任务不把 MPV 双字幕扩展成 Exo 新需求；只保证现有选轨及各播放器原有能力 |
+| [PlayerManager.java](../app/src/main/java/com/fongmi/android/tv/player/PlayerManager.java) `setTextOffsetMs`，`PlayerEngine.supportsSecondarySubtitle` | 复用当前延迟设置。原 ASS 阶段不包含 Exo 双字幕；2026-09-18 用户另行授权后，按第 16 节增加两路字幕，保留原有选轨及 MPV 能力 |
 
 选轨身份必须包含 player/session、`MediaPeriodId`、轨道标识及 stream generation；不能只用 `Format.id`，也不能仿照候选实现截取冒号后的 ID 来做全局匹配。拼接播放、外挂合并源、后台预加载和旧 decoder 回调都可能重用局部 ID。网络读取仍使用当前播放支路的 DataSource/OkHttp/headers/cache；不另开 native HTTP，也不把预加载优先级的 helper 当作前台字幕数据源。
 
@@ -355,7 +366,7 @@ flowchart LR
 | A07 非零起播/拼接 | 正确使用 stream/period offset；连续换集、拼接媒体无固定偏移错误 |
 | A08 seek | 前后 seek、连续 seek、落在长事件中间、不重新读到旧 block 的回看场景无漏字/重复/旧帧 |
 | A09 暂停/缓冲/倍速 | 字幕媒体时间正确冻结/推进；暂停时 resize、字体完成加载仍能重绘 |
-| A10 轨道切换与关闭 | ASS↔SRT/WebVTT/图形字幕、关字幕、不同语言轨道切换无双重渲染或残留；不额外要求 Exo 同时显示双字幕，MPV 既有能力保持 |
+| A10 轨道切换与关闭 | ASS↔SRT/WebVTT/图形字幕、关字幕、不同语言轨道切换无重复渲染或残留；原阶段只验收一路，新增双字幕按第 16 节验收；MPV 既有能力保持 |
 | A11 显示几何 | 黑边、非方形像素、裁剪/缩放、窗口变化、电视 overscan 布局下字幕映射正确 |
 | A12 生命周期 | 快速 add/remove、Surface 重建、后台/前台、释放期间回调不访问已销毁 native/GL 对象 |
 | A13 旧 GPU / ABI | armeabi-v7a 与 arm64-v8a；缺少 row-length 扩展的 GLES2 上传路径和输出正确 |
@@ -649,3 +660,73 @@ USB 再次短暂重连后，改为手机本地 shell 连续测量，保留原已
 | --- | --- | --- |
 | `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 188388733 | `1c36fff34fc684548c4bdffea18a1e5d4416ccd1c82ed4b14474976e33b0999a` |
 | `app/build/outputs/apk/leanbackArm64_v8a/debug/app-leanback-arm64_v8a-debug.apk` | 176524458 | `b2cf27f168dc3aebb7762a90b055204f610c494c9b02beb02d8bb2bdd691164c` |
+
+## 16. Exo 双字幕，对齐 MPV 默认行为（2026-09-18）
+
+### 16.1 决策、授权和证据
+
+用户在此前评估后明确要求实施。决策问题限定为：能否保留原音视频选轨、ASS observer 和单媒体时钟，通过现有 Java 扩展接口同时选择并显示两路字幕？本次不升级依赖，不扩展到两路 libass 原样渲染或副字幕单独的设置页。
+
+证据均于 2026-09-18 阅读实际内容，网络经 `http://127.0.0.1:7897`。网络原文留在 `/private/tmp/webhtv-exo-dual-research-20260918/`。
+
+| 证据类别/级别 | 固定来源 | 支持的结论与 WebHTV 决定 |
+| --- | --- | --- |
+| 实际依赖源码 A | `third_party/maven/androidx/media3/media3-exoplayer/1.11.0-alpha01-fongmi/*-sources.jar`，SHA-256 `4d158d63ab0a99688880d6acfdc73ed340f09fa9ac9dd1934fbaa0babfcad086`；锁定基线 `e3e922d5c01bc0b564849940fe589daf37360d15`，含既有本地补丁 | `MappingTrackSelector.selectTracks` final，同类文本组只分配给第一个匹配 renderer；`DefaultTrackSelector` 的后处理也只保证一路文本。`TrackSelector` 本身支持独立实现，`TrackSelectorResult` 可按 renderer 返回多路固定 selection。采用组合并保留原 delegate，不复制整个选择器或更改文本 track type。 |
+| 上游测试 A | `fish2018/webhtv@e3e922d5c01bc0b564849940fe589daf37360d15:libraries/exoplayer/src/test/java/androidx/media3/exoplayer/trackselection/MappingTrackSelectorTest.java` | `selectTracks_multipleVideoAndAudioTracks_mappedToSameRenderer` 证明仅加同类型 renderer 不会自动分轨；metadata 特例不能移用于字幕。新增针对两路文本的真实选择结果检查。该对象在本仓库可读取，另一个 media checkout 不含此对象，未以其当前源码替代。 |
+| HLS 实际源码 A | 同版本 `media3-exoplayer-hls` sources JAR，`HlsSampleStreamWrapper.bindSampleQueueToSampleStream` | 一个 sample queue 已被绑定时，第二次绑定返回 fatal；因此不能把同一字幕 TrackGroup 中的两个自适应版本当作双字幕。新增按 TrackGroup 冲突保护，而非仅比较单条 Format；两路不同的字幕组仍正常选择。 |
+| 官方文档 A | [Media3 Track selection](https://developer.android.com/media/media3/exoplayer/track-selection)，页面更新 2026-09-08 | `TrackSelectionOverride` 只匹配相同 TrackGroup，`setTrackTypeDisabled(TEXT)` 禁用的是整类；因此副轨状态不能塞进主轨的 `setOverrideForType`，也不能让主字幕关闭直接关掉第二个 renderer。delegate 参数继续表达主轨，副轨单独保存。 |
+| 维护者讨论 B / 使用场景报告 C | [ExoPlayer #5192](https://github.com/google/ExoPlayer/issues/5192)，尤其 [erdemguven 建议](https://github.com/google/ExoPlayer/issues/5192#issuecomment-444564606) 与 [ojw28 解释](https://github.com/google/ExoPlayer/issues/5192#issuecomment-446011361) | 实际读完正文和 7 条评论。建议多个 TextRenderer/TextView，改 mapping 或定义新类型；将 forced 合并进 optional 的内容侧方案不适用于用户自由选择两种语言。报告中的同时核对字幕场景支持独立轨道需求，不是性能证明。 |
+| 成熟项目源码/官方说明 A/B | `mpv-player/mpv@cca559b41ceb0bb7731cf6ef2e1f33276cd30c42`，`player/loadfile.c:mp_switch_track_n`、`options/options.c:mp_subtitle_shared_sub_opts`、`sub/sd_ass.c:configure_ass`、`DOCS/man/options.rst` | 主/副 track slot 分开；同一轨不能同时占两槽；副轨默认 `secondary-sub-ass-override=strip`、置顶、默认关闭。对齐当前 App 的这组默认行为。MPV 原生可另设 override=no，不能宣称其不支持两路 ASS 原样。 |
+| 当前 App 合约 A | `ExoUtil.buildPlayer/withAssObserver`、`ExoPlayerEngine.startInternal/rebuild/release`、`TrackUtil.setTrackSelection`、`TrackDialog`、`PlaybackActivity.attachSurface/detachSurface`、`AssSurfaceHost.update` | 双字幕入口已存在，但 Exo 未声明能力；主 ASS ACTIVE 隐藏原 SubtitleView。副轨必须独立显示，不能共用 `Player.Listener.onCues` 或主 ASS observer；宿主绑定在共用 Activity，手机/电视一致。原音视频自动策略继续持有相同 DefaultTrackSelector。 |
+
+论文/算法基准不适用：本阶段不发明字幕排版、时间同步或渲染算法，沿用已发布的 TextRenderer/Cue/SubtitleView；没有需用论文判定的新算法或数值性能承诺。独立博客不再作为决策门槛，实际维护者讨论、同场景报告和两套播放器源码已能确定路线。对性能和生命周期的结论仍以本地合约/代表性验证为限。
+
+### 16.2 方案比较与实施设计
+
+| 方案 | 正确性、维护与成本 | 决定 |
+| --- | --- | --- |
+| 不改动 | 保留所有行为，但 Exo 只能一路字幕 | 不满足需求 |
+| 原样采用历史上游建议，修改 MappingTrackSelector 或创建新的 TEXT_SECONDARY 类型 | 可以分轨，但会扩展 Media3 公共类型、renderer/source 兼容边界，并需维护 Java AAR/锁/补丁；覆盖选择器容易丢掉音视频后续修复 | 不直接移植 |
+| 预先合并两份字幕/另起完整播放器 | 合并难以覆盖内嵌、直播和轨道切换；第二个播放器增加 IO、音视频资源与时钟偏差 | 不采用 |
+| WebHTV 窄适配 | 原选择器只处理原 renderer 列表，其音视频配置/selection 原样保留；新增真正的 TextRenderer 只消费用户指定副轨。最终 Tracks 合并选中标记，角色分别查询，单独 SubtitleView 置顶 | **采用，用户已授权实施** |
+
+- `DualSubtitleTrackSelector` 组合原 DefaultTrackSelector，转发参数、音频属性、能力变化、初始化/释放和 selection activation；副轨使用固定 selection，禁止将多索引 ABR 误当同时显示。选择结果按激活时间更新，不能把提前选好的下一 period 当成当前显示轨。
+- 主轨保持原 Player/Cue/ASS 路径。副 TextRenderer 使用相同渲染时钟、offset、seek/flush 和延迟消息；不包裹 renderer、不改全局时钟、不新建播放器或定时拉取字幕。
+- 副轨用独立会话与主线程 SubtitleView，移除文本嵌入样式、居中置顶、多条同时出现的文本合并换行；图形 Cue 保留位图及相对布局后整体向上放置。ASS 字体原样仅由主 libass 提供。显示层不抢焦点、无点击，不占控制器布局。
+- 角色选择、显示回调和宿主属于各自生命周期；切源清空副轨，释放使旧回调失效；暂时 detach 只移除 View，重新 attach 恢复当前 Cue。缺失或不支持的副轨不影响音视频/主字幕；同轨冲突不重复解码。
+- 复用主／副字幕切换按钮和列表。两路的选中标记单独查询，主轨关闭后副轨可继续显示；副轨关闭不改变主轨和主 ASS worker。
+- 性能边界：关闭副轨时无副字幕 decoder、worker、额外 HTTP 或逐帧 UI 更新；开启只增加一路必要字幕解码和 Cue 更新。音视频选择对象、tunneling、硬/软解手动选择、直通、自动视频约束和原生库保持既有实现。不以源码分析保证所有设备的 CPU 数字。
+- 来源/ABI/安全：不更改第三方二进制和许可证；调用已有不稳定 Java API，依赖版本不动。仍由当前 extractor/decoder 处理不可信字幕，不另造解析器/网络/字体读取链。新增测试只覆盖本次合约，避免改变全局测试设置。
+
+### 16.3 接受条件、验证与回滚
+
+1. 内嵌或已添加外挂的两条不同字幕可同时选中，主/副角色与 UI 一致，默认副轨关闭；主字幕的字号/原样 ASS 规则不回归。
+2. 主、副可分别关闭；同轨冲突拒绝；切源、播放器重建/切换、停止/释放无残留副字幕。暂停、前后 seek、现有字幕偏移不产生累加漂移。
+3. 真正 TextRenderer 的固定选择、Cue 输出与当前媒体时间契约通过定向检查；检查副轨开关前后音视频 selection/configuration 等价，关闭副轨无需活跃 decoder。
+4. 代表性手机播放检查主 ASS 原字体/特效和副文本同屏、独立开关、暂停跳转、宿主重挂。手机/电视公共代码编译；不把 ARM64 手机播放冒充电视硬件或全部格式验收。
+5. 在上述证据记录完成后，任务文件一次原子提交，创建唯一 annotated 本地恢复 tag。基线为 `e2f39f240743ba4f8adf75bc6599f4ef7899d48a`，整体 revert 本阶段提交即可撤销双字幕接线；原 Media3/JNI/MPV 产物没有需要配套回退的变更。不推送。
+
+### 16.4 实施与验证记录
+
+- 已实现：新增上述 3 个字幕类，组合原选择器并保留真实 TextRenderer；主/副状态独立，副显示层惰性创建；字幕 token + stream Format 校验挡住切轨/切源后的旧 Cue；共享手机/电视播放页挂接；原 MPV 的同轨双槽拒绝规则也用于列表排除。`TrackUtil` 对当前点击优先使用原生 track id，持久化偏好仍回退原描述匹配。
+- 定向用例：`DualSubtitleTrackSelectorTest` 7 项，包含真实 DefaultTrackSelector 音视频配置等价、tunneling/参数透传、延迟激活、主副开关、同轨组保护、旧 token 和缺失/DRM；`SecondarySubtitleCuesTest` 3 项，包含无样式多语言文本堆叠、位图区域相对布局与空 Cue；`DualSubtitlePlaybackTest` 的两个实际 Exo/ASS 生命周期场景已编译，尚未运行。
+- 构建：首轮 Java 编译发现 TextOutput 的 CueGroup 方法是抽象方法，已修正为空输出 lambda；没有改动第三方接口。随后 `:app:assembleMobileArm64_v8aDebug :app:assembleMobileArm64_v8aDebugAndroidTest :app:compileLeanbackArmeabi_v7aDebugJavaWithJavac` 通过，2 分 41 秒。使用既有 `build/avs3-native/app-build.init.gradle` 隔离 CMake。原日志为 `build/exo-dual-subtitles/compile-mobile.log` 和 `build-debug-tests.log`。
+- 设备：08:27 ADB 仍无设备；现有模拟器是 x86_64 TV，不能代替 ARM64/libass 真机验收。本机已缓存 Robolectric 4.16，先以独立、未改变产品依赖的验证 harness 运行 Java/Android 合约，实际字体/Surface 场景等手机连接后继续。此时不宣称播放验证通过。
+- 本机结果：`DualSubtitleContractHostTest` 10/10（测试体 15.437 秒，Gradle 1 小时 28 分 8 秒）；`DualSubtitleRendererHostTest` 2/2（测试体 5.289 秒，Gradle 29 秒）；`DualSubtitlePlayerHostTest` 1/1（测试体 6.867 秒，Gradle 21 秒）。三个 wrapper 均调用本次 `androidTest` 中的实际用例；Robolectric 4.16/Android API 28 仅在 ignored `build/exo-dual-subtitles` harness 注入，不改变 App Gradle/依赖锁。
+- 真实渲染器检查：两路独立原始 ASS/SRT 输入，主 observer 不接副样本；同一时钟下暂停改延迟、前后 seek、独立关闭通过。补上来源代次防护：仅有 Format 相同不足以识别同格式的前后两个媒体，副 observer 记录 reading/previous 两个实际 Stream 对应的 mediaGeneration；旧来源回调不得使用新请求代次，提前读取下一 period 时仍可显示当前字幕。
+- 完整 Java 接线检查：同一真实 ExoPlayer、两个 SingleSampleMediaSource/合并 MediaPeriod、两个 TextRenderer 和真实 PlayerView/SubtitleView；默认副 renderer disabled，选择后两路同时输出，主/副独立关闭、前后 seek、主 SubtitleView 置 INVISIBLE 后副层仍可见、detach/attach 通过。此处只检查与原 ASS 接管相同的 View 可见性操作，没有加载 native libass 或声称完成实体设备的字体/Surface 验收。
+- 原始失败保留：本机播放器用例起初按未合并 ID 查找素材，实际 `MergingMediaPeriod` 已给 Format.id 加 `0:`/`1:` 来源前缀；改为按 fixture label 找到真实 Format 后仍用真实 ID 执行产品选轨。另一次 host-only 编译遇到 `Shadows.shadowOf` 重载引用当前 SDK 已移除的 FingerprintManager，改用 `Shadow.extract`；host 主线程时钟由 wrapper 显式推进。上述修改均仅在验证代码，不改生产逻辑或降低断言。
+- 证据：`build/exo-dual-subtitles/contract-tests-passed.xml`、`renderer-tests-passed.xml`、`host-player-tests-track-identity.log` 和对应 Gradle XML；首次素材定位失败与 SDK 接口编译失败日志均保留。12:14 ADB 仍为空；实体设备的两个 `DualSubtitlePlaybackTest` 场景尚未运行。
+
+### 16.5 最终构建、使用与验证边界
+
+- 最终联合构建一次通过（3 分 53 秒）：`:app:assembleMobileArm64_v8aRelease`、`:app:assembleMobileArm64_v8aDebug`、`:app:assembleMobileArm64_v8aDebugAndroidTest`、`:app:compileLeanbackArmeabi_v7aDebugJavaWithJavac`。使用已有 `build/avs3-native/app-build.init.gradle` 和 `-PfastRelease=true`，未改变产品构建文件/依赖/原生库；日志 `build/exo-dual-subtitles/final-build.log`。
+- 两个 App APK 的 DEX 均含 `ExoSubtitleSession`；打包的 `lib/arm64-v8a/libexo_ass.so` SHA-256 均为 `476b3e048fff1002cbd25a328340637f0cb40fdec6a6f2f6033fc7548ac80157`，与仓库已验收原库逐字节一致。核验记录 `build/exo-dual-subtitles/final-artifacts.json`。
+- 使用：Exo 播放页打开字幕轨道，点击“副字幕”后选择另一条内嵌或已添加外挂轨；副字幕默认在顶部显示普通文本，主字幕保留原 ASS 样式/字体。主、副各有关闭选项，默认不启用副字幕；同一轨道不能占两个角色。手机/电视使用同一个选轨入口。
+- 限制如实保留：本轮 13 项是本机 Android/真实 Media3 合约与 View 集成检查；没有实体手机连接，未安装 APK，也未执行原生 ASS 同屏、真实视频掉帧/CPU 或电视遥控体验验收。未升级成两路 libass 原样渲染，未增加副轨独立样式设置；历史 ARM64 ASS 能力边界仍见前文。
+
+| 产物 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `app/build/outputs/apk/mobileArm64_v8a/release/mobile-arm64_v8a.apk` | 150060204 | `495157f6c45a515278bf5f74ad4dc9f09edd30522025887981e85e8162c05b50` |
+| `app/build/outputs/apk/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug.apk` | 181893921 | `ce9d02c97edcbd595f40db5ae9fa8f28fa9b4dce750ef0b1cddd0471e35183a0` |
+| `app/build/outputs/apk/androidTest/mobileArm64_v8a/debug/app-mobile-arm64_v8a-debug-androidTest.apk` | 1370334 | `05073818d8e0edbeb02dc86388d88c5e70ef2a69ec000481303681eecba0ae28` |
