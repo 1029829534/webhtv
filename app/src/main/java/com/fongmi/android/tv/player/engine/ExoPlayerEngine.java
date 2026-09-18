@@ -25,6 +25,7 @@ import com.fongmi.android.tv.player.AudioPlaybackDiagnostics;
 import com.fongmi.android.tv.player.PlaybackTrace;
 import com.fongmi.android.tv.player.PlaybackResourceClassifier;
 import com.fongmi.android.tv.player.exo.ErrorMsgProvider;
+import com.fongmi.android.tv.player.exo.ExoAudioOutputState;
 import com.fongmi.android.tv.player.exo.ExoDecoderRuntimeProfiles;
 import com.fongmi.android.tv.player.exo.ExoDecoderRuntimeSession;
 import com.fongmi.android.tv.player.exo.ExoCompressedAudioDirectPolicy;
@@ -695,10 +696,10 @@ public class ExoPlayerEngine implements PlayerEngine {
                 : TrackUtil.explicitlySelectedFormat(getCurrentTracks(), C.TRACK_TYPE_AUDIO);
         AudioPlaybackDiagnostics.Track original =
                 AudioPlaybackDiagnostics.track(selected, "");
-        PlaybackAnalyticsListener.AudioOutputSnapshot output =
+        ExoAudioOutputState.Snapshot output =
                 currentAnalyticsSession
-                        ? PlaybackAnalyticsListener.getAudioOutputSnapshot()
-                        : PlaybackAnalyticsListener.AudioOutputSnapshot.empty();
+                        ? compressedAudioDirectPolicy.getAudioOutputSnapshot()
+                        : ExoAudioOutputState.Snapshot.empty();
         String decoderName = currentAnalyticsSession
                 ? analytics.audioDecoderName() : "";
         PlaybackException error = player == null ? null : player.getPlayerError();
