@@ -2,15 +2,16 @@
 
 ## Recovery anchor
 
-- 当前目标（2026-09-19）：诊断用户提供的 Exo/MPV SSA 字幕截图差异，并给出 HDR/DV 场景的最小修复方案。本轮只评估；尚未批准把历史 SDR 能力边界扩展到 HDR/DV，未修改生产代码或产物。
-- 当前单元：`E4-LIBASS-hdr-review-20260919`，`assessment`；分支 `feature/mpv-dv7-fel`，基线 `88aceb110959ff50afc23b10d9b9abe3e0f53255`。只修改本文件和评估索引；保护初始 `app/.cxx/` 的 104 个文件。
+- 当前目标/授权（2026-09-19）：用户明确要求“修复这个bug，同样的视频mpv可以正常处理,exo没理由不能”，批准第 17 节 HDR/DV 独立 SDR 字幕层的窄修复与原片验证。
+- 当前单元：`E4-LIBASS-hdr-fix-20260919`，`upstream`；分支 `feature/mpv-dv7-fel`，基线/回滚锚点 `e85dc87988bbe8e3d67509426cb5e1d1a2cee3b7`。scope 为 Exo ASS Java、对应测试/debug fixture、独立 ASS JNI 与配套产物、本文件/索引；保护初始 `app/.cxx/` 的 104 个文件。
 - 已完成：确定 `ExoAssSession.admittedLocked()` 显式排除 Dolby Vision MIME、非 SDR transfer 和 BT.2020；核对当前 SSA packet 桥、独立 Surface 宿主和 native 颜色代码，完成第 17 节的窄方案取证。截图中的 Exo 为普通白字，MPV 保留大小、粗体和黄色英文；两图对白时间不同，不能当逐像素基准。
-- 未决证据：片名标为杜比视界，与排除条件吻合，但尚未读取该片实际视频 Format、主字幕轨及会话状态。vivo V2453A `10CF6H1D2L0009S` 已连接但锁屏；App 未运行，安装版本 `5.6.0`、更新于 2026-09-18 12:35:57。已请求用户解锁并打开原片，不将代码推断写成实机复现。
-- 验证/原始证据：本轮仅文档检查；设备状态、官方文档和维护者讨论快照保存在 `/private/tmp/exo-ssa-20260919/`。没有构建、安装、播放或 HDR 显示通过记录。
-- 时间：07:51 Asia/Shanghai 开始；原定 08:10 的诊断目标因 HDR 颜色契约核对与设备锁屏未能完成实机部分。08:16 停止补充检索，仅整理文档，目标 08:19 完成评估交付。
-- 唯一下一步：用户解锁原片后，先核对实际 Format、主字幕轨和 libass 会话；若确认命中 HDR/DV 排除条件，按第 17 节获批范围实施。
+- 原片证据：vivo V2453A `10CF6H1D2L0009S` 的正常 `VideoActivity` 播放《伦敦陷落》；旧包日志确认 `media3-ssa` 输入、3840×2160 HEVC 硬解、实际输出 BT.2020/PQ（standard=6/transfer=6）、Surface dataspace `0x11c60000`。这些是安装前实测；不将它们冒充候选包的输出复测。
+- 实施进度：新增 `AssVideoPolicy`，HDR/DV/BT.2020 使用原始 SDR RGB；保留 SDR 视频的旧矩阵行为及 DRM/未知 transfer/rotation/tunneling/宿主限制。JNI 在已有 colorSpace 参数为 0 时跳过历史视频 YCbCr 转换，不改 API 或依赖；代码、JNI 与测试包已构建/验证并安装。
+- 验证/验收：7 项定向 Android instrumentation 全部通过（7.185 秒），覆盖准入/颜色政策、native 颜色与暂停时模式切换、官方 blur/transform、真实 Exo 字幕生命周期。native/APK 来源、API 24、16 KiB 和库字节核验通过。用户明确确认“可以了，打tag”，按实际观察验收闭合；取消未执行的额外截图/原片性能/相邻用例，不声称这些检查已完成。
+- 时间/证据：08:29 Asia/Shanghai 开始，原目标 09:04–09:09 因解锁等待和构建环境处理延后，09:12 已告知剩余 15–20 分钟。证据在 `/private/tmp/exo-ssa-20260919/`；Gradle 联合构建 2 分 33 秒。首次沙箱缓存锁失败与后续成功日志均保留。
+- 唯一下一步：按 `E4-LIBASS-hdr-fix-20260919` guard 原子提交任务文件并立即创建本地恢复 tag；无需追加测试或研究，不推送。
 
-## 17. HDR/DV 下 SSA 样式回退诊断（2026-09-19，实施待批准）
+## 17. HDR/DV 下 SSA 样式回退诊断与修复（2026-09-19，已批准实施）
 
 ### 17.1 已证实的代码条件与推断边界
 
@@ -41,7 +42,7 @@
 | 不改动 | 保留原型边界，HDR/DV 继续失去完整字幕样式 | 不满足本问题的修复目标 |
 | 只删除 HDR/DV 排除条件 | 可进入 libass，但原 BT.601/BT.709 转换会错误接收 HDR 元数据，未解决显示验收 | 不采用 |
 | 原样引入第三方 effects 路径 | 需要改视频管线，扩大 DV、厂商解码/呈现和维护风险 | 不采用 |
-| 适配现有独立字幕层 | 放行已支持 SurfaceView 上的非加密、非 tunneling HDR/DV；HDR 字幕作为 SDR RGB 呈现，SDR 视频保留既有矩阵行为 | 推荐，需用户批准和设备验收 |
+| 适配现有独立字幕层 | 放行已支持 SurfaceView 上的非加密、非 tunneling HDR/DV；HDR 字幕作为 SDR RGB 呈现，SDR 视频保留既有矩阵行为 | 已批准实施，验证与用户验收见第 17.5 节 |
 
 拟修改路径：`app/src/main/java/com/fongmi/android/tv/player/exo/ass/`、对应 ASS 单测/设备测试、必要的 debug fixture、`third_party/exo-ass-native/` 中 JNI 源码和配套 arm64 产物/manifest/provenance，以及本文件/评估索引。采用现有 render 参数的明确 HDR/SDR 颜色契约，避免改写用户字幕脚本。依赖版本、Media3 AAR、MPV、视频解码/输出选择、32 位支持、TextureView、DRM 与 tunneling 均不属于本单元。独立 native 构建已有 warm cache，可用 `scripts/build_exo_ass_native.py --jni-only --install` 重建必要 JNI；实施前确认精确文件 scope。
 
@@ -55,6 +56,16 @@
 4. 设备原片检查视频 HDR/DV 模式、可见字幕颜色/亮度、暂停/seek、字幕开关和 Surface 重挂；同片同设置测量基线/候选的字幕耗时、CPU、视频丢帧，噪声敏感指标至少三组。字幕通过不能以改视频为 SDR、换解码器或降低画质换取。
 
 预计批准并解锁后 25–40 分钟：局部实现和定向测试 8–12 分钟、warm JNI/Gradle 构建 3–6 分钟、设备原片与性能验证 11–18 分钟、原子提交/tag 约 3 分钟。实际开工时更新当地完成时间；原片网络/设备等待单列。最小回滚为整体撤销该次已验证实现提交，恢复本评估基线的 App/JNI 配套状态。未完成必要实机验收时不得宣称 HDR/DV 已修复。
+
+### 17.5 实施与闭合结果
+
+- `AssVideoPolicy` 负责 HDR10/HLG/DV/BT.2020 的独立 SDR RGB 选择；SDR 显式矩阵和缺省分辨率推断不变，未知 transfer、旋转、加密及现有宿主限制保留。`ExoAssSession` 使用该策略；`AssNative.COLOR_SPACE_SDR_RGB=0` 与 JNI 的受控分支配套。
+- 独立 JNI 仅重编本地 wrapper，未升级依赖，未改 Media3/MPV 或视频输出路径。`libexo_ass.so` 仍为 2775600 字节，SHA-256 `31e04a1d26c606dd2f5df0b0b81f2916ed0b29c13b3415515a77cff540e83cc2`；manifest/provenance 与源输入一致，API 24、ARM64、16 KiB LOAD/ZIP、动态依赖和 JNI 导出核验通过。普通视频原有 YCbCr 兼容仍由测试确认。
+- 一次联合 Gradle 构建通过：`:app:assembleMobileArm64_v8aDebug`、`:app:assembleMobileArm64_v8aDebugAndroidTest`，2 分 33 秒。采用既有隔离 CMake staging init script，未改初始 `.cxx`；日志 `gradle-build-approved.log`。先前沙箱禁止写 Gradle wrapper 锁文件，获准后使用现有 JDK 21/cache 完成构建，未改产品构建配置。
+- 7 项定向设备测试一次全过，日志 `targeted-instrumentation.log` 的 `OK (7 tests)`：4 项视频/颜色策略、1 项固定 ASS 绘图的原始 RGB/预乘 alpha 与 HDR↔SDR 暂停时间点重绘、1 项官方 blur/transform 帧、1 项真实 Exo 暂停/字幕延迟/Surface 重建/注入回退/seek/关轨/重新选轨/释放。测试覆盖与原片用户验收分别记录，不以准入测试声称各 HDR 格式均做过真实视频显示测量。
+- 修复 APK 已安装，SHA-256 `506daab799b6c3b42f3a8cb6e1e4c7b451658b5ca1f1739a957bb4866a2c3ff9`；测试 APK `ac81b4b41da076957e3e9db13066c6f4479121eb3a0f8fbceab4eb1804b60da2`。原安装包另存临时目录，SHA-256 `495157f6c45a515278bf5f74ad4dc9f09edd30522025887981e85e8162c05b50`；安装助手已完成 OEM 确认。
+- 用户随后明确“可以了，打tag”。按显式闭合要求立即归档，不再启动原片配对性能、额外图像或其他设备/媒体验证；没有失败的必需检查。原片日志中的频繁网络缓冲不归因于本次字幕修改，也不据此宣称性能已量化。双 ABI、TextureView、DRM/tunneling 等未获批能力不扩展。
+- 提交由 `Task-Guard: E4-LIBASS-hdr-fix-20260919` 定位，恢复 tag 前缀 `recovery/E4-LIBASS-hdr-fix-20260919/`，不推送。回滚整体撤销该提交中的 Java/JNI/manifest/provenance 与配套文档，恢复基线 `e85dc87988bbe8e3d67509426cb5e1d1a2cee3b7` 的配套状态。
 
 ## 上一单元 Recovery anchor：双字幕
 
