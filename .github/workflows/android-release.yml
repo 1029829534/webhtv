@@ -136,34 +136,6 @@ jobs:
             echo "apk_suffix=$APK_SUFFIX"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Configure release signing
-        env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          KS_BASE64="${RELEASE_KEYSTORE_BASE64:-$KEYSTORE_BASE64}"
-          STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-$KEY_PASSWORD}"
-          ALIAS="${RELEASE_KEY_ALIAS:-$KEY_ALIAS}"
-          KEY_PASS="${RELEASE_KEY_PASSWORD:-$STORE_PASSWORD}"
-          if [ -z "$KS_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$ALIAS" ]; then
-            echo "::error title=Release signing not configured::Configure RELEASE_KEYSTORE_BASE64, RELEASE_KEY_ALIAS and RELEASE_STORE_PASSWORD in repository secrets."
-            exit 1
-          fi
-          mkdir -p app/signing
-          printf '%s' "$KS_BASE64" | base64 --decode > app/signing/release.jks
-          {
-            echo "storeFile=$GITHUB_WORKSPACE/app/signing/release.jks"
-            echo "keyAlias=$ALIAS"
-            echo "storePassword=$STORE_PASSWORD"
-            echo "keyPassword=$KEY_PASS"
-          } > local.properties
-          echo "Release signing configured"
-
       - name: Build four release APKs
         env:
           WEBHTV_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
@@ -172,10 +144,10 @@ jobs:
           chmod +x ./gradlew
           rm -rf Release/apk
           ./gradlew \
-            :app:assembleMobileArm64_v8aRelease \
-            :app:assembleMobileArmeabi_v7aRelease \
-            :app:assembleLeanbackArm64_v8aRelease \
-            :app:assembleLeanbackArmeabi_v7aRelease \
+            :app:assembleMobileArm64_v8aDebug \
+            :app:assembleMobileArmeabi_v7aDebug \
+            :app:assembleLeanbackArm64_v8aDebug \
+            :app:assembleLeanbackArmeabi_v7aDebug \
             --no-daemon
 
       - name: Collect artifacts
