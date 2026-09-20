@@ -220,6 +220,11 @@ public class ExoUtil {
                 schedulingSettings, dolbyVisionPlaybackState, compressedAudioDirectPolicy, diagnostics), assSession);
         // Install the primary ASS observer before appending the independent secondary renderer.
         if (subtitleSession != null) renderersFactory = subtitleSession.wrapRenderersFactory(renderersFactory);
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+                .setExceedRendererCapabilitiesIfNecessary(true)
+                .build()
+        );
         ExoPlayer.Builder builder = new ExoPlayer.Builder(App.get())
                 .setTrackSelector(subtitleSession == null ? trackSelector : subtitleSession.wrapTrackSelector(trackSelector))
                 .setRenderersFactory(renderersFactory)
