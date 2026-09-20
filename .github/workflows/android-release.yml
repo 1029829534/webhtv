@@ -154,7 +154,7 @@ jobs:
         run: |
           rm -rf dist
           mkdir -p dist
-          cp Debug/apk/*.apk dist/
+          find . -name "*.apk" -exec cp {} dist/ \;
           ls -lh dist/
 
       - name: Set up ORAS
